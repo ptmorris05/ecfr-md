@@ -134,7 +134,7 @@ def test_skipped_tags_line_breaks_and_captions():
 
 def test_front_matter_without_an_end_is_not_front_matter(tmp_path):
     path = tmp_path / "x.md"
-    path.write_text('---\ncitation: "45 CFR 1.1"\n')
+    path.write_text('---\ncitation: "45 CFR 1.1"\n', encoding="utf-8")
     assert read_front_matter(path) is None
 
 
@@ -174,7 +174,7 @@ def test_store_copies_when_links_are_not_supported(tmp_path, monkeypatch):
 
     monkeypatch.setattr("os.link", no_links)
     source = tmp_path / "source.xml"
-    source.write_text("<DIV5/>")
+    source.write_text("<DIV5/>", encoding="utf-8")
     store = Store(tmp_path / "cache")
     store.put(
         "full",
@@ -350,7 +350,7 @@ def test_more_usage_errors(run, capsys, tokens, message):
 
 def test_from_an_empty_list(run, capsys, tmp_path):
     empty = tmp_path / "empty.txt"
-    empty.write_text("# nothing here\n")
+    empty.write_text("# nothing here\n", encoding="utf-8")
     assert run("get", "--from", str(empty), "-o", str(tmp_path / "out")) == 2
     assert "No citations" in capsys.readouterr().err
 
@@ -368,12 +368,23 @@ def test_versioner_latest_date(run, capsys):
 def test_sync_lists_what_changed(run, capsys, tmp_path):
     assert run("get", "45", "CFR", "164", "--tree", "-o", str(tmp_path)) == 0
     edited = next(p for p in tmp_path.rglob("*.md") if p.name != "index.md")
-    edited.write_text(
-        edited.read_text(encoding="utf-8").replace("\n\n", "\n\nEdited.\n\n", 1)
-    )
+    text = edited.read_text(encoding="utf-8")
+    edited.write_text(text.replace("\n\n", "\n\nEdited.\n\n", 1), encoding="utf-8")
     capsys.readouterr()
     assert run("sync", str(tmp_path)) == 0
     assert "~ " in capsys.readouterr().err
+    assert edited.read_text(encoding="utf-8") == text
+
+
+def test_sync_rewrites_files_saved_in_another_encoding(run, tmp_path):
+    # Editors on Windows may re-save a file as cp1252, where "—" is not UTF-8.
+    assert run("get", "45", "CFR", "164", "--tree", "-o", str(tmp_path)) == 0
+    edited = next(p for p in tmp_path.rglob("*.md") if p.name != "index.md")
+    text = edited.read_text(encoding="utf-8")
+    assert "—" in text
+    edited.write_text(text, encoding="cp1252")
+    assert run("sync", str(tmp_path)) == 0
+    assert edited.read_text(encoding="utf-8") == text
 
 
 def test_main_entry_point(monkeypatch):

@@ -79,7 +79,7 @@ def test_changes_command(run, capsys, versions):
 def test_sync_rewrites_only_what_changed(ecfr, api, part_xml, tmp_path):
     ecfr.save("45 CFR Part 164", tmp_path, tree=True)
     mine = tmp_path / "part-164" / "notes.md"
-    mine.write_text("my own notes\n")
+    mine.write_text("my own notes\n", encoding="utf-8")
 
     unchanged = ecfr.sync(tmp_path)
     assert (unchanged.changed, unchanged.added, unchanged.removed) == ([], [], [])

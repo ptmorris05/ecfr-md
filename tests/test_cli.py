@@ -108,7 +108,9 @@ def test_quiet_still_shows_errors(run, capsys):
 
 def test_get_from_a_list_of_citations(run, capsys, tmp_path):
     listing = tmp_path / "list.txt"
-    listing.write_text("# HIPAA\n45 CFR 164.104(a)\n\n45 CFR 164.106\n")
+    listing.write_text(
+        "# HIPAA\n45 CFR 164.104(a)\n\n45 CFR 164.106\n", encoding="utf-8"
+    )
     assert run("get", "--from", str(listing), "-o", str(tmp_path / "out")) == 0
     names = sorted(p.name for p in (tmp_path / "out").iterdir())
     assert names == ["45-cfr-164.104-a.md", "45-cfr-164.106.md"]

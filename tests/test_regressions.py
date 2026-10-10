@@ -56,7 +56,7 @@ def test_sync_survives_a_renamed_folder(ecfr, tmp_path):
 def test_sync_skips_other_index_files(ecfr, tmp_path):
     ecfr.save("45 CFR Part 164", tmp_path, tree=True)
     (tmp_path / "docs").mkdir()
-    (tmp_path / "docs" / "index.md").write_text("# My docs\n")
+    (tmp_path / "docs" / "index.md").write_text("# My docs\n", encoding="utf-8")
     assert len(ecfr.sync(tmp_path).unchanged) == 7
     assert (tmp_path / "docs" / "index.md").read_text(encoding="utf-8") == "# My docs\n"
 

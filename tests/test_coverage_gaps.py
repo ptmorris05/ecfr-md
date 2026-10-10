@@ -42,7 +42,7 @@ def test_sync_adds_files_for_new_sections_and_removes_empty_folders(
 def test_sync_errors(ecfr, tmp_path):
     with pytest.raises(InvalidParameterError, match="doesn't exist"):
         ecfr.sync(tmp_path / "missing")
-    (tmp_path / "notes.md").write_text("# Mine\n")
+    (tmp_path / "notes.md").write_text("# Mine\n", encoding="utf-8")
     with pytest.raises(InvalidParameterError, match="No Markdown saved by ecfr-md"):
         ecfr.sync(tmp_path)
 
@@ -136,7 +136,7 @@ def test_malformed_metadata_is_ignored(tmp_path: Path):
     element = md.parse('<DIV8 N="1" hierarchy_metadata="{not json"/>')
     assert page_path(element) is None
     broken = tmp_path / "broken.md"
-    broken.write_text('---\ncitation: "unterminated\n---\n')
+    broken.write_text('---\ncitation: "unterminated\n---\n', encoding="utf-8")
     assert read_front_matter(broken) is None
     assert read_front_matter(tmp_path / "missing.md") is None
 

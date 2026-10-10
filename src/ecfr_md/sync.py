@@ -107,7 +107,10 @@ def _same_text(a: Path, b: Path) -> bool:
         body = text.split("\n---\n\n", 1)[1] if meta else text
         return {k: v for k, v in meta.items() if k not in VOLATILE}, body
 
-    return stable(a) == stable(b)
+    try:
+        return stable(a) == stable(b)
+    except UnicodeDecodeError:  # Re-saved in another encoding: not ours as is.
+        return False
 
 
 def _ours(path: Path) -> bool:
