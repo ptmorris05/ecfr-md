@@ -1,19 +1,45 @@
 [project]
-name = "cfr-md"
+name = "ecfr-md"
 version = "0.1.0"
-description = "Download Code of Federal Regulations text from the eCFR API as Markdown."
+description = "Code of Federal Regulations text from the eCFR API as navigable Python objects and Markdown."
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.12"
+keywords = ["cfr", "ecfr", "regulations", "federal register", "markdown", "law"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Legal Industry",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Text Processing :: Markup :: Markdown",
+    "Typing :: Typed",
+]
 dependencies = [
     "cyclopts>=5.2.0",
-    "httpx2>=2.13.1",
+    "dateparser>=1.4.3",
+    "httpx2[http2]>=2.13.1",
     "pydantic>=2.14.0",
     "rich>=15.0.0",
     "tenacity>=9.2.1",
 ]
 
+[project.urls]
+Homepage = "https://github.com/ptmorris05/ecfr-md"
+Documentation = "https://github.com/ptmorris05/ecfr-md#readme"
+Repository = "https://github.com/ptmorris05/ecfr-md"
+Issues = "https://github.com/ptmorris05/ecfr-md/issues"
+Changelog = "https://github.com/ptmorris05/ecfr-md/blob/main/CHANGELOG.md"
+
 [project.scripts]
-cfr-md = "cfr_md.cli:main"
+ecfr-md = "ecfr_md.cli:main"
+
+[tool.uv.build-backend]
+# Also ship the changelog, the license once added, and the tests, which
+# distribution packagers run against the source distribution.
+source-include = ["CHANGELOG.md", "LICENSE*", "tests/**"]
 
 [build-system]
 requires = ["uv_build>=0.11.11,<0.12"]
@@ -21,7 +47,9 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "pyright>=1.1.414",
     "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
     "ruff>=0.17.0",
 ]
 
@@ -32,3 +60,14 @@ select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
 testpaths = ["tests"]
 addopts = ["-m", "not network", "--strict-markers"]
 markers = ["network: calls the live eCFR API (run with: pytest -m network)"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["ecfr_md"]
+
+[tool.pyright]
+include = ["src", "tests/typing"]
+pythonVersion = "3.12"
+
+[tool.coverage.report]
+# Abstract members have no body to run.
+exclude_also = ["@abstractmethod"]

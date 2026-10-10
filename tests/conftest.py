@@ -1,10 +1,12 @@
+import functools
+import xml.etree.ElementTree as ET
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import httpx2
 import pytest
 
-from cfr_md import ECFR, Settings
+from ecfr_md import ECFR, Settings, cli
 
 TITLES = {
     "titles": [
@@ -21,6 +23,35 @@ TITLES = {
     "meta": {"date": "2026-10-08", "import_in_progress": False},
 }
 
+# A small title outline: below the size at which text is fetched part by part.
+STRUCTURE = {
+    "identifier": "45",
+    "label": "Title 45—Public Welfare",
+    "type": "title",
+    "size": 1000,
+    "children": [
+        {
+            "identifier": "A",
+            "label": "Subtitle A—Department of Health and Human Services",
+            "type": "subtitle",
+            "children": [
+                {
+                    "identifier": "164",
+                    "label": "Part 164",
+                    "type": "part",
+                    "size": 5000,
+                },
+                {
+                    "identifier": "165",
+                    "label": "Part 165 [Reserved]",
+                    "type": "part",
+                    "reserved": True,
+                },
+            ],
+        }
+    ],
+}
+
 PART_XML = """<?xml version="1.0"?>
 <DIV5 N="164" TYPE="PART">
 <HEAD>PART 164—SECURITY AND PRIVACY</HEAD>
@@ -33,6 +64,44 @@ PART_XML = """<?xml version="1.0"?>
 <P>(i) See the <E T="04">Federal Register</E><SU>1</SU> * * *</P>
 <EXTRACT><P>“THIS NOTICE DESCRIBES HOW MEDICAL INFORMATION MAY BE USED.”</P></EXTRACT>
 <CITA TYPE="N">[78 FR 5692, Jan. 25, 2013]</CITA>
+</DIV8>
+<DIV8 N="164.104" TYPE="SECTION">
+<HEAD>§ 164.104 Paragraph nesting.</HEAD>
+<P>Introductory text belongs to no paragraph.</P>
+<P>(a) <I>Standard: Run in</I>—(1) <I>First.</I> One.</P>
+<P>(2) Two.</P>
+<P>(i) Roman one.</P>
+<P>(ii) Roman two.</P>
+<P>(A) Upper.</P>
+<P>(<I>1</I>) Italic one.</P>
+<P>(b)-(g) [Reserved]</P>
+<P>(h) Letter h.</P>
+<P>(i) Letter i, not roman one.</P>
+<P>(j) <I>Heading.</I> (1) Run in after a heading.</P>
+<CITA TYPE="N">[80 FR 1, Jan. 1, 2015]</CITA>
+</DIV8>
+<DIV8 N="164.106" TYPE="SECTION">
+<HEAD>§ 164.106 Examples and rare markup.</HEAD>
+<P>(a) <I>Rule.</I> The rule.</P>
+<P>(b) <I>Examples.</I> The following examples illustrate paragraph (a):</P>
+<P><I>Example 1.</I> (i) Facts. A plan.</P>
+<P>(ii) Conclusion. It complies.</P>
+<P><I>Example 2.</I> (i) Facts. Another plan.</P>
+<P>(c) <I>Other markup.</I> Applies from 2020.</P>
+<STARS/>
+<LDRWK><FL-2>Dividends</FL-2><LDRFIG>$10,000</LDRFIG></LDRWK>
+<SCOL2><LI>Asbestos.</LI><LI>Bauxite.</LI></SCOL2>
+<FP-2>1. Loans for equipment</FP-2>
+<FP-2>- not a list</FP-2>
+<P>Values below 5 &lt;Q&gt; and AT&amp;T&amp;copy;</P>
+</DIV8>
+<DIV8 N="164.108" TYPE="SECTION">
+<HEAD>§ 164.108 Definitions.</HEAD>
+<P><I>Term A</I> means:</P>
+<P>(1) One.</P>
+<P>(2) Two.</P>
+<P><I>Term B</I> means:</P>
+<P>(1) Uno.</P>
 </DIV8>
 </DIV6>
 <DIV9 N="Appendix A to Subpart C of Part 164" TYPE="APPENDIX">
@@ -73,6 +142,8 @@ class FakeAPI:
     def __call__(self, request: httpx2.Request) -> httpx2.Response:
         self.requests.append(request)
         route = self.routes.get(request.url.path)
+        if route is None and "/structure/" in request.url.path:
+            return httpx2.Response(200, json=STRUCTURE)
         if route is None:
             return httpx2.Response(404, text="null")
         return route(request)
@@ -81,17 +152,37 @@ class FakeAPI:
         return [r.url.path for r in self.requests]
 
 
+def full_text(request: httpx2.Request) -> httpx2.Response:
+    """Like the real endpoint: the requested section, or the whole part."""
+    section = request.url.params.get("section")
+    if section is None:
+        return httpx2.Response(200, text=PART_XML)
+    root = ET.fromstring(PART_XML)
+    found = next((d for d in root.iter() if d.get("N") == section), None)
+    if found is None:
+        return httpx2.Response(404, json={"error": "No matching content found."})
+    return httpx2.Response(200, content=ET.tostring(found, encoding="utf-8"))
+
+
 @pytest.fixture
 def api() -> FakeAPI:
     fake = FakeAPI()
     fake.json("/api/versioner/v1/titles.json", TITLES)
-    fake.text("/api/versioner/v1/full/2026-10-07/title-45.xml", PART_XML)
+    fake.routes["/api/versioner/v1/full/2026-10-07/title-45.xml"] = full_text
     return fake
+
+
+@pytest.fixture(autouse=True)
+def isolated_cache(tmp_path_factory, monkeypatch):
+    """Never touch the user's cache: anything defaulting to it uses a temp dir."""
+    directory = tmp_path_factory.mktemp("cache")
+    monkeypatch.setattr("ecfr_md.client.default_directory", lambda: directory)
+    return directory
 
 
 @pytest.fixture
 def settings() -> Settings:
-    return Settings(backoff_initial=0, backoff_max=0, max_attempts=3)
+    return Settings(backoff_initial=0, backoff_max=0, max_attempts=3, cache=False)
 
 
 @pytest.fixture
@@ -103,3 +194,15 @@ def ecfr(api: FakeAPI, settings: Settings):
 @pytest.fixture
 def part_xml() -> str:
     return PART_XML
+
+
+@pytest.fixture
+def run(api, monkeypatch):
+    """Run the CLI against the fake API and return its exit code."""
+    transport = httpx2.MockTransport(api)
+    monkeypatch.setattr(cli, "ECFR", functools.partial(ECFR, transport=transport))
+
+    def invoke(*tokens: str) -> int:
+        return cli.app.meta(list(tokens), result_action="return_value")
+
+    return invoke

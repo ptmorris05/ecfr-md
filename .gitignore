@@ -10,3 +10,10 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Example output
+examples/output/
+
+# Test coverage
+.coverage
+htmlcov/

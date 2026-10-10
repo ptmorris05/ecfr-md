@@ -1,36 +1,211 @@
-# cfr-md
+# ecfr-md
 
-Download Code of Federal Regulations text from the [eCFR API](https://www.ecfr.gov/developers/documentation/api/v1) as Markdown, from Python or the command line. Every API endpoint is also available as a typed SDK method and CLI command.
+Fetch U.S. federal regulations (CFR) from the [eCFR API](https://www.ecfr.gov/developers/documentation/api/v1) as Markdown or Python objects.
 
-## Markdown
+## Install
 
-Choose between two output layouts:
+The `ecfr-md` command needs Python 3.12 or newer. [uv](https://docs.astral.sh/uv/) installs Python for you, so it's the easiest way to start from nothing.
 
-- **`file`** (the default) produces one Markdown document. The CFR hierarchy is encoded as headings, relative to what you request: a part starts at `#`, its subparts are `##`, and so on.
-- **`tree`** produces nested directories. Each hierarchy level gets an `index.md` (heading, authority and source notes, plus links to its children), and each section or appendix gets its own file.
+**With uv** (Linux and macOS):
+
+```sh
+curl -LsSf https://astral.sh/uv/install.sh | sh   # install uv; then open a new terminal
+
+uvx ecfr-md get 45 CFR 164.502                     # run without installing
+uv tool install ecfr-md                            # or install the ecfr-md command
+ecfr-md get 45 CFR 164.502 -o 164.502.md
+```
+
+**With pipx:**
+
+```sh
+brew install pipx              # macOS (Homebrew)
+sudo apt install pipx          # Debian, Ubuntu
+sudo dnf install pipx          # Fedora
+pipx ensurepath                # then open a new terminal
+
+pipx install ecfr-md
+ecfr-md get 45 CFR 164.502 -o 164.502.md
+```
+
+pipx uses your system Python; if that's older than 3.12, use uv, or `pipx install --python python3.12 ecfr-md` if you have Python 3.12 installed.
+
+To update: `uv tool upgrade ecfr-md` or `pipx upgrade ecfr-md`. For use from Python: `uv add ecfr-md` or `pip install ecfr-md`.
+
+## Command line
+
+```sh
+ecfr-md get 45 CFR 164.502                       # print a section
+ecfr-md get "45 CFR 164.502(a)(1)"               # a paragraph (quote parentheses)
+ecfr-md get 45 CFR Part 164 -o hipaa.md          # save to one file
+ecfr-md get 45 CFR Part 164 --tree -o hipaa/     # one file per section
+ecfr-md get 45 CFR 164.502 --date 2020-01-01     # as of a date
+ecfr-md get --from list.txt -o out/              # one citation per line
+
+ecfr-md outline 45 CFR Part 164                  # table of contents, no text
+ecfr-md changes 45 CFR Part 164 --since 2024-01-01
+ecfr-md search "minimum necessary"               # matching sections
+ecfr-md search "minimum necessary" --save out/   # and save their text
+ecfr-md sync hipaa/                              # update saved files
+
+ecfr-md cache info
+ecfr-md cache clear
+```
+
+| Command | Does |
+| --- | --- |
+| `get CITATION` | Prints Markdown, or saves it with `-o FILE`. `--tree -o DIR` writes one file per section. `--from FILE -o DIR` takes one citation per line (`-` for stdin). `--date` for text as of a date. `--no-front-matter` leaves out the metadata header. |
+| `outline CITATION` | Prints the table of contents. `--depth N` limits levels. Part sizes are shown. |
+| `changes CITATION` | Lists changes to sections: when issued, when effective, and whether substantive, editorial or a removal. `--since` and `--until` take dates. |
+| `search QUERY` | Lists current sections that match. `--limit N` (default 20), `--all-versions`, `--save DIR`, plus the API's filters (`--agency-slugs`, `--date`, `--last-modified-after`, …). |
+| `sync PATH` | Updates a file, tree or directory saved by `get`, `search --save` or `--from`. Rewrites only files whose text changed, deletes files for sections that no longer exist, and leaves other files alone. |
+| `cache info`, `cache clear` | Shows or deletes the local cache. |
+| `admin …`, `search …`, `versioner …` | One subcommand per API endpoint, printing its JSON. See [API](#api). |
+
+`outline` and `changes` take `--json` for JSON output. A citation can be one quoted string or separate words; keywords such as `--part 164` work too. Without `-o`, `get` prints formatted text in a terminal and plain Markdown when piped.
+
+Options that go before the command:
+
+| Option | Environment variable | Default |
+| --- | --- | --- |
+| `-q`, `--quiet`: no progress or summary, only warnings and errors | `ECFR_MD_QUIET` | off |
+| `-v`, `--verbose`: log every request | `ECFR_MD_VERBOSE` | off |
+| `--no-cache`, `--cache-dir PATH`, `--cache-max-age SECONDS` | `ECFR_MD_CACHE`, `ECFR_MD_CACHE_DIR`, `ECFR_MD_CACHE_MAX_AGE` | on, user cache directory |
+| `--user-agent TEXT`, `--headers.NAME VALUE` | `ECFR_MD_USER_AGENT`, `ECFR_MD_HEADERS` | `ecfr-md/<version>` |
+| `--rate-limit N`: requests per second | `ECFR_MD_RATE_LIMIT` | none |
+| `--concurrency N`: parts fetched at once | `ECFR_MD_CONCURRENCY` | 4 |
+| `--timeout`, `--max-attempts`, `--backoff-initial`, `--backoff-max` | `ECFR_MD_…` | 60 s, 5, 1 s, 60 s |
+
+While it runs, `ecfr-md` shows on stderr what it is fetching and as of which date, a bar per download, progress through parts for large titles, retries and rate limiting, and a summary at the end.
+
+Exit codes: `0` success, `1` API, network or file error, `2` invalid usage.
+
+`ecfr-md COMMAND --help` lists every option.
+
+## Python
 
 ```python
-from cfr_md import ECFR
+from ecfr_md import ECFR
 
 with ECFR() as ecfr:
-    text = ecfr.markdown(45, part="164")  # str
-    ecfr.save(45, "hipaa.md", part="164")  # one file
-    ecfr.save(45, "hipaa/", part="164", layout="tree")  # directory tree
-    files = ecfr.markdown_tree(45, part="164")  # {PurePosixPath: str}
-    old = ecfr.markdown(45, section="164.502", date="2020-01-01")  # point in time
+    section = ecfr.get("45 CFR 164.502", date="2020-01-01")
+    outline = ecfr.outline("45 CFR Part 164")
+    changes = ecfr.changes("45 CFR Part 164", since="2024-01-01")
+    nodes = ecfr.get_many(["45 CFR 164.502", "45 CFR 164.506"])
+    ecfr.sync("hipaa/")
+
+section["(a)(1)"].text  # one paragraph
+section.save("164.502.md")  # or save(..., tree=True): one file per section
+```
+
+- Citations down to the paragraph: `45 CFR 164.502(a)(1)(i)`
+- Text as of any date the eCFR has (2017 on)
+- All text from the source is kept; a nightly test checks this
+- Saved files record the citation, date, source URL and retrieval time
+- Typed methods for every eCFR API endpoint
+
+## Citations
+
+| Citation | Gets |
+| --- | --- |
+| `45`, `Title 45` | Title |
+| `45 CFR Subtitle A Chapter I Subchapter C` | Subtitle, chapter, subchapter |
+| `45 CFR 164`, `45 CFR Part 164` | Part |
+| `45 CFR Part 164 Subpart E` | Subpart |
+| `45 CFR 164.502`, `45 C.F.R. § 164.502` | Section |
+| `45 CFR 164.502(a)(1)(i)(A)` | Paragraph |
+| `45 CFR Appendix A to Subpart C of Part 164`, `12 CFR Supplement I to Part 1026` | Appendix, supplement, table, exhibit, etc. |
+
+Case, `§`, commas and periods in "C.F.R." don't matter. Keywords also work, alone or with a citation:
+
+```python
+ecfr.get(45, part="164", subpart="E")
 ```
 
 ```sh
-cfr-md markdown 45 --part 164                     # print to stdout
-cfr-md markdown 45 --part 164 -o hipaa.md
-cfr-md markdown 45 --part 164 --layout tree -o hipaa/
+ecfr-md get 45 --part 164 --subpart E
 ```
 
-Hierarchy filters are `subtitle`, `chapter`, `subchapter`, `part`, `subpart`, `section` and `appendix`. When `date` is omitted, the client uses the title's most recent available date.
+In a shell, quote citations that contain parentheses.
 
-## API coverage
+## Dates
 
-The SDK and CLI follow the API's three services, with one method or command per endpoint:
+Without a date you get the latest text. Dates can be `date` or `datetime` objects, objects with a `.date()` method, or strings such as `2020-01-01`, `Jan 1 2020`, `1/2/2020` (month first), `March 2020` (the 1st), `2020` (January 1) or `last year`. Invalid ISO dates such as `2020-13-01` raise an error. A date with no text raises `DateOutOfRangeError`, which gives the available range.
+
+## Saving
+
+```python
+ecfr.save("45 CFR Part 164", "hipaa.md")  # one file
+ecfr.save("45 CFR Part 164", "hipaa/", tree=True)  # directories
+```
+
+```sh
+ecfr-md get 45 CFR Part 164 -o hipaa.md
+ecfr-md get 45 CFR Part 164 --tree -o hipaa/
+```
+
+- One file: headings follow the hierarchy, starting at `#` for what you asked for. If the path is an existing directory, the file is named after the citation, e.g. `45-cfr-164.502.md`.
+- Tree: a directory per level, each with an `index.md` (heading, notes, links to children), and one file per section or appendix.
+
+Each file starts with YAML front matter. Turn it off with `front_matter=False` or `--no-front-matter`.
+
+```yaml
+---
+citation: "45 CFR 164.502"
+heading: "§ 164.502 Uses and disclosures of protected health information: General rules."
+date: "2026-10-07"
+source: "https://www.ecfr.gov/on/2026-10-07/title-45/section-164.502"
+api: "https://www.ecfr.gov/api/versioner/v1/full/2026-10-07/title-45.xml?section=164.502"
+retrieved: "2026-10-09T17:02:11+00:00"
+generator: "ecfr-md 0.1.0"
+disclaimer: "The eCFR is an editorial compilation of CFR material and Federal Register amendments. It is not an official legal edition of the CFR."
+---
+```
+
+`ecfr.save` processes the XML as it reads it from disk, so large titles don't need to fit in memory. The API times out on the largest titles (e.g. Title 40), so text above the part level over 50 MB is fetched one part at a time and joined. Files are written to a temporary name and renamed.
+
+## Navigating
+
+`ecfr.get` makes one request and returns a node (`Title`, `Subtitle`, `Chapter`, `Subchapter`, `Part`, `Subpart`, `SubjectGroup`, `Section`, `Appendix` or `Paragraph`). Navigating it makes no further requests.
+
+```python
+part = ecfr.get("45 CFR Part 164")
+
+for subpart in part:  # children
+    print(subpart.identifier, subpart.heading)
+
+part[0]  # first child
+part["Subpart E"], part["§ 164.512"]  # by identifier, at any depth
+part["164.512(k)(1)(i)"]  # paragraphs
+part["45 CFR 164.512(k)(1)"]  # citations
+part.get("164.999")  # None if missing
+part.iter("section")  # all sections
+part.find(level="appendix")  # first match
+
+paragraph = part["164.512(k)(1)(i)"]
+paragraph.citation  # '45 CFR 164.512(k)(1)(i)'
+paragraph.heading  # 'Armed Forces personnel'
+paragraph.text  # its own Markdown
+paragraph.parent, paragraph.section, paragraph.ancestors
+```
+
+Nodes have `level`, `identifier`, `heading`, `citation`, `hierarchy`, `date`, `provenance`, `parent`, `children`, `to_markdown()`, `to_markdown_tree()` and `save()`.
+
+If more than one node matches a key, `node[key]` raises `AmbiguousNodeError` with the matches in `.candidates`. `find()` returns the first match.
+
+### Paragraphs
+
+The XML lists a section's paragraphs flat. They are nested by marker: (a), (1), (i), (A), then italic (*1*) and (*i*). Markers that could be a letter or a roman numeral, like (i), are decided by what comes before. Also handled:
+
+- run-in children: `(k) Standard—(1) Military—(i) …`
+- reserved ranges: `(b)-(d) [Reserved]`
+- worked examples (`Example 1. (i) Facts…`), which restart numbering and are kept with the paragraph they belong to
+
+Some sections don't follow the numbering rules, such as definitions that number items under each term, and the vehicle safety standards in 49 CFR Part 571, which number paragraphs S1, S4.1 and so on (these aren't split into paragraphs). `Section.paragraph_issues` lists repeats and gaps. `Section.to_markdown()` renders the source as-is either way.
+
+## API
+
+One method and one command per endpoint:
 
 | SDK | CLI | Endpoint |
 | --- | --- | --- |
@@ -50,14 +225,34 @@ The SDK and CLI follow the API's three services, with one method or command per 
 | `ecfr.versioner.versions(t, ...)` | `versioner versions` | `/api/versioner/v1/versions/title-{t}.json` |
 | `ecfr.versioner.full(t, ...)` | `versioner full` | `/api/versioner/v1/full/{date}/title-{t}.xml` |
 
-JSON endpoints return pydantic models, and fields added to the API later are kept in `model.model_extra`. In the CLI, JSON endpoints print the API's JSON and `versioner full` prints the raw XML. Run `cfr-md COMMAND --help` for every option.
+JSON endpoints return pydantic models. Fields the API adds later are kept in `model.model_extra`. `ecfr_md.load(xml, title=45)` builds nodes from XML you already have. `ecfr-md COMMAND --help` lists options.
+
+
+## Fewer requests
+
+ecfr-md avoids requests it doesn't need:
+
+- **Cache, on by default.** Downloaded text is kept in the user cache directory (`~/Library/Caches/ecfr-md` on macOS, `~/.cache/ecfr-md` on Linux) and reused until the eCFR changes it. Every change the eCFR makes, including corrections to past dates, gets an issue date. To check a stored copy, ecfr-md reads the title list (one small request, reused for 5 minutes); only if the title has changed since the copy was made does it request the list of versions issued since, once per title. Text that hasn't changed isn't downloaded again. Titles still being updated aren't stored.
+- **Large titles are updated part by part.** When a large title changes, only the parts that changed are downloaded again.
+- **Several citations, one request.** `ecfr.get_many([...])` and `ecfr-md get --from list.txt` fetch sections in the same small part (under 2 MB) with one request.
+- **One connection.** Requests share one HTTP/2 connection and ask for gzip, which the API sends about 5× smaller.
+
+```sh
+ecfr-md cache info      # where the cache is and its size
+ecfr-md cache clear
+ecfr-md --no-cache get 45 CFR 164.502
+```
+
+```python
+nodes = ecfr.get_many(["45 CFR 164.502", "45 CFR 164.506", "45 CFR 164.508"])
+```
 
 ## Configuration
 
-Use `Settings` in Python. On the command line, use options placed before the command, or `CFR_MD_*` environment variables:
+`Settings` in Python; options before the command or `ECFR_MD_*` environment variables on the command line.
 
 ```python
-from cfr_md import ECFR, Settings
+from ecfr_md import ECFR, Settings
 
 ECFR(
     Settings(
@@ -67,37 +262,65 @@ ECFR(
         max_attempts=5,
         backoff_initial=1,
         backoff_max=60,
-        rate_limit=2,
+        rate_limit=None,
+        concurrency=4,
+        cache=True,
+        cache_dir=None,
+        cache_max_age=None,
     )
 )
 ```
 
 ```sh
-cfr-md --user-agent "my-app/1.0" --headers.From me@example.com --rate-limit 2 markdown 45
-CFR_MD_USER_AGENT="my-app/1.0" CFR_MD_RATE_LIMIT=2 cfr-md markdown 45
+ecfr-md --user-agent "my-app/1.0" --rate-limit 2 get 45
+ECFR_MD_USER_AGENT="my-app/1.0" ecfr-md get 45
 ```
 
-Retries (via tenacity) cover connection failures, timeouts, 429 and 5xx responses. They use exponential backoff with jitter and honour `Retry-After`. `rate_limit` caps requests per second across threads.
+- Retries: connection errors, timeouts, 429 and 5xx, with exponential backoff and jitter. `Retry-After` is used when present.
+- `rate_limit`: maximum requests per second (default: none). When the API answers 429, the rate is halved and every request pauses; it recovers gradually as requests succeed.
+- `concurrency`: parts fetched at once for large titles.
+- `cache_dir`: where the cache lives; `cache_max_age` (seconds) forces a fresh download of older copies.
+- `ECFRWarning` is issued while the eCFR is updating a title.
+
+## Limitations
+
+- The eCFR is an editorial compilation, not an official legal edition of the CFR. Saved files say so in their front matter.
+- Text is available from the eCFR's first versions (late 2016/2017) to its latest date; other dates raise `DateOutOfRangeError`.
+- Paragraphs are nested from their markers. Sections that don't follow the usual (a), (1), (i), (A) scheme are listed in `Section.paragraph_issues`; lookups in them may be ambiguous. Examples: numbered items under unmarked definitions, and 49 CFR Part 571, which numbers paragraphs S1, S4.1 and so on (those aren't split into paragraphs).
+- The full-text endpoint ignores `subchapter` unless `chapter` is also given.
+- Without `-o`, text over 2 MB is printed as plain Markdown, not formatted.
+
+## Public API
+
+Everything exported from `ecfr_md` (`ECFR`, `Settings`, `Citation`, the node classes, `Level`, `load`, `Progress`, `SyncResult`, the search enums and typed dicts, and the exceptions), plus the response models in `ecfr_md.models`. Other modules are internal. The `ecfr-md` command and its options are public too.
 
 ## Errors
 
-Every exception derives from `cfr_md.ECFRError`:
+All exceptions derive from `ecfr_md.ECFRError`.
 
-| Exception | When |
+| Exception | Raised when |
 | --- | --- |
-| `InvalidParameterError` | An argument fails validation before any request is sent (also a `ValueError`). |
+| `InvalidParameterError` | An argument is invalid. Raised before any request. Also a `ValueError`. |
+| `InvalidCitationError` | A citation can't be parsed or conflicts with a keyword. |
+| `DateOutOfRangeError` | There is no text for the date. |
 | `TitleNotFoundError` | The title doesn't exist or is reserved. |
-| `ECFRConnectionError` / `ECFRTimeoutError` | The API is unreachable, after retries. |
-| `APIError` → `BadRequestError`, `NotFoundError`, `RateLimitError`, `ServerError` | An HTTP error. Carries `status_code`, `url`, the server's `detail` message and `retry_after`. |
-| `ResponseFormatError` | The response doesn't match the expected JSON or XML. |
+| `NodeNotFoundError` | A lookup matches nothing. Also a `KeyError`. |
+| `AmbiguousNodeError` | A lookup matches more than one node. |
+| `ECFRConnectionError`, `ECFRTimeoutError` | The API can't be reached, after retries. |
+| `APIError`: `BadRequestError`, `NotFoundError`, `RateLimitError`, `ServerError` | HTTP error. Has `status_code`, `url`, `detail`, `retry_after`. |
+| `ResponseFormatError` | A response isn't the expected JSON or XML. |
 
-CLI exit codes are `0` for success, `1` for API, network or output errors, and `2` for invalid usage.
+## Examples
+
+[`examples/`](https://github.com/ptmorris05/ecfr-md/tree/main/examples): [quickstart](https://github.com/ptmorris05/ecfr-md/blob/main/examples/01_quickstart.py), [navigating](https://github.com/ptmorris05/ecfr-md/blob/main/examples/02_navigate.py), [comparing dates](https://github.com/ptmorris05/ecfr-md/blob/main/examples/03_point_in_time.py), [search](https://github.com/ptmorris05/ecfr-md/blob/main/examples/04_search.py), [CLI](https://github.com/ptmorris05/ecfr-md/blob/main/examples/cli.sh).
 
 ## Development
 
 ```sh
 uv sync
 uv run pytest             # offline tests
-uv run pytest -m network  # live smoke tests against ecfr.gov
+uv run pytest -m network  # tests against ecfr.gov
 uv run ruff format && uv run ruff check
 ```
+
+CI runs on Linux, macOS and Windows with Python 3.12–3.14. A nightly job runs the network tests and opens an issue if they fail. Pushing a `v*` tag publishes to PyPI. Changes are listed in [CHANGELOG.md](https://github.com/ptmorris05/ecfr-md/blob/main/CHANGELOG.md).

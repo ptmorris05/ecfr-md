@@ -1,7 +1,7 @@
 """Response models for the eCFR API.
 
-Unknown fields are kept (``extra="allow"``) so new API fields never break
-parsing; they are reachable through ``model.model_extra``.
+Unknown fields are kept (``extra="allow"``), so fields the API adds later
+don't cause errors; they are in ``model.model_extra``.
 """
 
 from __future__ import annotations
@@ -61,9 +61,9 @@ class Correction(Model):
     cfr_references: list[CorrectionReference]
     corrective_action: str
     error_corrected: dt.date
-    error_occurred: dt.date
+    error_occurred: dt.date | None = None
     fr_citation: str
-    position: int
+    position: int | None = None
     display_in_toc: bool
     title: int
     year: int
@@ -186,13 +186,16 @@ class Titles(Model):
 
 
 class Node(Model):
-    """A node of a title's table of contents (title, part, section, ...)."""
+    """A node of a title's table of contents (title, part, section, ...).
 
-    identifier: str
+    Heading-only nodes (``type`` like ``"hed1"``) have no identifier.
+    """
+
+    identifier: str | None = None
     label: str
-    label_level: str
-    label_description: str
-    reserved: bool
+    label_level: str | None = None
+    label_description: str | None = None
+    reserved: bool = False
     type: str
     size: int | None = None
     volumes: list[str] = []

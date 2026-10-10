@@ -13,15 +13,45 @@ import httpx2
 
 
 class ECFRError(Exception):
-    """Base class for all cfr-md errors."""
+    """Base class for all ecfr-md errors."""
 
 
 class InvalidParameterError(ECFRError, ValueError):
     """A request parameter failed validation before being sent."""
 
 
+class InvalidCitationError(InvalidParameterError):
+    """A citation such as ``45 CFR 164.502`` could not be understood."""
+
+
+class DateOutOfRangeError(InvalidParameterError):
+    """The requested date is outside the range the eCFR has content for."""
+
+
 class TitleNotFoundError(ECFRError, LookupError):
     """The requested CFR title does not exist or has no content."""
+
+
+class AmbiguousNodeError(ECFRError, LookupError):
+    """Several nodes match a lookup.
+
+    ``candidates`` holds every match, in document order.
+    """
+
+    def __init__(self, message: str, candidates: list) -> None:
+        super().__init__(message)
+        self.candidates = candidates
+
+
+class ECFRWarning(UserWarning):
+    """The data may be incomplete or in flux, e.g. during an eCFR import."""
+
+
+class NodeNotFoundError(ECFRError, KeyError):
+    """No child, descendant or paragraph matches the requested identifier."""
+
+    def __str__(self) -> str:  # KeyError would otherwise quote the message.
+        return str(self.args[0]) if self.args else ""
 
 
 class ECFRConnectionError(ECFRError):
@@ -92,8 +122,11 @@ def _error_detail(response: httpx2.Response) -> str:
     try:
         body = json.loads(text)
     except ValueError:
-        match = re.search(r"<error>(.*?)</error>", text, re.S)
-        return match.group(1).strip() if match else text[:500]
+        # XML errors carry <error>; HTML error pages (from the proxy) a <title>.
+        match = re.search(r"<(error|title|h1)>(.*?)</\1>", text, re.S | re.I)
+        if match:
+            return " ".join(match[2].split())
+        return text[:500] if not text.startswith("<") else ""
     return "; ".join(_messages(body))
 
 
