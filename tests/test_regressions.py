@@ -58,7 +58,7 @@ def test_sync_skips_other_index_files(ecfr, tmp_path):
     (tmp_path / "docs").mkdir()
     (tmp_path / "docs" / "index.md").write_text("# My docs\n")
     assert len(ecfr.sync(tmp_path).unchanged) == 7
-    assert (tmp_path / "docs" / "index.md").read_text() == "# My docs\n"
+    assert (tmp_path / "docs" / "index.md").read_text(encoding="utf-8") == "# My docs\n"
 
 
 def test_a_long_retry_after_does_not_stall_every_request(api):

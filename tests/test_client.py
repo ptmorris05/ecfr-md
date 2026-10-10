@@ -1,5 +1,6 @@
 import datetime as dt
 import time
+from pathlib import PurePosixPath
 
 import httpx2
 import pytest
@@ -83,7 +84,7 @@ def test_save_streams_the_same_markdown_as_get(ecfr, tmp_path):
     tree = ecfr.save(45, str(tmp_path / "tree"), tree=True, part="164")
     assert len(tree) == 7
     assert node.to_markdown_tree().keys() == {
-        p.relative_to(tmp_path / "tree") for p in tree
+        PurePosixPath(p.relative_to(tmp_path / "tree").as_posix()) for p in tree
     }
     assert not list(tmp_path.rglob("*.part"))
 
@@ -417,7 +418,8 @@ def test_rate_limit_spaces_requests(api):
         start = time.monotonic()
         for _ in range(3):
             ecfr.versioner.titles()
-    assert time.monotonic() - start >= 0.1  # Two gaps of 1/20s.
+    # Two gaps of 1/20s, less one tick of the Windows clock (about 16 ms).
+    assert time.monotonic() - start >= 0.08
 
 
 def test_large_titles_are_fetched_part_by_part(ecfr, api, monkeypatch):

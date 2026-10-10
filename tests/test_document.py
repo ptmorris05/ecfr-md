@@ -226,7 +226,9 @@ def test_save_file_directory_and_tree(part, tmp_path: Path):
     meta = front_matter(section.read_text(encoding="utf-8"))
     assert meta["citation"] == "45 CFR 164.104"
     assert meta["heading"] == "§ 164.104 Paragraph nesting."
-    index = front_matter((tmp_path / "tree/part-164/subpart-a/index.md").read_text())
+    index = front_matter(
+        (tmp_path / "tree/part-164/subpart-a/index.md").read_text(encoding="utf-8")
+    )
     assert index["citation"] == "45 CFR Part 164 Subpart A"
 
     paragraph = part["164.104(a)"]
@@ -236,9 +238,11 @@ def test_save_file_directory_and_tree(part, tmp_path: Path):
 
 def test_subtree_save_keeps_ancestors_in_metadata(part, tmp_path: Path):
     part["A"].save(tmp_path, tree=True)
-    meta = front_matter((tmp_path / "subpart-a/section-164.102.md").read_text())
+    meta = front_matter(
+        (tmp_path / "subpart-a/section-164.102.md").read_text(encoding="utf-8")
+    )
     assert meta["citation"] == "45 CFR 164.102"
-    index = front_matter((tmp_path / "subpart-a/index.md").read_text())
+    index = front_matter((tmp_path / "subpart-a/index.md").read_text(encoding="utf-8"))
     assert index["citation"] == "45 CFR Part 164 Subpart A"
 
 

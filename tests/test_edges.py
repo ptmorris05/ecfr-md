@@ -368,7 +368,9 @@ def test_versioner_latest_date(run, capsys):
 def test_sync_lists_what_changed(run, capsys, tmp_path):
     assert run("get", "45", "CFR", "164", "--tree", "-o", str(tmp_path)) == 0
     edited = next(p for p in tmp_path.rglob("*.md") if p.name != "index.md")
-    edited.write_text(edited.read_text().replace("\n\n", "\n\nEdited.\n\n", 1))
+    edited.write_text(
+        edited.read_text(encoding="utf-8").replace("\n\n", "\n\nEdited.\n\n", 1)
+    )
     capsys.readouterr()
     assert run("sync", str(tmp_path)) == 0
     assert "~ " in capsys.readouterr().err

@@ -93,7 +93,9 @@ def test_sync_rewrites_only_what_changed(ecfr, api, part_xml, tmp_path):
     result = ecfr.sync(tmp_path)
     assert sorted(p.name for p in result.changed) == ["index.md", "section-164.104.md"]
     assert [p.name for p in result.removed] == ["section-164.108.md"]
-    assert "amended" in (tmp_path / "part-164/subpart-a/section-164.104.md").read_text()
+    assert "amended" in (tmp_path / "part-164/subpart-a/section-164.104.md").read_text(
+        encoding="utf-8"
+    )
     assert mine.exists()  # Files ecfr-md didn't write are left alone.
 
 
