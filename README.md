@@ -4,17 +4,18 @@ Fetch U.S. federal regulations (CFR) from the [eCFR API](https://www.ecfr.gov/de
 
 ## Install
 
-The `ecfr-md` command needs Python 3.12 or newer. [uv](https://docs.astral.sh/uv/) installs Python for you, so it's the easiest way to start from nothing.
+ecfr-md isn't on PyPI; install it from GitHub. It needs Python 3.12 or newer, and [git](https://git-scm.com/downloads). [uv](https://docs.astral.sh/uv/) installs Python for you, so it's the easiest way to start from nothing.
 
 **With uv** (Linux and macOS):
 
 ```sh
 curl -LsSf https://astral.sh/uv/install.sh | sh   # install uv; then open a new terminal
 
-uvx ecfr-md get 45 CFR 164.502                     # run without installing
-uv tool install ecfr-md                            # or install the ecfr-md command
+uv tool install git+https://github.com/ptmorris05/ecfr-md
 ecfr-md get 45 CFR 164.502 -o 164.502.md
 ```
+
+To try it without installing: `uvx --from git+https://github.com/ptmorris05/ecfr-md ecfr-md get 45 CFR 164.502`.
 
 **With pipx:**
 
@@ -24,13 +25,22 @@ sudo apt install pipx          # Debian, Ubuntu
 sudo dnf install pipx          # Fedora
 pipx ensurepath                # then open a new terminal
 
-pipx install ecfr-md
+pipx install git+https://github.com/ptmorris05/ecfr-md
 ecfr-md get 45 CFR 164.502 -o 164.502.md
 ```
 
-pipx uses your system Python; if that's older than 3.12, use uv, or `pipx install --python python3.12 ecfr-md` if you have Python 3.12 installed.
+pipx uses your system Python; if that's older than 3.12, use uv, or add `--python python3.12` if you have Python 3.12 installed.
 
-To update: `uv tool upgrade ecfr-md` or `pipx upgrade ecfr-md`. For use from Python: `uv add ecfr-md` or `pip install ecfr-md`.
+These install the latest code on `main`. For a release, add its tag: `git+https://github.com/ptmorris05/ecfr-md@v0.1.0`.
+
+To update: `uv tool upgrade ecfr-md` or `pipx upgrade ecfr-md`.
+
+For use from Python:
+
+```sh
+uv add git+https://github.com/ptmorris05/ecfr-md
+pip install git+https://github.com/ptmorris05/ecfr-md
+```
 
 ## Command line
 
@@ -323,4 +333,4 @@ uv run pytest -m network  # tests against ecfr.gov
 uv run ruff format && uv run ruff check
 ```
 
-CI runs on Linux, macOS and Windows with Python 3.12–3.14. A nightly job runs the network tests and opens an issue if they fail. Pushing a `v*` tag publishes to PyPI. Changes are listed in [CHANGELOG.md](https://github.com/ptmorris05/ecfr-md/blob/main/CHANGELOG.md).
+CI runs on Linux, macOS and Windows with Python 3.12–3.14. A nightly job runs the network tests and opens an issue if they fail. Changes are listed in [CHANGELOG.md](https://github.com/ptmorris05/ecfr-md/blob/main/CHANGELOG.md).
