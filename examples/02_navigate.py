@@ -3,10 +3,10 @@
 Run: uv run python examples/02_navigate.py
 """
 
-from ecfr_md import ECFR, Level
+import ecfr_md
+from ecfr_md import Level
 
-with ECFR() as ecfr:
-    part = ecfr.get("45 CFR Part 164")  # One request; everything below is local.
+part = ecfr_md.get("45 CFR Part 164")  # One request; everything below is local.
 
 print(repr(part))
 
@@ -33,3 +33,7 @@ print("  in section:", exception.section.citation)
 for paragraph in section.iter("paragraph"):
     if "law enforcement" in paragraph.heading.lower():
         print(f"  {paragraph.citation}: {paragraph.heading}")
+
+# The table of contents navigates the same way, without downloading text.
+outline = ecfr_md.outline("45 CFR Part 164")
+print("\n" + str(outline["Subpart D"]))

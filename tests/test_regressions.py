@@ -69,7 +69,7 @@ def test_a_long_retry_after_does_not_stall_every_request(api):
         httpx2.Response(200, text="<DIV5 N='164'/>"),
     )
     with ECFR(settings, transport=httpx2.MockTransport(api)) as ecfr:
-        ecfr.versioner.full(45, date="2026-10-07")
+        ecfr.api.versioner.full(45, date="2026-10-07")
         assert ecfr._throttle._paused_until - __import__("time").monotonic() < 1
 
 
@@ -142,7 +142,7 @@ def test_retried_connection_errors_leave_no_stale_progress(api, settings):
         return api(request)
 
     with ECFR(settings, transport=httpx2.MockTransport(flaky), progress=terminal) as e:
-        e.versioner.full(45, date="2026-10-07", part="164")
+        e.api.versioner.full(45, date="2026-10-07", part="164")
     assert terminal._tasks == {}
     assert terminal._bars.tasks == []  # No bar left behind on screen.
 

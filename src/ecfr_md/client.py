@@ -1,7 +1,8 @@
 """Client for the eCFR API (https://www.ecfr.gov/developers/documentation/api/v1).
 
-The three API services map onto ``ECFR.admin``, ``ECFR.search`` and
-``ECFR.versioner``; each method calls one endpoint.
+``ECFR.get``, ``save``, ``outline``, ``changes``, ``search`` and ``sync`` do
+the common tasks. The three API services map onto ``ECFR.api.admin``,
+``ECFR.api.search`` and ``ECFR.api.versioner``; each method calls one endpoint.
 """
 
 import datetime as dt
@@ -18,11 +19,11 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Self, Unpack
+from typing import Annotated, Literal, Self, Unpack, overload
 from xml.sax.saxutils import escape
 
 import httpx2
-from pydantic import BaseModel, ValidationError, validate_call
+from pydantic import BaseModel, Field, ValidationError, validate_call
 from pydantic_core import ErrorDetails
 from tenacity import (
     RetryCallState,
@@ -66,7 +67,8 @@ from ecfr_md.params import (
     to_date,
 )
 from ecfr_md.progress import Progress
-from ecfr_md.sync import SyncResult, sync
+from ecfr_md.results import Change, Match, Matches, Outline
+from ecfr_md.syncing import SyncResult, sync
 
 ADMIN = "/api/admin/v1"
 SEARCH = "/api/search/v1"
@@ -78,6 +80,7 @@ logger = logging.getLogger("ecfr_md")
 
 TITLES_TTL = 300  # Seconds to reuse the title list within a session.
 GROUP_BELOW = 2_000_000  # get_many fetches a whole part if it's smaller than this.
+MAX_PER_PAGE = 1000  # Search results per request.
 
 # Structure node types above the part level, as XML division tags.
 DIVISIONS = {
@@ -207,7 +210,7 @@ class ECFR:
         )
         self._throttle = Throttle(settings.rate_limit)
         directory = settings.cache_dir or default_directory()
-        self.store = Store(
+        self._store = Store(
             directory if settings.cache else None, settings.cache_max_age
         )
         # Kept for the session: the title list (briefly), outlines, change lists.
@@ -222,9 +225,7 @@ class ECFR:
             before_sleep=self._log_retry,
             reraise=True,
         )
-        self.admin = Admin(self)
-        self.search = Search(self)
-        self.versioner = Versioner(self)
+        self.api = API(self)
 
     def __enter__(self) -> Self:
         return self
@@ -260,7 +261,7 @@ class ECFR:
             the most recent available.
         """
         cited = Citation.parse(citation).with_hierarchy(hierarchy)
-        date = _day(date) or self.versioner.latest_date(cited.title)
+        date = _day(date) or self.api.versioner.latest_date(cited.title)
         with self._full_text(cited, date) as download:
             node = load(
                 download.path.read_bytes(),
@@ -274,7 +275,7 @@ class ECFR:
             return node
         paragraph = node.get(str(cited))
         if paragraph is None:
-            raise NodeNotFoundError(f"{cited} does not exist on {date}")
+            raise NodeNotFoundError(_missing_paragraph(node, cited, date))
         return paragraph
 
     @validated
@@ -285,11 +286,12 @@ class ECFR:
         *,
         date: DateLike | None = None,
         **hierarchy: Unpack[Hierarchy],
-    ) -> models.Node:
+    ) -> Outline:
         """The table of contents of a title or any part of it, without its text.
 
-        Uses the structure endpoint, which is much smaller than the text and is
-        kept in the cache.
+        Index it like a node (``outline["Subpart E"]``) or print it. Uses the
+        structure endpoint, which is much smaller than the text and is kept in
+        the cache.
 
         Parameters
         ----------
@@ -299,8 +301,9 @@ class ECFR:
             Point-in-time date. Defaults to the most recent available.
         """
         cited = Citation.parse(citation).with_hierarchy(hierarchy)
-        date = _day(date) or self.versioner.latest_date(cited.title)
-        return _locate(self._outline(cited.title, date), cited)
+        date = _day(date) or self.api.versioner.latest_date(cited.title)
+        node = _locate(self._outline(cited.title, date), cited)
+        return Outline.build(node, cited.title, cited.hierarchy)
 
     @validated
     def changes(
@@ -311,13 +314,13 @@ class ECFR:
         since: DateLike | None = None,
         until: DateLike | None = None,
         **hierarchy: Unpack[Hierarchy],
-    ) -> list[models.ContentVersion]:
+    ) -> list[Change]:
         """Changes the eCFR has issued to a title or any part of it, newest first.
 
-        Each change is a version of a section or appendix: when it took effect
-        (``date``), when the eCFR issued it (``issue_date``), and whether it
-        was ``substantive`` or ``removed`` it. Uses the versions endpoint; no
-        text is downloaded.
+        Each change is a version of a section or appendix: its ``citation``,
+        when the eCFR ``issued`` it, when it took effect (``effective``), and
+        its ``kind``: ``"substantive"``, ``"editorial"`` or ``"removed"``.
+        Uses the versions endpoint; no text is downloaded.
 
         Parameters
         ----------
@@ -332,7 +335,7 @@ class ECFR:
         versions: list[models.ContentVersion] = []
         page, pages = 1, 1
         while page <= pages:
-            result = self.versioner.versions(
+            result = self.api.versioner.versions(
                 cited.title,
                 issue_date_gte=since,
                 issue_date_lte=until,
@@ -343,14 +346,67 @@ class ECFR:
             pages = _pages(result)
             page += 1
         by_section = sorted(versions, key=lambda v: v.identifier)
-        return sorted(by_section, key=lambda v: (v.issue_date, v.date), reverse=True)
+        newest = sorted(by_section, key=lambda v: (v.issue_date, v.date), reverse=True)
+        return [Change.from_version(v) for v in newest]
+
+    @validated
+    def search(
+        self,
+        query: str,
+        /,
+        *,
+        limit: Annotated[int, Field(ge=1)] = 20,
+        phrase: bool = True,
+        all_versions: bool = False,
+        **filters: Unpack[SearchFilters],
+    ) -> Matches:
+        """Sections and appendices that match a search, best first.
+
+        Each match has a ``citation`` to pass to :meth:`get`, a ``heading``
+        and an ``excerpt``; ``matches.total`` is how many the eCFR found.
+
+        Parameters
+        ----------
+        query: str
+            Words to search for in headings and text.
+        limit: int
+            Maximum number of matches to return.
+        phrase: bool
+            Match the words as a phrase, in order. With ``False``, the words
+            can appear anywhere. Ignored if the query contains quotes, which
+            the eCFR reads as phrases.
+        all_versions: bool
+            Include past versions of sections, not only current text.
+        """
+        if phrase and '"' not in query and len(query.split()) > 1:
+            query = f'"{query}"'
+        per_page = min(MAX_PER_PAGE, limit * 3)  # Duplicates are dropped below.
+        matches: list[Match] = []
+        seen: set[str] = set()
+        page = 1
+        while True:
+            found = self.api.search.results(
+                query, per_page=per_page, page=page, **filters
+            )
+            for result in found.results:
+                match = Match.from_result(result)
+                current = result.ends_on is None or all_versions
+                if current and not result.removed and match.citation not in seen:
+                    seen.add(match.citation)
+                    matches.append(match)
+            pages = found.meta.total_pages or 1
+            # The API can't page beyond 10,000 results.
+            if len(matches) >= limit or page >= pages or page * per_page >= 10_000:
+                break
+            page += 1
+        return Matches(matches[:limit], found.meta.total_count)
 
     def sync(self, path: str | Path) -> SyncResult:
         """Update Markdown saved by ecfr-md to the latest eCFR text.
 
         ``path`` is a saved file, a saved tree, or a directory of them. Only
         files whose text changed are rewritten; files for sections that no
-        longer exist are deleted. See :mod:`ecfr_md.sync`.
+        longer exist are deleted. See :mod:`ecfr_md.syncing`.
         """
         return sync(self, Path(path))
 
@@ -379,7 +435,7 @@ class ECFR:
                 part = c.hierarchy.get("part") or section.split(".")[0]
                 groups.setdefault((c.title, part), []).append(i)
         for (title, part), members in groups.items():
-            when = _day(date) or self.versioner.latest_date(title)
+            when = _day(date) or self.api.versioner.latest_date(title)
             outline = _find_part(self._outline(title, when), part)
             if len(members) < 2 or outline is None or (outline.size or 0) > GROUP_BELOW:
                 continue
@@ -392,6 +448,32 @@ class ECFR:
             for i in range(len(cited))
         ]
 
+    @overload
+    def save(
+        self,
+        citation: str | int,
+        /,
+        path: str | Path,
+        *,
+        tree: Literal[False] = False,
+        front_matter: bool = True,
+        date: DateLike | None = None,
+        **hierarchy: Unpack[Hierarchy],
+    ) -> Path: ...
+
+    @overload
+    def save(
+        self,
+        citation: str | int,
+        /,
+        path: str | Path,
+        *,
+        tree: Literal[True],
+        front_matter: bool = True,
+        date: DateLike | None = None,
+        **hierarchy: Unpack[Hierarchy],
+    ) -> list[Path]: ...
+
     @validated
     def save(
         self,
@@ -403,8 +485,10 @@ class ECFR:
         front_matter: bool = True,
         date: DateLike | None = None,
         **hierarchy: Unpack[Hierarchy],
-    ) -> list[Path]:
-        """Save regulation text as Markdown and return the files written.
+    ) -> Path | list[Path]:
+        """Save regulation text as Markdown.
+
+        Returns the file written, or with ``tree=True`` the list of files.
 
         Same output as ``get(...).save(...)``, but the XML is processed while
         it is read from disk instead of being loaded whole.
@@ -426,13 +510,14 @@ class ECFR:
         cited = Citation.parse(citation).with_hierarchy(hierarchy)
         if cited.paragraph:
             node = self.get(citation, date=date, **hierarchy)
-            return node.save(path, tree=tree, front_matter=front_matter)
-        date = _day(date) or self.versioner.latest_date(cited.title)
+            written = node.save(path, front_matter=front_matter)
+            return [written] if tree else written
+        date = _day(date) or self.api.versioner.latest_date(cited.title)
         with self._full_text(cited, date) as download, download.path.open("rb") as f:
             source = Source(
                 cited.title, date, cited.hierarchy, download.url, download.retrieved
             )
-            return save_events(
+            files = save_events(
                 file_events(f),
                 source,
                 Path(path),
@@ -441,9 +526,10 @@ class ECFR:
                 free=True,
                 on_file=self.progress.file_written,
             )
+        return files if tree else files[0]
 
     @contextmanager
-    def download(
+    def _download(
         self, path: str, params: Mapping[str, object] | None = None
     ) -> Iterator[Download]:
         """Stream a response body to a temporary file, with throttling and retries.
@@ -486,26 +572,26 @@ class ECFR:
         it was issued since. That needs at most one request per title (the
         versions issued since the copy), and none if the title is unchanged.
         """
-        if self.store.directory is None:
-            with self.download(path, hierarchy) as download:
+        if self._store.directory is None:
+            with self._download(path, hierarchy) as download:
                 yield download
             return
         state = self._title(title)
         token = state.latest_issue_date
-        for entry in self.store.find(kind, title, as_hierarchy(hierarchy), date):
+        for entry in self._store.find(kind, title, as_hierarchy(hierarchy), date):
             reusable = entry.date == date or entry.token <= entry.date <= date
             if not reusable or token is None or entry.token > token:
                 continue  # A newer token than the eCFR's means it rolled back.
             if entry.token != token:
                 if self._changed(title, entry.token, hierarchy):
                     continue
-                entry = self.store.refresh(entry, token)
+                entry = self._store.refresh(entry, token)
             self.progress.finished(entry.url, entry.path.stat().st_size, cached=True)
             yield Download(entry.path, entry.url, entry.retrieved)
             return
-        with self.download(path, hierarchy) as download:
+        with self._download(path, hierarchy) as download:
             if token is not None and not state.processing_in_progress:
-                self.store.put(
+                self._store.put(
                     kind,
                     title,
                     as_hierarchy(hierarchy),
@@ -523,7 +609,7 @@ class ECFR:
         with self._memo_lock:
             memo = self._titles
             if memo is None or time.monotonic() - memo[0] >= TITLES_TTL:
-                memo = self._titles = (time.monotonic(), self.versioner.titles())
+                memo = self._titles = (time.monotonic(), self.api.versioner.titles())
             titles = memo[1].titles
         for entry in titles:
             if entry.number == title:
@@ -555,7 +641,7 @@ class ECFR:
                 after = since + dt.timedelta(days=1)
                 versions, page, pages = [], 1, 1
                 while page <= pages:
-                    result = self.versioner.versions(
+                    result = self.api.versioner.versions(
                         title, issue_date_gte=after, page=page
                     )
                     versions += result.content_versions
@@ -672,14 +758,14 @@ class ECFR:
     def _explain_missing(self, cited: Citation, date: dt.date) -> str | None:
         """Why a 404 happened, if it's because of the date."""
         try:
-            latest = self.versioner.latest_date(cited.title)
+            latest = self.api.versioner.latest_date(cited.title)
             if date > latest:
                 return f"{cited} is available up to {latest}, not {date}"
             if not cited.hierarchy:
                 return None
             dates, page, pages = [], 1, 1
             while page <= pages:  # The earliest may be on any page.
-                result = self.versioner.versions(
+                result = self.api.versioner.versions(
                     cited.title, page=page, **cited.hierarchy
                 )
                 dates += [v.date for v in result.content_versions]
@@ -691,16 +777,16 @@ class ECFR:
             return f"The earliest version of {cited} is from {min(dates)}, after {date}"
         return None
 
-    def request(self, path: str, params: Mapping[str, object] | None = None) -> bytes:
+    def _request(self, path: str, params: Mapping[str, object] | None = None) -> bytes:
         """GET an API path, with throttling and retries; return the body."""
         query = _query(params or {})
         return self._retrying(self._send, path, query).content
 
-    def request_model[M: BaseModel](
+    def _request_model[M: BaseModel](
         self, model: type[M], path: str, params: Mapping[str, object] | None = None
     ) -> M:
         """GET an API path and parse the JSON body into ``model``."""
-        body = self.request(path, params)
+        body = self._request(path, params)
         try:
             return model.model_validate_json(body)
         except ValidationError as exc:
@@ -824,7 +910,7 @@ class Admin:
     @validated
     def agencies(self) -> models.Agencies:
         """All agencies and the CFR chapters they administer."""
-        return self._client.request_model(models.Agencies, f"{ADMIN}/agencies.json")
+        return self._client._request_model(models.Agencies, f"{ADMIN}/agencies.json")
 
     @validated
     def corrections(
@@ -851,7 +937,7 @@ class Admin:
             "date": date,
             "error_corrected_date": error_corrected_date,
         }
-        return self._client.request_model(
+        return self._client._request_model(
             models.Corrections, f"{ADMIN}/corrections.json", params
         )
 
@@ -864,7 +950,7 @@ class Admin:
         title: int
             CFR title number.
         """
-        return self._client.request_model(
+        return self._client._request_model(
             models.Corrections, f"{ADMIN}/corrections/title/{title}.json"
         )
 
@@ -880,7 +966,7 @@ class Search:
     ) -> M:
         params = dict(params)
         params["agency_slugs[]"] = params.pop("agency_slugs", None)
-        return self._client.request_model(model, f"{SEARCH}/{endpoint}", params)
+        return self._client._request_model(model, f"{SEARCH}/{endpoint}", params)
 
     @validated
     def results(
@@ -1010,7 +1096,7 @@ class Versioner:
     @validated
     def titles(self) -> models.Titles:
         """Summary information about every title, including its latest date."""
-        return self._client.request_model(models.Titles, f"{VERSIONER}/titles.json")
+        return self._client._request_model(models.Titles, f"{VERSIONER}/titles.json")
 
     @validated
     def latest_date(self, title: int) -> dt.date:
@@ -1052,7 +1138,7 @@ class Versioner:
         """
         date = _day(date) or self.latest_date(title)
         path = f"{VERSIONER}/ancestry/{date}/title-{title}.json"
-        return self._client.request_model(models.Ancestry, path, hierarchy)
+        return self._client._request_model(models.Ancestry, path, hierarchy)
 
     @validated
     def structure(self, title: int, *, date: DateLike | None = None) -> models.Node:
@@ -1067,7 +1153,7 @@ class Versioner:
         """
         date = _day(date) or self.latest_date(title)
         path = f"{VERSIONER}/structure/{date}/title-{title}.json"
-        return self._client.request_model(models.Node, path)
+        return self._client._request_model(models.Node, path)
 
     @validated
     def versions(
@@ -1103,7 +1189,7 @@ class Versioner:
             **hierarchy,
         }
         path = f"{VERSIONER}/versions/title-{title}.json"
-        return self._client.request_model(models.Versions, path, params)
+        return self._client._request_model(models.Versions, path, params)
 
     @validated
     def full(
@@ -1124,7 +1210,33 @@ class Versioner:
         """
         date = _day(date) or self.latest_date(title)
         path = f"{VERSIONER}/full/{date}/title-{title}.xml"
-        return self._client.request(path, hierarchy)
+        return self._client._request(path, hierarchy)
+
+
+class API:
+    """The eCFR API's three services, one method per endpoint."""
+
+    def __init__(self, client: ECFR) -> None:
+        self.admin = Admin(client)
+        self.search = Search(client)
+        self.versioner = Versioner(client)
+
+
+def _missing_paragraph(section: Node, cited: Citation, date: dt.date) -> str:
+    """Say which paragraphs exist where the cited one doesn't."""
+    parent = section
+    for depth in range(len(cited.paragraph) - 1, 0, -1):
+        found = section.get("".join(f"({m})" for m in cited.paragraph[:depth]))
+        if found is not None:
+            parent = found
+            break
+    markers = [f"({c.identifier})" for c in parent.children]
+    if not markers:
+        return f"{cited} does not exist on {date}; {parent.citation} has no paragraphs"
+    listed = (
+        ", ".join(markers) if len(markers) <= 6 else f"{markers[0]} to {markers[-1]}"
+    )
+    return f"{cited} does not exist on {date}; {parent.citation} has {listed}"
 
 
 def _is_transient(exc: BaseException) -> bool:

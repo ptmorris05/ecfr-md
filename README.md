@@ -52,10 +52,10 @@ ecfr-md get 45 CFR Part 164 --tree -o hipaa/     # one file per section
 ecfr-md get 45 CFR 164.502 --date 2020-01-01     # as of a date
 ecfr-md get --from list.txt -o out/              # one citation per line
 
-ecfr-md outline 45 CFR Part 164                  # table of contents, no text
-ecfr-md changes 45 CFR Part 164 --since 2024-01-01
-ecfr-md search "minimum necessary"               # matching sections
+ecfr-md search "minimum necessary"               # sections that use the phrase
 ecfr-md search "minimum necessary" --save out/   # and save their text
+ecfr-md outline 45 CFR Part 164 --depth 1        # table of contents, no text
+ecfr-md changes 45 CFR Part 164 --since 2024-01-01
 ecfr-md sync hipaa/                              # update saved files
 
 ecfr-md cache info
@@ -65,16 +65,16 @@ ecfr-md cache clear
 | Command | Does |
 | --- | --- |
 | `get CITATION` | Prints Markdown, or saves it with `-o FILE`. `--tree -o DIR` writes one file per section. `--from FILE -o DIR` takes one citation per line (`-` for stdin). `--date` for text as of a date. `--no-front-matter` leaves out the metadata header. |
-| `outline CITATION` | Prints the table of contents. `--depth N` limits levels. Part sizes are shown. |
+| `outline CITATION` | Prints the table of contents. `--depth N` limits levels and counts what's below. Part sizes are shown. |
 | `changes CITATION` | Lists changes to sections: when issued, when effective, and whether substantive, editorial or a removal. `--since` and `--until` take dates. |
-| `search QUERY` | Lists current sections that match. `--limit N` (default 20), `--all-versions`, `--save DIR`, plus the API's filters (`--agency-slugs`, `--date`, `--last-modified-after`, …). |
+| `search QUERY` | Lists current sections that contain the words as a phrase (`--no-phrase`: anywhere in the section). `--limit N` (default 20), `--all-versions`, `--save DIR`, `--json`, plus the API's filters (`--agency SLUG`, `--date`, `--last-modified-after`, …). |
 | `sync PATH` | Updates a file, tree or directory saved by `get`, `search --save` or `--from`. Rewrites only files whose text changed, deletes files for sections that no longer exist, and leaves other files alone. |
 | `cache info`, `cache clear` | Shows or deletes the local cache. |
-| `admin …`, `search …`, `versioner …` | One subcommand per API endpoint, printing its JSON. See [API](#api). |
+| `api admin …`, `api search …`, `api versioner …` | One command per API endpoint, printing its JSON. See [API](#api). |
 
-`outline` and `changes` take `--json` for JSON output. A citation can be one quoted string or separate words; keywords such as `--part 164` work too. Without `-o`, `get` prints formatted text in a terminal and plain Markdown when piped.
+`outline`, `changes` and `search` take `--json` for JSON output. A citation can be one quoted string or separate words; keywords such as `--part 164` work too. Without `-o`, `get` prints formatted text in a terminal and plain Markdown when piped.
 
-Options that go before the command:
+Options that go before the command (`ecfr-md --help` lists them all):
 
 | Option | Environment variable | Default |
 | --- | --- | --- |
@@ -90,22 +90,37 @@ While it runs, `ecfr-md` shows on stderr what it is fetching and as of which dat
 
 Exit codes: `0` success, `1` API, network or file error, `2` invalid usage.
 
-`ecfr-md COMMAND --help` lists every option.
+`ecfr-md COMMAND --help` lists a command's options.
 
 ## Python
 
 ```python
-from ecfr_md import ECFR
+import ecfr_md
 
-with ECFR() as ecfr:
-    section = ecfr.get("45 CFR 164.502", date="2020-01-01")
-    outline = ecfr.outline("45 CFR Part 164")
-    changes = ecfr.changes("45 CFR Part 164", since="2024-01-01")
-    nodes = ecfr.get_many(["45 CFR 164.502", "45 CFR 164.506"])
-    ecfr.sync("hipaa/")
+section = ecfr_md.get("45 CFR 164.502")
+section["(a)(1)"].text  # one paragraph, as Markdown
+section.save("164.502.md")  # returns the path
 
-section["(a)(1)"].text  # one paragraph
-section.save("164.502.md")  # or save(..., tree=True): one file per section
+ecfr_md.get("45 CFR 164.502", date="2020-01-01")  # as of a date
+ecfr_md.save("45 CFR Part 164", "hipaa/", tree=True)  # one file per section
+
+for match in ecfr_md.search("minimum necessary", limit=5):
+    print(match.citation, match.heading)
+
+for change in ecfr_md.changes("45 CFR Part 164", since="2024-01-01"):
+    print(change.issued, change.citation, change.kind)
+
+print(ecfr_md.outline("45 CFR Part 164")["Subpart E"])  # table of contents
+ecfr_md.sync("hipaa/")  # update saved files
+```
+
+The module-level functions share one client with default settings. To set a user agent, rate limit and so on, or to close connections when you're done, make your own:
+
+```python
+from ecfr_md import ECFR, Settings
+
+with ECFR(Settings(user_agent="my-app/1.0 (me@example.com)")) as ecfr:
+    section = ecfr.get("45 CFR 164.502")  # same methods as the module
 ```
 
 - Citations down to the paragraph: `45 CFR 164.502(a)(1)(i)`
@@ -129,7 +144,7 @@ section.save("164.502.md")  # or save(..., tree=True): one file per section
 Case, `§`, commas and periods in "C.F.R." don't matter. Keywords also work, alone or with a citation:
 
 ```python
-ecfr.get(45, part="164", subpart="E")
+ecfr_md.get(45, part="164", subpart="E")
 ```
 
 ```sh
@@ -145,8 +160,8 @@ Without a date you get the latest text. Dates can be `date` or `datetime` object
 ## Saving
 
 ```python
-ecfr.save("45 CFR Part 164", "hipaa.md")  # one file
-ecfr.save("45 CFR Part 164", "hipaa/", tree=True)  # directories
+ecfr_md.save("45 CFR Part 164", "hipaa.md")  # one file; returns its path
+ecfr_md.save("45 CFR Part 164", "hipaa/", tree=True)  # directories; returns the files
 ```
 
 ```sh
@@ -172,14 +187,14 @@ disclaimer: "The eCFR is an editorial compilation of CFR material and Federal Re
 ---
 ```
 
-`ecfr.save` processes the XML as it reads it from disk, so large titles don't need to fit in memory. The API times out on the largest titles (e.g. Title 40), so text above the part level over 50 MB is fetched one part at a time and joined. Files are written to a temporary name and renamed.
+`save` processes the XML as it reads it from disk, so large titles don't need to fit in memory. The API times out on the largest titles (e.g. Title 40), so text above the part level over 50 MB is fetched one part at a time and joined. Files are written to a temporary name and renamed.
 
 ## Navigating
 
-`ecfr.get` makes one request and returns a node (`Title`, `Subtitle`, `Chapter`, `Subchapter`, `Part`, `Subpart`, `SubjectGroup`, `Section`, `Appendix` or `Paragraph`). Navigating it makes no further requests.
+`get` makes one request and returns a node (`Title`, `Subtitle`, `Chapter`, `Subchapter`, `Part`, `Subpart`, `SubjectGroup`, `Section`, `Appendix` or `Paragraph`). Navigating it makes no further requests.
 
 ```python
-part = ecfr.get("45 CFR Part 164")
+part = ecfr_md.get("45 CFR Part 164")
 
 for subpart in part:  # children
     print(subpart.identifier, subpart.heading)
@@ -203,6 +218,16 @@ Nodes have `level`, `identifier`, `heading`, `citation`, `hierarchy`, `date`, `p
 
 If more than one node matches a key, `node[key]` raises `AmbiguousNodeError` with the matches in `.candidates`. `find()` returns the first match.
 
+### Outlines, changes and search results
+
+`outline()` returns the table of contents as an `Outline`, without the text. It navigates like a node (`outline["Subpart E"]`, `outline.iter("section")`, `.parent`, `.children`) and has `level`, `identifier`, `heading`, `citation`, `reserved` and `size`; `str(outline)` is the indented table of contents.
+
+`changes()` returns `Change` objects, newest first: `citation`, `heading`, `issued` (when the eCFR published it), `effective` and `kind` (`"substantive"`, `"editorial"` or `"removed"`).
+
+`search()` returns `Match` objects, best first: `citation` (pass it to `get`), `heading`, `excerpt`, `starts_on` and `ends_on`. The list's `.total` is how many the eCFR found. Words are matched as a phrase unless `phrase=False` or the query has its own quotes; `limit`, `all_versions` and the API's filters (`agency_slugs`, `date`, `last_modified_after`, …) are keywords.
+
+Each keeps the API's response in `.raw`.
+
 ### Paragraphs
 
 The XML lists a section's paragraphs flat. They are nested by marker: (a), (1), (i), (A), then italic (*1*) and (*i*). Markers that could be a letter or a roman numeral, like (i), are decided by what comes before. Also handled:
@@ -215,25 +240,25 @@ Some sections don't follow the numbering rules, such as definitions that number 
 
 ## API
 
-One method and one command per endpoint:
+One method and one command per endpoint, under `ecfr.api` and `ecfr-md api`:
 
 | SDK | CLI | Endpoint |
 | --- | --- | --- |
-| `ecfr.admin.agencies()` | `admin agencies` | `/api/admin/v1/agencies.json` |
-| `ecfr.admin.corrections(...)` | `admin corrections` | `/api/admin/v1/corrections.json` |
-| `ecfr.admin.title_corrections(t)` | `admin title-corrections` | `/api/admin/v1/corrections/title/{t}.json` |
-| `ecfr.search.results(q, ...)` | `search results` | `/api/search/v1/results` |
-| `ecfr.search.count(q, ...)` | `search count` | `/api/search/v1/count` |
-| `ecfr.search.summary(q, ...)` | `search summary` | `/api/search/v1/summary` |
-| `ecfr.search.daily_counts(q, ...)` | `search daily-counts` | `/api/search/v1/counts/daily` |
-| `ecfr.search.title_counts(q, ...)` | `search title-counts` | `/api/search/v1/counts/titles` |
-| `ecfr.search.hierarchy_counts(q, ...)` | `search hierarchy-counts` | `/api/search/v1/counts/hierarchy` |
-| `ecfr.search.suggestions(q, ...)` | `search suggestions` | `/api/search/v1/suggestions` |
-| `ecfr.versioner.titles()` | `versioner titles` | `/api/versioner/v1/titles.json` |
-| `ecfr.versioner.ancestry(t, ...)` | `versioner ancestry` | `/api/versioner/v1/ancestry/{date}/title-{t}.json` |
-| `ecfr.versioner.structure(t)` | `versioner structure` | `/api/versioner/v1/structure/{date}/title-{t}.json` |
-| `ecfr.versioner.versions(t, ...)` | `versioner versions` | `/api/versioner/v1/versions/title-{t}.json` |
-| `ecfr.versioner.full(t, ...)` | `versioner full` | `/api/versioner/v1/full/{date}/title-{t}.xml` |
+| `ecfr.api.admin.agencies()` | `api admin agencies` | `/api/admin/v1/agencies.json` |
+| `ecfr.api.admin.corrections(...)` | `api admin corrections` | `/api/admin/v1/corrections.json` |
+| `ecfr.api.admin.title_corrections(t)` | `api admin title-corrections` | `/api/admin/v1/corrections/title/{t}.json` |
+| `ecfr.api.search.results(q, ...)` | `api search results` | `/api/search/v1/results` |
+| `ecfr.api.search.count(q, ...)` | `api search count` | `/api/search/v1/count` |
+| `ecfr.api.search.summary(q, ...)` | `api search summary` | `/api/search/v1/summary` |
+| `ecfr.api.search.daily_counts(q, ...)` | `api search daily-counts` | `/api/search/v1/counts/daily` |
+| `ecfr.api.search.title_counts(q, ...)` | `api search title-counts` | `/api/search/v1/counts/titles` |
+| `ecfr.api.search.hierarchy_counts(q, ...)` | `api search hierarchy-counts` | `/api/search/v1/counts/hierarchy` |
+| `ecfr.api.search.suggestions(q, ...)` | `api search suggestions` | `/api/search/v1/suggestions` |
+| `ecfr.api.versioner.titles()` | `api versioner titles` | `/api/versioner/v1/titles.json` |
+| `ecfr.api.versioner.ancestry(t, ...)` | `api versioner ancestry` | `/api/versioner/v1/ancestry/{date}/title-{t}.json` |
+| `ecfr.api.versioner.structure(t)` | `api versioner structure` | `/api/versioner/v1/structure/{date}/title-{t}.json` |
+| `ecfr.api.versioner.versions(t, ...)` | `api versioner versions` | `/api/versioner/v1/versions/title-{t}.json` |
+| `ecfr.api.versioner.full(t, ...)` | `api versioner full` | `/api/versioner/v1/full/{date}/title-{t}.xml` |
 
 JSON endpoints return pydantic models. Fields the API adds later are kept in `model.model_extra`. `ecfr_md.load(xml, title=45)` builds nodes from XML you already have. `ecfr-md COMMAND --help` lists options.
 
@@ -244,7 +269,7 @@ ecfr-md avoids requests it doesn't need:
 
 - **Cache, on by default.** Downloaded text is kept in the user cache directory (`~/Library/Caches/ecfr-md` on macOS, `~/.cache/ecfr-md` on Linux) and reused until the eCFR changes it. Every change the eCFR makes, including corrections to past dates, gets an issue date. To check a stored copy, ecfr-md reads the title list (one small request, reused for 5 minutes); only if the title has changed since the copy was made does it request the list of versions issued since, once per title. Text that hasn't changed isn't downloaded again. Titles still being updated aren't stored.
 - **Large titles are updated part by part.** When a large title changes, only the parts that changed are downloaded again.
-- **Several citations, one request.** `ecfr.get_many([...])` and `ecfr-md get --from list.txt` fetch sections in the same small part (under 2 MB) with one request.
+- **Several citations, one request.** `get_many([...])` and `ecfr-md get --from list.txt` fetch sections in the same small part (under 2 MB) with one request.
 - **One connection.** Requests share one HTTP/2 connection and ask for gzip, which the API sends about 5× smaller.
 
 ```sh
@@ -254,7 +279,7 @@ ecfr-md --no-cache get 45 CFR 164.502
 ```
 
 ```python
-nodes = ecfr.get_many(["45 CFR 164.502", "45 CFR 164.506", "45 CFR 164.508"])
+nodes = ecfr_md.get_many(["45 CFR 164.502", "45 CFR 164.506", "45 CFR 164.508"])
 ```
 
 ## Configuration
@@ -302,7 +327,7 @@ ECFR_MD_USER_AGENT="my-app/1.0" ecfr-md get 45
 
 ## Public API
 
-Everything exported from `ecfr_md` (`ECFR`, `Settings`, `Citation`, the node classes, `Level`, `load`, `Progress`, `SyncResult`, the search enums and typed dicts, and the exceptions), plus the response models in `ecfr_md.models`. Other modules are internal. The `ecfr-md` command and its options are public too.
+Everything exported from `ecfr_md` (the module-level functions, `ECFR`, `Settings`, `Citation`, the node classes, `Level`, `Outline`, `Change`, `Match`, `Matches`, `load`, `Progress`, `SyncResult`, the search enums and typed dicts, and the exceptions), plus the response models in `ecfr_md.models`. Other modules are internal. The `ecfr-md` command and its options are public too.
 
 ## Errors
 

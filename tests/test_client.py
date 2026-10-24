@@ -31,7 +31,7 @@ FULL = "/api/versioner/v1/full/2026-10-07/title-45.xml"
 def test_sends_configured_headers(api):
     settings = Settings(user_agent="me/1.0", headers={"From": "me@example.com"})
     with ECFR(settings, transport=httpx2.MockTransport(api)) as ecfr:
-        ecfr.versioner.titles()
+        ecfr.api.versioner.titles()
     headers = api.requests[0].headers
     assert headers["User-Agent"] == "me/1.0"
     assert headers["From"] == "me@example.com"
@@ -73,7 +73,7 @@ def body(path) -> str:
 
 
 def test_save_streams_the_same_markdown_as_get(ecfr, tmp_path):
-    assert ecfr.save("45 CFR 164", tmp_path / "p.md") == [tmp_path / "p.md"]
+    assert ecfr.save("45 CFR 164", tmp_path / "p.md") == tmp_path / "p.md"
     node = ecfr.get("45 CFR 164")
     node.save(tmp_path / "q.md")
     assert body(tmp_path / "p.md") == body(tmp_path / "q.md") == node.to_markdown()
@@ -90,9 +90,11 @@ def test_save_streams_the_same_markdown_as_get(ecfr, tmp_path):
 
 
 def test_save_paragraph_citation(ecfr, tmp_path):
-    files = ecfr.save("45 CFR 164.104(a)(1)", tmp_path, front_matter=False)
-    assert files == [tmp_path / "45-cfr-164.104-a-1.md"]
-    assert files[0].read_text(encoding="utf-8") == "**(1)** *First.* One.\n"
+    file = ecfr.save("45 CFR 164.104(a)(1)", tmp_path, front_matter=False)
+    assert file == tmp_path / "45-cfr-164.104-a-1.md"
+    assert file.read_text(encoding="utf-8") == "**(1)** *First.* One.\n"
+    tree = ecfr.save("45 CFR 164.104(a)(1)", tmp_path, tree=True)
+    assert tree == [tmp_path / "45-cfr-164.104-a-1.md"]
 
 
 OLD = "/api/versioner/v1/full/2020-01-01/title-45.xml"
@@ -240,7 +242,7 @@ def test_unknown_titles(ecfr, title, message):
 
 def test_search_query_serialisation(ecfr, api):
     api.json("/api/search/v1/results", {"results": [], "meta": {"total_count": 0}})
-    ecfr.search.results(
+    ecfr.api.search.results(
         "minimum necessary",
         agency_slugs=["hhs", "cms"],
         last_modified_after=dt.date(2024, 1, 2),
@@ -258,7 +260,7 @@ def test_search_query_serialisation(ecfr, api):
 
 def test_versions_query_serialisation(ecfr, api):
     api.json("/api/versioner/v1/versions/title-45.json", {"content_versions": []})
-    ecfr.versioner.versions(45, issue_date_gte="2020-01-01", part="164")
+    ecfr.api.versioner.versions(45, issue_date_gte="2020-01-01", part="164")
     params = api.requests[0].url.params
     assert dict(params) == {"issue_date[gte]": "2020-01-01", "part": "164"}
 
@@ -290,7 +292,7 @@ def test_parses_response_models(ecfr, api):
             ]
         },
     )
-    (correction,) = ecfr.admin.title_corrections(45).ecfr_corrections
+    (correction,) = ecfr.api.admin.title_corrections(45).ecfr_corrections
     assert correction.error_corrected == dt.date(2005, 6, 27)
     assert correction.cfr_references[0].hierarchy.section == "46.103"
     assert correction.model_extra == {"new_field": "kept"}
@@ -299,16 +301,16 @@ def test_parses_response_models(ecfr, api):
 def test_unexpected_json_raises_response_format_error(ecfr, api):
     api.json("/api/admin/v1/agencies.json", {"unexpected": True})
     with pytest.raises(ResponseFormatError, match=r"agencies\.json"):
-        ecfr.admin.agencies()
+        ecfr.api.admin.agencies()
 
 
 @pytest.mark.parametrize(
     ("call", "message"),
     [
-        (lambda e: e.search.results(per_page=5000), "per_page"),
-        (lambda e: e.search.results(page=0), "page"),
-        (lambda e: e.versioner.full(45, date="2025-16-01"), "date"),
-        (lambda e: e.versioner.full(45, section=164), "section"),
+        (lambda e: e.api.search.results(per_page=5000), "per_page"),
+        (lambda e: e.api.search.results(page=0), "page"),
+        (lambda e: e.api.versioner.full(45, date="2025-16-01"), "date"),
+        (lambda e: e.api.versioner.full(45, section=164), "section"),
         (lambda e: e.get("45 CFR banana"), "banana"),
         (lambda e: e.get("45 CFR 164", part="160"), "Conflicting part"),
         (lambda e: e.get(45, date="not a date"), "date"),
@@ -345,7 +347,7 @@ def test_invalid_arguments_fail_before_any_request(ecfr, api, call, message):
 def test_api_errors_carry_server_detail(ecfr, api, status, body, error, detail):
     api.text(FULL, body, status=status)
     with pytest.raises(error) as info:
-        ecfr.versioner.full(45)
+        ecfr.api.versioner.full(45)
     assert info.value.status_code == status
     assert detail in info.value.detail
     assert FULL in str(info.value)
@@ -359,14 +361,14 @@ def test_retries_transient_errors_then_succeeds(ecfr, api):
         httpx2.Response(429, text="slow down"),
         httpx2.Response(200, text="<DIV5/>"),
     )
-    assert ecfr.versioner.full(45) == b"<DIV5/>"
+    assert ecfr.api.versioner.full(45) == b"<DIV5/>"
     assert api.paths().count(FULL) == 3
 
 
 def test_gives_up_after_max_attempts(ecfr, api):
     api.text(FULL, '{"message":"down"}', status=502)
     with pytest.raises(ServerError, match="down"):
-        ecfr.versioner.full(45)
+        ecfr.api.versioner.full(45)
     assert api.paths().count(FULL) == 3
 
 
@@ -379,14 +381,14 @@ def test_honours_retry_after(api):
     )
     start = time.monotonic()
     with ECFR(settings, transport=httpx2.MockTransport(api)) as ecfr:
-        ecfr.versioner.full(45, date="2026-10-07")
+        ecfr.api.versioner.full(45, date="2026-10-07")
     assert time.monotonic() - start < 5  # Retry-After: 0 overrode the 30s backoff.
 
 
 def test_rate_limit_error_exposes_retry_after(ecfr, api):
     api.text(FULL, "", status=429, **{"Retry-After": "0"})
     with pytest.raises(RateLimitError) as info:
-        ecfr.versioner.full(45)
+        ecfr.api.versioner.full(45)
     assert info.value.retry_after == 0
 
 
@@ -408,7 +410,7 @@ def test_transport_failures_are_retried_and_wrapped(
         ECFR(settings, transport=httpx2.MockTransport(fail)) as ecfr,
         pytest.raises(error, match=message),
     ):
-        ecfr.versioner.titles()
+        ecfr.api.versioner.titles()
     assert len(api.requests) == settings.max_attempts
 
 
@@ -417,7 +419,7 @@ def test_rate_limit_spaces_requests(api):
     with ECFR(settings, transport=httpx2.MockTransport(api)) as ecfr:
         start = time.monotonic()
         for _ in range(3):
-            ecfr.versioner.titles()
+            ecfr.api.versioner.titles()
     # Two gaps of 1/20s, less one tick of the Windows clock (about 16 ms).
     assert time.monotonic() - start >= 0.08
 

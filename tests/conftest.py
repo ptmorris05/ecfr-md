@@ -203,6 +203,6 @@ def run(api, monkeypatch):
     monkeypatch.setattr(cli, "ECFR", functools.partial(ECFR, transport=transport))
 
     def invoke(*tokens: str) -> int:
-        return cli.app.meta(list(tokens), result_action="return_value")
+        return cli.run(tokens, result_action="return_value")
 
     return invoke

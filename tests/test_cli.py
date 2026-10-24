@@ -49,14 +49,22 @@ def test_get_usage_errors(run, capsys, tokens, message):
 
 
 def test_endpoint_commands_print_json(run, capsys):
-    assert run("versioner", "titles") == 0
+    assert run("api", "versioner", "titles") == 0
     titles = json.loads(capsys.readouterr().out)["titles"]
     assert titles[0]["up_to_date_as_of"] == "2026-10-07"
 
 
 def test_global_options_configure_client(run, api):
     assert (
-        run("--user-agent", "me/2", "--headers.From", "a@b.c", "versioner", "titles")
+        run(
+            "--user-agent",
+            "me/2",
+            "--headers.From",
+            "a@b.c",
+            "api",
+            "versioner",
+            "titles",
+        )
         == 0
     )
     assert api.requests[0].headers["User-Agent"] == "me/2"
@@ -65,19 +73,19 @@ def test_global_options_configure_client(run, api):
 
 def test_environment_configures_client(run, api, monkeypatch):
     monkeypatch.setenv("ECFR_MD_USER_AGENT", "env/1")
-    assert run("versioner", "titles") == 0
+    assert run("api", "versioner", "titles") == 0
     assert api.requests[0].headers["User-Agent"] == "env/1"
 
 
 def test_api_errors_exit_nonzero_with_message(run, api, capsys):
     api.text("/api/admin/v1/agencies.json", '{"error":"boom"}', status=400)
-    assert run("admin", "agencies") == 1
-    assert "BadRequestError" in capsys.readouterr().err
+    assert run("api", "admin", "agencies") == 1
+    assert "eCFR API error" in capsys.readouterr().err
 
 
 def test_invalid_arguments_exit_with_usage_code(run, capsys):
     with pytest.raises(SystemExit) as info:
-        run("search", "results", "--per-page", "5000")
+        run("api", "search", "results", "--per-page", "5000")
     assert info.value.code == 2
     assert "less than or equal to 1000" in capsys.readouterr().err
 
@@ -85,7 +93,7 @@ def test_invalid_arguments_exit_with_usage_code(run, capsys):
 def test_ambiguous_paragraph_exits_with_candidates(run, capsys):
     assert run("get", "45 CFR 164.108(1)") == 1
     err = capsys.readouterr().err
-    assert "AmbiguousNodeError" in err and "45 CFR 164.108(1)" in err
+    assert "More than one match" in err and "45 CFR 164.108(1)" in err
 
 
 def test_out_of_range_date_is_a_usage_error(run, capsys):
@@ -96,14 +104,14 @@ def test_out_of_range_date_is_a_usage_error(run, capsys):
 def test_quiet_prints_nothing_but_the_result(run, capsys, tmp_path):
     assert run("-q", "get", "45", "CFR", "164", "-o", str(tmp_path / "a.md")) == 0
     assert capsys.readouterr().err == ""
-    assert run("--quiet", "versioner", "titles") == 0
+    assert run("--quiet", "api", "versioner", "titles") == 0
     captured = capsys.readouterr()
     assert captured.err == "" and '"titles"' in captured.out
 
 
 def test_quiet_still_shows_errors(run, capsys):
     assert run("-q", "get", "45 CFR 164.108(1)") == 1
-    assert "AmbiguousNodeError" in capsys.readouterr().err
+    assert "More than one match" in capsys.readouterr().err
 
 
 def test_get_from_a_list_of_citations(run, capsys, tmp_path):

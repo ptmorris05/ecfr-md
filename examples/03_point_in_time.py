@@ -5,20 +5,17 @@ Run: uv run python examples/03_point_in_time.py
 
 import difflib
 
-from ecfr_md import ECFR
+import ecfr_md
 
 CITATION = "45 CFR 164.502"
 
-with ECFR() as ecfr:
-    # Every amendment to the section, from the versioner service.
-    versions = ecfr.versioner.versions(
-        45, part="164", section="164.502", issue_date_gte="2017-01-01"
-    ).content_versions
-    dates = sorted({v.amendment_date for v in versions if v.substantive})
-    print(f"{CITATION} was substantively amended on:", *dates, sep="\n  ")
+# Every change the eCFR has issued to the section, newest first.
+changes = ecfr_md.changes(CITATION, since="2017-01-01")
+dates = sorted({c.effective for c in changes if c.kind == "substantive"})
+print(f"{CITATION} was substantively amended on:", *dates, sep="\n  ")
 
-    before = ecfr.get(CITATION, date="2017-01-03")
-    after = ecfr.get(CITATION)  # Latest.
+before = ecfr_md.get(CITATION, date="2017-01-03")
+after = ecfr_md.get(CITATION)  # Latest.
 
 diff = difflib.unified_diff(
     before.to_markdown().splitlines(),

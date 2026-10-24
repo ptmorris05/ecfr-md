@@ -76,9 +76,7 @@ class Citation:
         source = str(text)
         cfr = CFR.search(source)
         if cfr and not source[: cfr.start()].strip():
-            raise InvalidCitationError(
-                f"Citation {source!r} must start with a title number, e.g. '45 CFR 164'"
-            )
+            raise InvalidCitationError(_no_title(source[cfr.end() :]))
         normalised = CFR.sub(" ", source).replace("§", " ")
         normalised = normalised.strip().rstrip(".;:,")  # A citation ending a sentence.
         # Section ranges like "210.3-07—210.3-08" are identified as "X - Y".
@@ -88,9 +86,7 @@ class Citation:
         if tokens and tokens[0].lower() == "title":
             tokens.pop(0)
         if not tokens or not tokens[0].strip(",").isdigit():
-            raise InvalidCitationError(
-                f"Citation {source!r} must start with a title number, e.g. '45 CFR 164'"
-            )
+            raise InvalidCitationError(_no_title(source))
         citation = cls(int(tokens.pop(0).strip(",")))
 
         def take() -> str:
@@ -169,3 +165,11 @@ class Citation:
             k for k in LEVELS if k in h and not ("part" in h and k in UPPER_LEVELS)
         ]
         return " ".join([f"{self.title} CFR", *(f"{k.title()} {h[k]}" for k in shown)])
+
+
+def _no_title(source: str) -> str:
+    """Explain that a citation needs its title, using the rest of it if possible."""
+    rest = " ".join(source.replace("§", " ").split())
+    if rest and rest[0].isdigit() and "." in rest.split()[0]:
+        return f"{rest!r} needs a title number first, e.g. 45 CFR {rest}"
+    return f"A citation starts with a title number, e.g. 45 CFR 164.502; got {source!r}"

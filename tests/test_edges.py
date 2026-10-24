@@ -289,7 +289,7 @@ def test_undecodable_responses(api, settings):
         ECFR(settings, transport=httpx2.MockTransport(broken)) as ecfr,
         pytest.raises(ResponseFormatError, match="Could not decode"),
     ):
-        ecfr.versioner.titles()
+        ecfr.api.versioner.titles()
 
 
 def test_every_endpoint_wrapper(ecfr, api):
@@ -304,15 +304,17 @@ def test_every_endpoint_wrapper(ecfr, api):
     )
     api.json("/api/search/v1/suggestions", {"suggestions": ["minimum"]})
     api.json("/api/versioner/v1/ancestry/2026-10-07/title-45.json", {"ancestors": []})
-    assert ecfr.admin.corrections(title=45, date="2024-01-01").ecfr_corrections == []
-    assert ecfr.search.count("x").meta.total_count == 3
-    assert ecfr.search.summary("x").meta.description == "d"
-    assert ecfr.search.daily_counts("x").dates == {dt.date(2024, 1, 1): 2}
-    assert ecfr.search.title_counts("x").titles == {45: 2}
-    assert ecfr.search.hierarchy_counts("x").count.value == 2
-    assert ecfr.search.suggestions("min").suggestions == ["minimum"]
-    assert ecfr.versioner.ancestry(45, part="164").ancestors == []
-    assert ecfr.versioner.structure(45).identifier == "45"
+    assert (
+        ecfr.api.admin.corrections(title=45, date="2024-01-01").ecfr_corrections == []
+    )
+    assert ecfr.api.search.count("x").meta.total_count == 3
+    assert ecfr.api.search.summary("x").meta.description == "d"
+    assert ecfr.api.search.daily_counts("x").dates == {dt.date(2024, 1, 1): 2}
+    assert ecfr.api.search.title_counts("x").titles == {45: 2}
+    assert ecfr.api.search.hierarchy_counts("x").count.value == 2
+    assert ecfr.api.search.suggestions("min").suggestions == ["minimum"]
+    assert ecfr.api.versioner.ancestry(45, part="164").ancestors == []
+    assert ecfr.api.versioner.structure(45).identifier == "45"
 
 
 # Command line
@@ -356,12 +358,12 @@ def test_from_an_empty_list(run, capsys, tmp_path):
 
 
 def test_versioner_full_prints_raw_xml(run, capsys):
-    assert run("versioner", "full", "45", "--part", "164") == 0
+    assert run("api", "versioner", "full", "45", "--part", "164") == 0
     assert capsys.readouterr().out.startswith("<?xml")
 
 
 def test_versioner_latest_date(run, capsys):
-    assert run("versioner", "latest-date", "45") == 0
+    assert run("api", "versioner", "latest-date", "45") == 0
     assert capsys.readouterr().out.strip() == "2026-10-07"
 
 

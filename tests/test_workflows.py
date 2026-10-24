@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from ecfr_md import InvalidParameterError
+from ecfr_md import AmbiguousNodeError, InvalidParameterError, NodeNotFoundError
 
 FULL = "/api/versioner/v1/full/2026-10-07/title-45.xml"
 VERSIONS = "/api/versioner/v1/versions/title-45.json"
@@ -24,9 +24,58 @@ def version(identifier, issued, effective, **extra):
 
 
 def test_outline_finds_any_level(ecfr):
-    assert ecfr.outline(45).label == "Title 45—Public Welfare"
-    assert ecfr.outline("45 CFR Part 164").identifier == "164"
-    assert ecfr.outline(45, subtitle="A").type == "subtitle"
+    title = ecfr.outline(45)
+    assert title.heading == "Title 45—Public Welfare"
+    assert title.citation == "45 CFR" and title.raw.identifier == "45"
+    part = ecfr.outline("45 CFR Part 164")
+    assert (part.level, part.identifier, part.citation) == (
+        "part",
+        "164",
+        "45 CFR Part 164",
+    )
+    assert part.size == 5000 and part.parent is None
+    assert ecfr.outline(45, subtitle="A").level == "subtitle"
+
+
+def test_outline_navigates_like_a_node(ecfr):
+    title = ecfr.outline(45)
+    subtitle = title[0]
+    assert title["A"] is subtitle and title["Subtitle A"] is subtitle
+    assert title["subtitle a"] is subtitle  # Case is ignored if nothing else matches.
+    assert title["164"].citation == "45 CFR Part 164"
+    assert title["45 CFR Part 165"].reserved
+    assert title["164"].parent is subtitle and len(subtitle) == 2
+    assert [e.identifier for e in title] == ["A"]
+    assert [e.identifier for e in title.iter("part")] == ["164", "165"]
+    assert len(list(title.iter())) == 3
+    assert title.get("999") is None and title.get(5) is None
+    with pytest.raises(NodeNotFoundError, match="No '999' in 45 CFR"):
+        title["999"]
+    assert bool(title["164"]) and len(title["164"]) == 0
+    assert str(title) == (
+        "Title 45—Public Welfare\n"
+        "  Subtitle A—Department of Health and Human Services\n"
+        "    Part 164\n"
+        "    Part 165 [Reserved]"
+    )
+    assert repr(subtitle).startswith("<Outline 45 CFR Subtitle A 'Subtitle A—")
+
+
+def test_outline_ambiguous_identifier(ecfr, api):
+    structure = {
+        "identifier": "45", "label": "Title 45", "type": "title",
+        "children": [
+            {"identifier": "I", "label": "Chapter I", "type": "chapter"},
+            {"identifier": "I", "label": "Subtitle <b>I</b>", "type": "subtitle"},
+        ],
+    }  # fmt: skip
+    api.json("/api/versioner/v1/structure/2026-10-07/title-45.json", structure)
+    title = ecfr.outline(45)
+    assert title["Chapter I"].heading == "Chapter I"
+    assert title[1].heading == "Subtitle I"  # Markup is removed.
+    with pytest.raises(AmbiguousNodeError) as info:
+        title["I"]
+    assert len(info.value.candidates) == 2
 
 
 def test_outline_command(run, capsys):
@@ -35,7 +84,9 @@ def test_outline_command(run, capsys):
     assert "Title 45—Public Welfare" in out and "Part 165 [Reserved]" in out
     assert run("outline", "45", "--depth", "1") == 0
     out = capsys.readouterr().out
-    assert "Subtitle A" in out and "Part 164" not in out and "2 more" in out
+    assert "Subtitle A" in out and "Part 164" not in out and "2 parts" in out
+    assert run("outline", "45", "--depth", "0") == 0
+    assert "1 subtitle" in capsys.readouterr().out
     assert run("outline", "45", "--json") == 0
     assert json.loads(capsys.readouterr().out)["identifier"] == "45"
 
@@ -116,8 +167,7 @@ def test_sync_command(run, capsys, tmp_path):
     assert run("get", "45", "CFR", "164", "--tree", "-o", str(tmp_path)) == 0
     capsys.readouterr()
     assert run("sync", str(tmp_path)) == 0
-    err = capsys.readouterr().err
-    assert "Synced" in err and "Unchanged" in err
+    assert "is up to date" in capsys.readouterr().err
 
 
 # search
@@ -131,7 +181,7 @@ def results(api):
             "starts_on": "2017-01-01", "ends_on": ends_on, "type": "Section",
             "hierarchy": h, "hierarchy_headings": h,
             "headings": {"section": f"<strong>§ {section}</strong> Heading"},
-            "full_text_excerpt": "the <strong>minimum</strong> necessary",
+            "full_text_excerpt": "the <strong>minimum</strong> necessary rule.",
             "score": 1.0, "structure_index": 1, "reserved": False, "removed": False,
         }  # fmt: skip
 
@@ -165,5 +215,5 @@ def test_search_save(run, api, capsys, results, tmp_path):
 
 
 def test_search_api_subcommands_still_work(run, capsys, results):
-    assert run("search", "results", "minimum") == 0
+    assert run("api", "search", "results", "minimum") == 0
     assert json.loads(capsys.readouterr().out)["meta"]["total_count"] == 3

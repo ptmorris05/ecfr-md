@@ -46,7 +46,10 @@ def sync(ecfr: ECFR, path: Path) -> SyncResult:
             raise InvalidParameterError(f"{root} has no ecfr-md front matter to sync")
         with tempfile.TemporaryDirectory(prefix="ecfr-md-sync-") as tmp:
             target = Path(tmp) / root.name
-            ecfr.save(citation, Path(tmp) if tree else target, tree=tree)
+            if tree:
+                ecfr.save(citation, tmp, tree=True)
+            else:
+                ecfr.save(citation, target)
             # The fresh copy's top folder may be named differently from a
             # folder the user renamed; compare by content, not by name.
             fresh = next(Path(tmp).iterdir()) if tree else target

@@ -6,6 +6,41 @@ and the `ecfr-md` command. Before 1.0, minor versions may change it.
 
 ## [Unreleased]
 
+Install from GitHub; ecfr-md is not on PyPI.
+
+### Added
+
+- Module-level functions sharing one default client: `ecfr_md.get`, `save`,
+  `get_many`, `outline`, `changes`, `search` and `sync`.
+- `ECFR.search(query)`: matching sections as `Match` objects (citation,
+  heading, excerpt), current text only and one per section; `.total` is the
+  number the eCFR found. Words are matched as a phrase unless `phrase=False`.
+- `ecfr-md search --json` and `--no-phrase`; `--agency SLUG` replaces
+  `--agency-slugs`.
+- A missing paragraph's error lists the paragraphs that exist there.
+
+### Changed
+
+- `ECFR.outline` returns an `Outline` that navigates like a node and prints as
+  a table of contents, instead of the API's model (now `.raw`).
+- `ECFR.changes` returns `Change` objects (`citation`, `heading`, `issued`,
+  `effective`, `kind`) instead of the API's models (now `.raw`).
+- `save` returns the path written; with `tree=True`, the list of files.
+- The endpoint services moved to `ECFR.api.admin`, `ECFR.api.search` and
+  `ECFR.api.versioner`, and their commands under `ecfr-md api`.
+- `ECFR.download`, `request`, `request_model` and `store` are private.
+- `ecfr-md search` is a plain command; it matches phrases by default.
+- Command help lists only the command's options; `ecfr-md --help` lists the
+  connection options. The top-level help shows common commands.
+- Errors are titled in words ("Not a citation", "Not found") instead of
+  exception names, and suggest a fix where there is one: a title number for
+  `164.502`, `ecfr-md search` for words that aren't a citation.
+- Saving one file, syncing with no changes and clearing the cache print one
+  line instead of a panel.
+- `outline --depth` counts what's below the last level shown ("12 sections");
+  `changes` shows a single section's heading once; search excerpts end at a
+  whole word.
+
 ## [0.1.0]
 
 First release.

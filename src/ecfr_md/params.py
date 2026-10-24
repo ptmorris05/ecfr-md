@@ -112,7 +112,8 @@ class SearchFilters(TypedDict, total=False):
     Attributes
     ----------
     agency_slugs: list[str]
-        Limit to content associated with these agencies (see `admin agencies`).
+        Limit to content associated with these agencies: slugs such as
+        health-and-human-services (see ecfr-md api admin agencies).
     date: DateLike
         Limit to content present on this date.
     last_modified_after: DateLike
@@ -125,7 +126,7 @@ class SearchFilters(TypedDict, total=False):
         Limit to content last modified on or before this date.
     """
 
-    agency_slugs: list[str]
+    agency_slugs: Annotated[list[str], Parameter(name="--agency", negative=())]
     date: DateLike
     last_modified_after: DateLike
     last_modified_on_or_after: DateLike

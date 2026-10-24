@@ -211,13 +211,13 @@ def test_web_url(hierarchy, paragraph, url):
 
 
 def test_save_file_directory_and_tree(part, tmp_path: Path):
-    assert part.save(tmp_path / "p.md") == [tmp_path / "p.md"]
+    assert part.save(tmp_path / "p.md") == tmp_path / "p.md"
     saved = (tmp_path / "p.md").read_text(encoding="utf-8")
     assert front_matter(saved)["citation"] == "45 CFR Part 164"
     assert saved.endswith(part.to_markdown())
 
-    assert part.save(tmp_path) == [tmp_path / "45-cfr-part-164.md"]
-    plain = part["164.104"].save(tmp_path / "s.md", front_matter=False)[0]
+    assert part.save(tmp_path) == tmp_path / "45-cfr-part-164.md"
+    plain = part["164.104"].save(tmp_path / "s.md", front_matter=False)
     assert plain.read_text(encoding="utf-8") == str(part["164.104"])
 
     written = part.save(tmp_path / "tree", tree=True)
@@ -232,7 +232,7 @@ def test_save_file_directory_and_tree(part, tmp_path: Path):
     assert index["citation"] == "45 CFR Part 164 Subpart A"
 
     paragraph = part["164.104(a)"]
-    assert paragraph.save(tmp_path) == [tmp_path / "45-cfr-164.104-a.md"]
+    assert paragraph.save(tmp_path) == tmp_path / "45-cfr-164.104-a.md"
     assert not list(tmp_path.rglob("*.part"))  # Atomic writes leave no debris.
 
 

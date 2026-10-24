@@ -117,9 +117,9 @@ def test_parse_and_format(text, hierarchy, paragraph, canonical):
 @pytest.mark.parametrize(
     ("text", "message"),
     [
-        ("CFR 164", "must start with a title number"),
-        ("See 45 CFR 164", "must start with a title number"),
-        ("", "must start with a title number"),
+        ("CFR 164", "title number"),
+        ("See 45 CFR 164", "title number"),
+        ("", "title number"),
         ("45 CFR banana", "Unexpected 'banana'"),
         ("45 CFR Part", "'Part' needs a value"),
     ],

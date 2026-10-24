@@ -1,11 +1,10 @@
 """Terminal output for the ``ecfr-md`` command, drawn with rich on stderr."""
 
 import datetime as dt
-import html
-import re
+import textwrap
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import parse_qsl, urlsplit
@@ -32,15 +31,54 @@ from rich.table import Table
 from rich.text import Text
 from rich.tree import Tree
 
-from ecfr_md import models
-from ecfr_md.errors import AmbiguousNodeError, ECFRError
+from ecfr_md.errors import (
+    AmbiguousNodeError,
+    APIError,
+    DateOutOfRangeError,
+    ECFRConnectionError,
+    ECFRTimeoutError,
+    InvalidCitationError,
+    InvalidParameterError,
+    NodeNotFoundError,
+    NotFoundError,
+    RateLimitError,
+    ResponseFormatError,
+    TitleNotFoundError,
+)
 from ecfr_md.progress import Progress
+from ecfr_md.results import Change, Match, Outline
 
 ACCENT = "#5fafff"
 GOOD = "#5fd787"
 WARN = "#ffaf5f"
 BAD = "#ff5f5f"
 DIM = "grey58"
+EXCERPT_WIDTH = 200  # Characters of a search excerpt shown.
+
+# Error panel titles, most specific first.
+ERROR_TITLES: tuple[tuple[type[BaseException], str], ...] = (
+    (InvalidCitationError, "Not a citation"),
+    (DateOutOfRangeError, "No text for that date"),
+    (InvalidParameterError, "Invalid usage"),
+    (TitleNotFoundError, "No such title"),
+    (AmbiguousNodeError, "More than one match"),
+    (NodeNotFoundError, "Not found"),
+    (ECFRTimeoutError, "No response from the eCFR"),
+    (ECFRConnectionError, "Can't reach the eCFR"),
+    (RateLimitError, "Rate limited by the eCFR"),
+    (NotFoundError, "Not found"),
+    (APIError, "eCFR API error"),
+    (ResponseFormatError, "Unexpected response from the eCFR"),
+    (OSError, "File error"),
+)
+# Names for counts of outline entries: (one, many).
+COUNT_NAMES = {
+    "appendix": ("appendix", "appendices"),
+    "subject_group": ("group", "groups"),
+}
+OUTLINE_LEVELS = frozenset(
+    {"title", "subtitle", "chapter", "subchapter", "part", "subpart", "section"}
+)
 
 ENDPOINT_NAMES = {
     "titles.json": "list of titles",
@@ -269,6 +307,26 @@ class Terminal(Progress):
         if not self.quiet:
             self.console.print(Text(message, style=DIM), soft_wrap=True)
 
+    def done(self, message: str, *details: str, network: bool = True) -> None:
+        """A one-line closing message, with details dimmed."""
+        if self.quiet:
+            return
+        line = Text()
+        line.append("✔ ", style=f"bold {GOOD}")
+        line.append(message)
+        extra = [*details, *(self._network_brief() if network else ())]
+        if extra:
+            line.append("  " + " · ".join(extra), style=DIM)
+        self.console.print(line)
+
+    def _network_brief(self) -> tuple[str, str]:
+        transfer = _count(self.requests, "request", "requests")
+        if self.cached:
+            transfer += f", {self.cached} cached"
+        if self.retries:
+            transfer += f", {_count(self.retries, 'retry', 'retries')}"
+        return transfer, f"{time.monotonic() - self.started_at:.1f}s"
+
     def summary(
         self, title: str, rows: dict[str, str], *, network: bool = True
     ) -> None:
@@ -313,7 +371,7 @@ class Terminal(Progress):
             for node in exc.candidates[:10]:
                 table.add_row(f"[bold]{node.citation}[/]", Text(_first_line(node)[:70]))
             body = Group(Text(str(exc).split(":")[0] + ":"), table)
-        name = type(exc).__name__ if isinstance(exc, ECFRError) else "Error"
+        name = next((t for cls, t in ERROR_TITLES if isinstance(exc, cls)), "Error")
         self.console.print(
             Panel(
                 body,
@@ -349,72 +407,80 @@ def size(n: float) -> str:
 # Command output --------------------------------------------------------------
 
 
-def outline_tree(node: models.Node, depth: int | None = None) -> Tree:
-    """A table of contents as a tree; reserved entries are dimmed."""
+def outline_tree(entry: Outline, depth: int | None = None) -> Tree:
+    """A table of contents as a tree; reserved entries are dimmed.
 
-    def label(n: models.Node) -> Text:
-        text = Text(" ".join(_TAGS.sub("", n.label).split()))
-        if n.reserved:
+    Below ``depth``, entries show how many of each level they contain.
+    """
+
+    def label(e: Outline, counts: bool) -> Text:
+        text = Text(e.heading)
+        if e.reserved:
             text.stylize(DIM)
-        elif n.type in ("title", "chapter", "subtitle", "subchapter", "part"):
+        elif e.level in ("title", "chapter", "subtitle", "subchapter", "part"):
             text.stylize("bold")
-        if n.type == "part" and n.size:
-            text.append(f"  {size(n.size)}", style=DIM)
+        if e.level == "part" and e.size:
+            text.append(f"  {size(e.size)}", style=DIM)
+        if counts and e.children:
+            text.append(f"  {_contents(e.children)}", style=DIM)
         return text
 
-    def add(branch: Tree, n: models.Node, level: int) -> None:
-        if depth is not None and level >= depth:
-            if n.children:
-                branch.add(Text(f"{len(n.children)} more", style=DIM))
-            return
-        for child in n.children:
-            add(branch.add(label(child)), child, level + 1)
+    def add(branch: Tree, e: Outline, level: int) -> None:
+        for child in e.children:
+            last = depth is not None and level + 1 >= depth
+            sub_branch = branch.add(label(child, last))
+            if not last:
+                add(sub_branch, child, level + 1)
 
-    tree = Tree(label(node), guide_style=DIM)
-    add(tree, node, 0)
+    tree = Tree(label(entry, depth == 0), guide_style=DIM)
+    if depth != 0:
+        add(tree, entry, 0)
     return tree
 
 
-def changes_table(versions: list[models.ContentVersion]) -> Table:
+def _contents(children: Sequence[Outline]) -> str:
+    """E.g. "12 sections, 1 appendix"."""
+    counts: dict[str, int] = {}
+    for child in children:
+        counts[child.level] = counts.get(child.level, 0) + 1
+    words = []
+    for level, n in counts.items():
+        default = (level, f"{level}s") if level in OUTLINE_LEVELS else None
+        one, many = COUNT_NAMES.get(level) or default or ("heading", "headings")
+        words.append(_count(n, one, many))
+    return ", ".join(words)
+
+
+def changes_table(changes: Sequence[Change]) -> RenderableType:
+    """Changes; for a single section, its heading is shown once, above."""
+    single = len({c.identifier for c in changes}) == 1
     table = Table(box=box.SIMPLE_HEAD, header_style=f"bold {ACCENT}", pad_edge=False)
     table.add_column("Issued", no_wrap=True)
     table.add_column("Effective", no_wrap=True, style=DIM)
-    table.add_column("Section", no_wrap=True)
-    table.add_column("Heading")
-    table.add_column("Kind", no_wrap=True)
-    for v in versions:
-        heading = " ".join(v.name.split()).removeprefix(f"§ {v.identifier}").strip()
-        if v.removed:
-            kind = Text("removed", style=BAD)
-        elif v.substantive:
-            kind = Text("substantive", style=WARN)
-        else:
-            kind = Text("editorial", style=DIM)
-        table.add_row(str(v.issue_date), str(v.date), v.identifier, heading, kind)
-    return table
+    if not single:
+        table.add_column("Section", max_width=14, overflow="fold")
+        table.add_column("Heading", min_width=20)
+    table.add_column("Kind", no_wrap=True, min_width=len("substantive"))
+    styles = {"removed": BAD, "substantive": WARN, "editorial": DIM}
+    for c in changes:
+        kind = Text(c.kind, style=styles[c.kind])
+        columns = [] if single else [c.identifier, c.heading]
+        table.add_row(str(c.issued), str(c.effective), *columns, kind)
+    if not single:
+        return table
+    heading = Text(changes[0].citation, style="bold")
+    heading.append(f"  {changes[0].heading}")
+    return Group(heading, table)
 
 
-def search_table(results: list[models.SearchResult]) -> Table:
+def search_table(matches: Sequence[Match]) -> Table:
     table = Table(box=box.SIMPLE_HEAD, header_style=f"bold {ACCENT}", pad_edge=False)
     table.add_column("Citation", no_wrap=True, style="bold")
     table.add_column("Heading / excerpt")
-    for r in results:
-        heading = _plain(r.headings.section or r.headings.appendix or "")
-        excerpt = _plain(r.full_text_excerpt or "")
-        cell = Text(heading)
-        if excerpt:
-            cell.append(f"\n{excerpt[:200]}", style=DIM)
-        table.add_row(result_citation(r), cell)
+    for m in matches:
+        cell = Text(m.heading)
+        if m.excerpt:
+            excerpt = textwrap.shorten(m.excerpt, EXCERPT_WIDTH, placeholder="…")
+            cell.append(f"\n{excerpt}", style=DIM)
+        table.add_row(m.citation, cell)
     return table
-
-
-def result_citation(result: models.SearchResult) -> str:
-    h = result.hierarchy
-    return f"{h.title} CFR {h.section or h.appendix}"
-
-
-_TAGS = re.compile(r"<[^>]+>")
-
-
-def _plain(text: str) -> str:
-    return " ".join(html.unescape(_TAGS.sub("", text)).split())

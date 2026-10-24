@@ -26,7 +26,7 @@ from collections.abc import Callable, Iterator, Sequence
 from enum import StrEnum
 from functools import cached_property
 from pathlib import Path, PurePosixPath
-from typing import ClassVar
+from typing import ClassVar, Literal, overload
 
 from ecfr_md import markdown
 from ecfr_md.citation import KEYWORDS, PARAGRAPH, Citation
@@ -159,11 +159,26 @@ class Node(ABC):
         """Markdown files keyed by relative path, one per section or appendix."""
         return {PurePosixPath(f"{self.slug}.md"): self.to_markdown()}
 
+    @overload
+    def save(
+        self,
+        path: str | Path,
+        *,
+        tree: Literal[False] = False,
+        front_matter: bool = True,
+    ) -> Path: ...
+
+    @overload
+    def save(
+        self, path: str | Path, *, tree: Literal[True], front_matter: bool = True
+    ) -> list[Path]: ...
+
     def save(
         self, path: str | Path, *, tree: bool = False, front_matter: bool = True
-    ) -> list[Path]:
-        """Write Markdown to ``path`` and return the files written.
+    ) -> Path | list[Path]:
+        """Write Markdown to ``path``.
 
+        Returns the file written, or with ``tree=True`` the list of files.
         By default this writes one file; an existing directory receives a file
         named after the citation, e.g. ``45-cfr-164.502.md``. With
         ``tree=True``, ``path`` is a directory that gets one folder per
@@ -175,7 +190,8 @@ class Node(ABC):
         if target.is_dir() or str(path).endswith(("/", "\\")):
             target = target / file_name(self.citation)
         header = render_front_matter(self.provenance) if front_matter else ""
-        return [write_text(target, header + self.to_markdown())]
+        written = write_text(target, header + self.to_markdown())
+        return [written] if tree else written
 
     @property
     def text(self) -> str:
@@ -435,9 +451,23 @@ class Division(Node):
         )
         return files
 
+    @overload
+    def save(
+        self,
+        path: str | Path,
+        *,
+        tree: Literal[False] = False,
+        front_matter: bool = True,
+    ) -> Path: ...
+
+    @overload
+    def save(
+        self, path: str | Path, *, tree: Literal[True], front_matter: bool = True
+    ) -> list[Path]: ...
+
     def save(
         self, path: str | Path, *, tree: bool = False, front_matter: bool = True
-    ) -> list[Path]:
+    ) -> Path | list[Path]:
         if not tree:
             return super().save(path, front_matter=front_matter)
         base = self.parent.hierarchy if self.parent else self.source.hierarchy

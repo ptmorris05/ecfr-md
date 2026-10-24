@@ -32,33 +32,33 @@ def test_get_part_navigation_and_history(ecfr):
 
 
 def test_every_json_endpoint_parses(ecfr):
-    assert ecfr.admin.agencies().agencies
-    assert ecfr.admin.corrections(title=45).ecfr_corrections
-    assert ecfr.admin.title_corrections(45).ecfr_corrections
-    assert ecfr.search.results("minimum necessary", per_page=2).results
-    assert ecfr.search.count("minimum necessary").meta.total_count
-    assert ecfr.search.summary("minimum necessary").meta.description
-    assert ecfr.search.daily_counts("minimum necessary").dates
-    assert ecfr.search.title_counts("minimum necessary").titles
-    assert ecfr.search.hierarchy_counts("minimum necessary").count.value
-    ecfr.search.suggestions("minimum")
-    assert ecfr.versioner.titles().titles
-    assert ecfr.versioner.ancestry(45, part="164").ancestors
-    assert ecfr.versioner.structure(45).children
-    assert ecfr.versioner.versions(45, part="164").content_versions
+    assert ecfr.api.admin.agencies().agencies
+    assert ecfr.api.admin.corrections(title=45).ecfr_corrections
+    assert ecfr.api.admin.title_corrections(45).ecfr_corrections
+    assert ecfr.api.search.results("minimum necessary", per_page=2).results
+    assert ecfr.api.search.count("minimum necessary").meta.total_count
+    assert ecfr.api.search.summary("minimum necessary").meta.description
+    assert ecfr.api.search.daily_counts("minimum necessary").dates
+    assert ecfr.api.search.title_counts("minimum necessary").titles
+    assert ecfr.api.search.hierarchy_counts("minimum necessary").count.value
+    ecfr.api.search.suggestions("minimum")
+    assert ecfr.api.versioner.titles().titles
+    assert ecfr.api.versioner.ancestry(45, part="164").ancestors
+    assert ecfr.api.versioner.structure(45).children
+    assert ecfr.api.versioner.versions(45, part="164").content_versions
 
 
 def test_missing_content_is_not_found(ecfr):
     with pytest.raises(NotFoundError, match="No matching content found"):
-        ecfr.versioner.full(45, part="999")
+        ecfr.api.versioner.full(45, part="999")
 
 
 def test_models_parse_every_title(ecfr):
     """Contract test: the models accept the structure and corrections of all titles."""
-    for title in ecfr.versioner.titles().titles:
+    for title in ecfr.api.versioner.titles().titles:
         if not title.reserved:
-            ecfr.versioner.structure(title.number, date=title.up_to_date_as_of)
-            ecfr.admin.title_corrections(title.number)
+            ecfr.api.versioner.structure(title.number, date=title.up_to_date_as_of)
+            ecfr.api.admin.title_corrections(title.number)
 
 
 # Large parts with very different markup: privacy rules, food labels, vehicle
@@ -96,7 +96,7 @@ def test_every_node_is_found_by_its_own_citation(ecfr, title, part):
 
 def test_changes_are_never_issued_before_they_take_effect(ecfr):
     """The cache relies on this: every version is issued on or after its date."""
-    versions = ecfr.versioner.versions(45, part="164").content_versions
+    versions = ecfr.api.versioner.versions(45, part="164").content_versions
     assert versions
     early = [v for v in versions if v.issue_date < v.date]
     assert early == [], early[:3]
