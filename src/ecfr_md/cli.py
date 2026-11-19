@@ -16,7 +16,6 @@ Run ecfr-md COMMAND --help for a command's options. The options below go
 before the command. Every eCFR API endpoint is under ecfr-md api.
 """
 
-import dataclasses
 import datetime as dt
 import functools
 import inspect
@@ -45,7 +44,7 @@ from ecfr_md.client import ECFR, Admin, Search, Versioner
 from ecfr_md.config import Settings, __version__
 from ecfr_md.errors import ECFRError, InvalidCitationError, InvalidParameterError
 from ecfr_md.params import DateLike, Hierarchy, SearchFilters, to_date
-from ecfr_md.results import Change, Match, Matches
+from ecfr_md.results import Matches
 from ecfr_md.ui import (
     Terminal,
     changes_table,
@@ -567,7 +566,7 @@ def changes(
     with terminal.live():
         found = ecfr.changes(_citation(citation), since=since, until=until, **hierarchy)
     if as_json:
-        _print_records(found)
+        console.print_json(json.dumps([change.to_dict() for change in found]))
         return
     if found:
         console.print(changes_table(found, width=console.width))
@@ -756,19 +755,6 @@ def _print_markdown(text: str) -> None:
     sys.stdout.flush()
     sys.stdout.buffer.write(text.encode("utf-8"))
     sys.stdout.buffer.flush()
-
-
-def _print_records(items: Sequence[Change | Match]) -> None:
-    """Results as a JSON list, leaving out the API's raw response."""
-    records = [
-        {
-            f.name: getattr(item, f.name)
-            for f in dataclasses.fields(item)
-            if f.name != "raw"
-        }
-        for item in items
-    ]
-    console.print_json(json.dumps(records, default=str))
 
 
 def _total_size(files: Sequence[Path]) -> str:

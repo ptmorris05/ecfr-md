@@ -630,7 +630,6 @@ class ECFR:
             Levels that refine the citation: subtitle, chapter, subchapter,
             part, subpart, section or appendix, e.g. ``part="164"``.
         """
-        cited = Citation.parse(citation).with_hierarchy(hierarchy)
         before = self.get(citation, date=since, **hierarchy)
         after = self.get(citation, date=until, **hierarchy)
         assert before.date is not None and after.date is not None  # Set by get().
@@ -639,7 +638,7 @@ class ECFR:
                 f"The first date ({before.date}) is after the second ({after.date})"
             )
         return compare_texts(
-            str(cited),
+            before.citation,
             before.to_markdown(),
             after.to_markdown(),
             before.date,

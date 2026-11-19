@@ -24,7 +24,8 @@ def versions(api):
 
 
 def test_compare_lines_up_paragraphs_and_words(ecfr, versions):
-    found = ecfr.compare("45 CFR 164.502", "2024-01-01")
+    found = ecfr.compare("45/164.502", "2024-01-01")  # Any form of citation.
+    assert found.citation == "45 CFR 164.502"
     assert [d.kind for d in found.differences] == ["changed", "added", "changed"]
     rule = found.differences[0]
     assert ("-", "Old") in rule.words and ("+", "New") in rule.words
