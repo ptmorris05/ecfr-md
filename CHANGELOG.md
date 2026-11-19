@@ -10,6 +10,36 @@ Install from GitHub; ecfr-md is not on PyPI.
 
 ### Added
 
+- Navigation: nodes from a client have `next` and `previous` (the
+  neighbouring section or appendix, across parts, chapters and titles),
+  `up` (the parent, or the division above the text fetched) and `outline`
+  (their entry in the outline of the whole CFR). Outline entries have
+  `next`, `previous`, `up`, `siblings` and `read(date=)`, which fetches the
+  text. Nodes from `load()` raise `ECFRError` for these.
+- `ecfr_md.outline()` / `ECFR.outline()` with no citation: the whole CFR,
+  one entry per title, each title's structure loaded when first opened.
+- Cross-references: `Node.references`, `find_references(text, context)`
+  and `Reference` (`start`, `end`, `text`, `target`, `citation`, `url`,
+  `kind`). Sections, lists and ranges of them, paragraphs "of this section"
+  or "of § X", parts, subparts and appendices relative to the text, other
+  titles, and citations of the U.S. Code, the Federal Register and public
+  laws, which link to uscode.house.gov, federalregister.gov and
+  congress.gov (templates `USC_URL`, `FR_URL`, `PUBLIC_LAW_URL`).
+- `ecfr_md.cited_by()` / `ECFR.cited_by()` and `ecfr-md cited-by`: sections
+  that may cite a section or part, found by search (approximate).
+- `ecfr-md references CITATION`: a section's cross-references and what
+  they refer to.
+- Linked Markdown: `links=` on `save()`, `Node.save()` and `--links` /
+  `--no-links` on `get`; `to_markdown(links=True)`. Trees link their
+  cross-references to each other's files by default, and to the eCFR for
+  anything outside the tree. Front matter records `links`.
+- `Node.anchor`: the eCFR's id for a paragraph (`p-164.502(a)(1)`),
+  section (`164.502`), subpart, part or appendix.
+- `ecfr-md outline` of a section or appendix ends with the previous and
+  next ones.
+- Offline reading: when the eCFR can't be reached, the newest cached title
+  list and text are used, with an `ECFRWarning` that they may be out of
+  date.
 - `ecfr-md titles`, `ecfr_md.titles()` and `ECFR.titles()`: every title with
   the latest date of its text (`TitleInfo`). A bare `ecfr-md outline` lists
   them too.
@@ -106,6 +136,13 @@ Install from GitHub; ecfr-md is not on PyPI.
 
 ### Changed
 
+- Reading a section or appendix in a part under 2 MB fetches the whole
+  part (once, then from the cache), so the part's other sections need no
+  request; the node's `parent` is now its subpart or part. The title's
+  structure is fetched first to tell (also cached).
+- **One-time rewrite:** trees are now saved with links, so the first `sync`
+  of a tree saved before this rewrites all its files to add them. Trees
+  saved with `links=False` (`--no-links`) stay without.
 - **Breaking:** `--concurrency` defaults to 2 (was 4) and bounds requests in
   flight across all threads: the eCFR answers 429 to 3 or more. After a 429
   the limit halves and never returns to the level that got it; 429s don't

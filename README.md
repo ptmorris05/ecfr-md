@@ -59,6 +59,9 @@ ecfr-md search minimum necessary                 # sections that use the phrase
 ecfr-md search minimum necessary --in "45 CFR 164"   # only in Part 164
 ecfr-md search "minimum necessary" --save out/   # and save their text
 ecfr-md outline 45 CFR Part 164 --depth 1        # table of contents, no text
+ecfr-md outline 45 CFR 164.502                   # and the sections around it
+ecfr-md references 45 CFR 164.502                # what a section cites
+ecfr-md cited-by 45 CFR 164.502                  # what cites it (approximate)
 ecfr-md changes 45 CFR Part 164 --since 2024-01-01
 ecfr-md compare 45 CFR 164.502 --since 2024-04-25    # what changed, as a redline
 ecfr-md sync hipaa/                              # update saved files
@@ -70,9 +73,11 @@ ecfr-md cache clear
 
 | Command | Does |
 | --- | --- |
-| `get CITATION` | Prints the text, or saves it with `-o FILE`. In a terminal, paragraphs are indented, a paragraph shows the section and paragraphs above it, and long text goes through a pager (`--no-pager` to skip it); every lookup ends with its citation, date and eCFR link. Several citations or addresses print one after another, or with `-o DIR` save one file each; with no citation in a terminal, it asks for one ("Citation or address:"), so you can paste. `-o` takes a `.md` file, a directory (an existing one, or a name ending in `/`) or `-` for stdout. `--tree -o DIR` writes one file per section. `--from FILE -o DIR` takes one citation per line (`-` for stdin; `# comments`, quotes and lists such as `45 CFR 164.502, 164.506` are fine): every line is checked first, repeats are saved once, and if some can't be found the rest are still saved. `--all -o DIR` saves every title (with `--tree`, a folder per title). `--date` for text as of a date. `--no-front-matter` leaves out the metadata header. |
+| `get CITATION` | Prints the text, or saves it with `-o FILE`. In a terminal, paragraphs are indented, a paragraph shows the section and paragraphs above it, and long text goes through a pager (`--no-pager` to skip it); every lookup ends with its citation, date and eCFR link. Several citations or addresses print one after another, or with `-o DIR` save one file each; with no citation in a terminal, it asks for one ("Citation or address:"), so you can paste. `-o` takes a `.md` file, a directory (an existing one, or a name ending in `/`) or `-` for stdout. `--tree -o DIR` writes one file per section. `--from FILE -o DIR` takes one citation per line (`-` for stdin; `# comments`, quotes and lists such as `45 CFR 164.502, 164.506` are fine): every line is checked first, repeats are saved once, and if some can't be found the rest are still saved. `--all -o DIR` saves every title (with `--tree`, a folder per title). `--date` for text as of a date. `--no-front-matter` leaves out the metadata header. `--links` makes cross-references Markdown links (on for `--tree`, where they link the saved files to each other; `--no-links` to turn that off). |
 | `titles` | Lists the titles and the latest date of each one's text. |
-| `outline CITATION` | Prints the table of contents (no citation: the titles). `--depth N` limits levels and counts what's below. Part sizes are shown. |
+| `outline CITATION` | Prints the table of contents (no citation: the titles). `--depth N` limits levels and counts what's below. Part sizes are shown. For a section or appendix, ends with the ones before and after it, across parts and titles. |
+| `references CITATION` | Lists the cross-references in the text ("§ 164.501", "paragraph (a) of this section", "42 U.S.C. 1320d", ...) and what each refers to. `--json` adds addresses and links. |
+| `cited-by CITATION` | Lists sections that may cite a section or part, by searching for its number: approximate. `--limit`, `--date`, `--json`. |
 | `changes CITATION` | Lists changes to sections: when issued, when effective, and whether substantive, editorial or a removal. `--since` and `--until` take dates. Ends with the `compare` command for the latest change. |
 | `compare CITATION --since DATE` | Shows what changed in the text between `--since` and `--until` (default: latest): changed, added and removed paragraphs, with words struck out and inserted. Piped, it prints Markdown with `<del>` and `<ins>`. |
 | `search WORDS` | Lists current sections that contain the words as a phrase (quotes optional; `--no-phrase`: anywhere in the section). `--in CITATION` searches only a title or part of one. `--limit N` (default 20), `--all-versions`, `--save DIR`, `--json`, plus the API's filters (`--agency SLUG`, `--date`, `--last-modified-after`, …); an unknown agency is named, with suggestions. |
@@ -80,7 +85,7 @@ ecfr-md cache clear
 | `cache info`, `cache clear` | Shows (`--json` too) or deletes the local cache. |
 | `api admin …`, `api search …`, `api versioner …` | One command per API endpoint, printing its JSON. See [API](#api). |
 
-`titles`, `outline`, `changes`, `compare` and `search` take `--json` for JSON output (`search --json` is `{"complete", "total_versions", "results"}`). A citation can be one quoted string or separate words, and anything in [Citations and addresses](#citations-and-addresses) works, eCFR links and saved files' names included; keywords such as `--part 164` work too. Without `-o`, `get` prints formatted text in a terminal and plain Markdown when piped. When stderr isn't a terminal (a pipe, a log, CI), messages and summaries are plain whole lines you can grep.
+`titles`, `outline`, `changes`, `compare`, `search`, `references` and `cited-by` take `--json` for JSON output (`search --json` is `{"complete", "total_versions", "results"}`). A citation can be one quoted string or separate words, and anything in [Citations and addresses](#citations-and-addresses) works, eCFR links and saved files' names included; keywords such as `--part 164` work too. Without `-o`, `get` prints formatted text in a terminal and plain Markdown when piped. When stderr isn't a terminal (a pipe, a log, CI), messages and summaries are plain whole lines you can grep.
 
 A citation that names a subpart or appendix without its part, like `45 CFR Subpart E`, is checked against the title's table of contents: if several parts have one, the error lists them rather than guessing. A citation that doesn't exist says what does ("No subpart Z in 45 CFR Part 164. It has subparts A, B, C, D, E"). A date after the latest the eCFR has gives the latest text, with a warning, and files are labeled with the text's real date.
 
@@ -240,6 +245,24 @@ ecfr-md get 45 CFR Part 164 --tree -o hipaa/
 
   Saving a tree over an earlier save of the same tree (another date, say) removes the files ecfr-md wrote for sections that are no longer there, so the tree never mixes dates. Files ecfr-md didn't write, and files you edited, are kept.
 
+### Links
+
+Trees are saved with their cross-references as Markdown links, so a saved tree can be browsed on GitHub or in Obsidian: "§ 164.501", "subpart E of this part" or "appendix A to this part" link to the file that holds it, relative to the file it's in (`../subpart-E/164.501.md`), and anything outside the tree links to its eCFR page. Citations of the U.S. Code, the Federal Register and public laws link to uscode.house.gov, federalregister.gov and congress.gov. Headings and existing links aren't touched.
+
+```python
+ecfr_md.save("45 CFR Part 164", "hipaa/", tree=True)  # linked
+ecfr_md.save("45 CFR Part 164", "hipaa/", tree=True, links=False)  # plain
+ecfr_md.save("45 CFR Part 164", "hipaa.md", links=True)  # one file, links to the eCFR
+part.to_markdown(links=True)
+```
+
+```sh
+ecfr-md get 45 CFR Part 164 --tree -o hipaa/ --no-links
+ecfr-md get 45 CFR 164.502 --links
+```
+
+Single files and printed text have no links unless asked for. Saved files record `links` in their front matter, and `sync` keeps it. Trees saved before links existed have no `links` field, so their next `sync` rewrites every file once to add them.
+
 Each file starts with YAML front matter. Turn it off with `front_matter=False` or `--no-front-matter`.
 
 ```yaml
@@ -249,7 +272,7 @@ address: "45/164.502"
 heading: "§ 164.502 Uses and disclosures of protected health information: General rules."
 date: "2026-10-07"
 source: "https://www.ecfr.gov/on/2026-10-07/title-45/section-164.502"
-api: "https://www.ecfr.gov/api/versioner/v1/full/2026-10-07/title-45.xml?section=164.502"
+api: "https://www.ecfr.gov/api/versioner/v1/full/2026-10-07/title-45.xml?part=164"
 retrieved: "2026-10-09T17:02:11+00:00"
 generator: "ecfr-md 0.1.0"
 layout: 2
@@ -260,6 +283,7 @@ digest: "sha256:3f1c…"
 
 - `pinned` (only for text as of a past date) repeats the date you asked for, e.g. `pinned: "2018-01-01"`. `sync` keeps such files at that date.
 - `layout` is the version of the file names: 2 is the layout above. Files saved by ecfr-md 0.x have none.
+- `links` is whether cross-references are links (always recorded for trees; for single files only when true).
 - `digest` is the SHA-256 of everything after the front matter. `sync` uses it to tell whether you edited the file. Files saved by earlier versions have no digest and are synced as before.
 
 ### Keeping files up to date
@@ -334,6 +358,63 @@ In Jupyter, nodes display as Markdown and outlines as a nested list, cut at abou
 
 If more than one node matches a key, `node[key]` raises `AmbiguousNodeError` with the matches in `.candidates`. `find()` returns the first match.
 
+### Next, previous and up
+
+Nodes from `get` know where they are in the CFR. `next` and `previous` are the neighbouring sections or appendices, in document order, across subparts, parts, chapters and titles (reserved sections are skipped); `up` is the parent, or above the text that was fetched, the division that holds it. Reading a section in a part under 2 MB fetches the whole part once (and caches it), so stepping through its sections makes no more requests; elsewhere, the next text is fetched.
+
+```python
+section = ecfr_md.get("45 CFR 164.502")
+section.next  # <Section 45 CFR 164.504 ...>, from the part already fetched
+section.previous.previous  # 45 CFR 164.500
+section.up  # <Subpart 45 CFR Part 164 Subpart E ...>
+section.outline  # its entry in the outline of the whole CFR
+section.outline.next.read()  # the text of the next section
+```
+
+Nodes built with `ecfr_md.load(xml, title=45)` have no client to fetch with, so these raise `ECFRError`.
+
+Outlines move the same way, without text. `ecfr_md.outline()` with no citation is the whole CFR: one entry per title, each title's table of contents loaded the first time it's opened, and kept for the session.
+
+```python
+cfr = ecfr_md.outline()
+cfr["45"]["Part 164"]  # opens title 45
+entry = ecfr_md.outline("45 CFR Part 164")
+entry.next  # the first section after part 164: 45 CFR 170.100
+entry.up  # 45 CFR Subchapter C, above this outline
+entry.siblings  # the other parts in the subchapter
+entry["164.502"].read()  # the text
+entry.url  # the eCFR page
+```
+
+`parent` stays inside the outline you asked for (None at its top); `up`, `siblings`, `next` and `previous` look beyond it.
+
+### Cross-references
+
+`node.references` lists the cross-references in a node's text, each with where it is (`start`, `end`, `text`), what it points to (`target`, an `Address`, and `citation`) and a link (`url`):
+
+```python
+for ref in ecfr_md.get("45 CFR 164.502").references:
+    print(ref.text, "->", ref.citation, ref.url)
+# this subpart -> 45 CFR Part 164 Subpart E https://www.ecfr.gov/current/title-45/part-164/subpart-E
+# subpart C of part 160 of this subchapter -> 45 CFR Part 160 Subpart C https://...
+# § 164.506 -> 45 CFR 164.506 https://www.ecfr.gov/current/title-45/section-164.506
+# ...
+# 78 FR 5696 -> 78 FR 5696 https://www.federalregister.gov/citation/78-FR-5696
+```
+
+`ecfr_md.find_references(text, context)` does the same for any text; `context` is where the text is (an address or citation such as `"45/164.502"`), which resolves "this part", "subpart E of this part" and "paragraph (b) of this section". It understands `§ 164.501`, `§§ 164.502 and 164.504`, `§§ 164.500 through 164.534`, `§ 164.502(a)(1) and (2)`, `45 CFR 160.103`, `45 CFR parts 160 and 164`, `part 160 of this subchapter`, `part 2 of title 42`, `subpart E of this part`, `paragraphs (a)(1) and (2) of this section`, `paragraph (c) of § 164.508`, `appendix A to this part`, `Appendix A to Subpart C of Part 164`, `this part`, `this subpart` and `this section`, plus `42 U.S.C. 1320d-2`, `78 FR 5692` and `Pub. L. 104-191`. The link templates for those three are `USC_URL`, `FR_URL` and `PUBLIC_LAW_URL` in `ecfr_md.references`; `urls={"usc": ...}` overrides them.
+
+Resolution is by pattern. Measured in November 2026 on six parts (45 CFR 160 and 164, 42 CFR 482, 12 CFR 1026, 21 CFR 314, 34 CFR 300; 589 sections and appendices, 15,706 CFR references):
+
+- 99.9% of the sections, parts, subparts and appendices referred to exist; 96.5% of the paragraphs referred to in the same part are found in the text, most of the rest in sections whose paragraphs ecfr-md nests differently (`paragraph_issues`).
+- 99.6% of citation-like phrases in sections are found. Those missed are mostly "paragraph (2) of this definition" and "50 U.S.C. app. 527", which aren't resolved. In appendices it's 96.1%: commentary such as 12 CFR Supplement I to Part 1026 says "this section" and "paragraph (d)(2)" of the section it comments on, which the text doesn't mark.
+
+`ecfr_md.cited_by("45 CFR 164.502")` finds sections that may cite a section or part by searching the eCFR for its number. It's approximate: it finds "§ 164.502" and "45 CFR 164.502", not "paragraph (a) of this section" or text that cites the part as "this part".
+
+### Anchors
+
+`node.anchor` is the id the eCFR gives the node on its pages, for deep links and HTML anchors: `p-164.502(a)(1)` for a paragraph, `164.502` for a section, `subpart-E`, `part-164`, `Appendix-A-to-Part-164`. The eCFR includes the defined term in the ids of paragraphs numbered under definitions (`p-164.501(Health care operations)(1)`), which the text doesn't mark, so those differ.
+
 ### Outlines, changes and search results
 
 `outline()` returns the table of contents as an `Outline`, without the text. It navigates like a node (`outline["Subpart E"]`, `outline["subpart-E"]`, `outline.iter("section")`, `outline.find(level="appendix")`, `.parent`, `.ancestors`, `.children`) and has `level`, `identifier`, `heading`, `citation`, `address`, `uri`, `url`, `reserved` and `size`; `str(outline)` is the indented table of contents. `level` is a `Level`, or the eCFR's own type name (such as `"hed1"`) for unnumbered headings.
@@ -386,6 +467,8 @@ ecfr-md avoids requests it doesn't need:
 - **Cache, on by default.** Downloaded text is kept in the user cache directory (`~/Library/Caches/ecfr-md` on macOS, `~/.cache/ecfr-md` on Linux) and reused until the eCFR changes it. Every change the eCFR makes, including corrections to past dates, gets an issue date. To check a stored copy, ecfr-md reads the title list (one small request, reused for 5 minutes); only if the title has changed since the copy was made does it request the list of versions issued since, once per title. Text that hasn't changed isn't downloaded again. Titles still being updated aren't stored.
 - **Large titles are updated part by part.** When a large title changes, only the parts that changed are downloaded again.
 - **Several citations, one request.** `get_many([...])` and `ecfr-md get --from list.txt` fetch sections in the same small part (under 2 MB) with one request.
+- **A section brings its part.** Reading a section or appendix in a part under 2 MB fetches the part, so `next`, `previous` and other sections of the part need no request. The table of contents is fetched once to tell (and cached).
+- **Offline.** If the eCFR can't be reached, ecfr-md uses the newest cached copy of the title list and the text, with an `ECFRWarning` that it may be out of date.
 - **One connection.** Requests share one HTTP/2 connection and ask for gzip, which the API sends about 5× smaller.
 
 ```sh
@@ -443,7 +526,7 @@ ECFR_MD_USER_AGENT="my-app/1.0" ecfr-md get 45
 
 ## Public API
 
-Everything exported from `ecfr_md` (the module-level functions, `ECFR`, `Settings`, `Citation`, the node classes, `Level`, `LevelName`, `Outline`, `Change`, `Match`, `Matches`, `load`, `Progress`, `SyncResult`, the search enums and typed dicts, and the exceptions), plus the response models in `ecfr_md.models`. Other modules are internal. The `ecfr-md` command and its options are public too.
+Everything exported from `ecfr_md` (the module-level functions, `ECFR`, `Settings`, `Citation`, the node classes, `Level`, `LevelName`, `Outline`, `Change`, `Match`, `Matches`, `Reference`, `find_references`, `load`, `Progress`, `SyncResult`, the search enums and typed dicts, and the exceptions), plus the response models in `ecfr_md.models`. Other modules are internal. The `ecfr-md` command and its options are public too.
 
 ## Errors
 
