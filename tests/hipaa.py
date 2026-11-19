@@ -279,10 +279,10 @@ SEARCH_RESULTS = {
 def install(api) -> None:
     """Point a FakeAPI at this title."""
     api.json(f"{VERSIONER}/titles.json", TITLES)
-    for date in (LATEST, PAST, "2024-06-24", "2024-06-25"):
+    for date in (LATEST, PAST, "2020-10-01", "2024-06-24", "2024-06-25"):
         api.json(f"{VERSIONER}/structure/{date}/title-45.json", STRUCTURE)
     api.routes[f"{VERSIONER}/full/{LATEST}/title-45.xml"] = full_text(SECTION_502)
-    for date in (PAST, "2024-06-24"):
+    for date in (PAST, "2020-10-01", "2024-06-24"):
         api.routes[f"{VERSIONER}/full/{date}/title-45.xml"] = full_text(
             SECTION_502_PAST
         )
