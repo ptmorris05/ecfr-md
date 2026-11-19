@@ -10,6 +10,15 @@ Install from GitHub; ecfr-md is not on PyPI.
 
 ### Added
 
+- `ecfr-md browse [CITATION] [--date DATE]`: a full-screen terminal browser
+  (the `tui` extra, Textual). The outline of the whole CFR beside the text,
+  with a breadcrumb and the date of the text. Keys: `g` go to any citation
+  (completed from the outline), `/` search, `[`/`]` previous and next
+  section, `j`/`k` paragraphs, `tab` and `enter` (or a click) to follow
+  cross-references, `u` up, `b`/`f` back and forward, `d` text as of a
+  date, `h` changes with a redline of each, `e` export in every format, `y`
+  copy the paragraph's citation, `o` the outline, `?` keys. The `all`
+  extra includes `tui`.
 - MIT license. Releases are published on GitHub from version tags, with the
   wheel and source distribution attached and build provenance attested.
 - A documentation site with an API reference, built from the README,
@@ -244,6 +253,8 @@ Install from GitHub; ecfr-md is not on PyPI.
 
 ### Fixed
 
+- Redlines in the terminal (`ecfr-md compare`) showed Markdown's `*`
+  emphasis marks and `\` escapes; they show the words as they read.
 - `45 CFR Subpart E` (a subpart in many parts) silently gave Part 5's;
   it now lists the candidates.
 - A subtitle, chapter or subchapter fetched and saved the whole title under
