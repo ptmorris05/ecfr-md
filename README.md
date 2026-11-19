@@ -31,7 +31,7 @@ ecfr-md get 45 CFR 164.502 -o 164.502.md
 
 pipx uses your system Python; if that's older than 3.12, use uv, or add `--python python3.12` if you have Python 3.12 installed.
 
-These install the latest code on `main`. For a release, add its tag: `git+https://github.com/ptmorris05/ecfr-md@v0.1.0`.
+These install the latest code on `main`. For a release, add its tag (`git+https://github.com/ptmorris05/ecfr-md@v0.1.0`), or install the wheel attached to the [release](https://github.com/ptmorris05/ecfr-md/releases), which needs no git: `uv tool install https://github.com/ptmorris05/ecfr-md/releases/download/v0.1.0/ecfr_md-0.1.0-py3-none-any.whl`. Each release's files carry [build provenance](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations); check one with `gh attestation verify FILE --repo ptmorris05/ecfr-md`.
 
 To update: `uv tool upgrade ecfr-md` or `pipx upgrade ecfr-md`.
 
@@ -475,3 +475,9 @@ uv run ruff format && uv run ruff check
 ```
 
 CI runs on Linux, macOS and Windows with Python 3.12–3.14. A nightly job runs the network tests and opens an issue if they fail. Changes are listed in [CHANGELOG.md](https://github.com/ptmorris05/ecfr-md/blob/main/CHANGELOG.md).
+
+The documentation site is built from this README, the changelog and the docstrings: `uv run --group docs mkdocs serve`. To release, set the version in `pyproject.toml`, move the changelog's Unreleased notes under that version, and push a tag `vX.Y.Z`; the release workflow checks, tests, builds and publishes it. See [CONTRIBUTING.md](https://github.com/ptmorris05/ecfr-md/blob/main/CONTRIBUTING.md).
+
+## License
+
+[MIT](https://github.com/ptmorris05/ecfr-md/blob/main/LICENSE). The CFR text itself is a U.S. government work and not under copyright; the eCFR is an editorial compilation, not an official legal edition.

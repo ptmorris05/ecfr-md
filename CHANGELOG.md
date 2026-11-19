@@ -10,6 +10,11 @@ Install from GitHub; ecfr-md is not on PyPI.
 
 ### Added
 
+- MIT license. Releases are published on GitHub from version tags, with the
+  wheel and source distribution attached and build provenance attested.
+- A documentation site with an API reference, built from the README,
+  changelog and docstrings.
+
 - `ecfr-md titles`, `ecfr_md.titles()` and `ECFR.titles()`: every title with
   the latest date of its text (`TitleInfo`). A bare `ecfr-md outline` lists
   them too.

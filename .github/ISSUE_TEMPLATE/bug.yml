@@ -1,0 +1,19 @@
+name: Bug report
+description: Something doesn't work as documented
+labels: [bug]
+body:
+  - type: textarea
+    attributes:
+      label: What happened
+      description: The command or code you ran, what you expected, and what you got (paste the full output).
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: Version
+      description: Output of `ecfr-md --version`
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: Operating system and Python version
