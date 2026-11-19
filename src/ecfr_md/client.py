@@ -88,6 +88,8 @@ from ecfr_md.params import (
     to_date,
 )
 from ecfr_md.progress import Progress
+from ecfr_md.render import export
+from ecfr_md.render.formats import PER_SECTION, Format, format_for, require
 from ecfr_md.results import Change, Match, Matches, Outline, TitleInfo
 from ecfr_md.syncing import SyncResult, sync
 
@@ -892,6 +894,7 @@ class ECFR:
         tree: Literal[False] = False,
         front_matter: bool = True,
         date: DateLike | None = None,
+        format: Format | None = None,
         **hierarchy: Unpack[Hierarchy],
     ) -> Path: ...
 
@@ -905,6 +908,7 @@ class ECFR:
         tree: Literal[True],
         front_matter: bool = True,
         date: DateLike | None = None,
+        format: Format | None = None,
         **hierarchy: Unpack[Hierarchy],
     ) -> list[Path]: ...
 
@@ -918,9 +922,11 @@ class ECFR:
         tree: bool = False,
         front_matter: bool = True,
         date: DateLike | None = None,
+        format: Format | None = None,
         **hierarchy: Unpack[Hierarchy],
     ) -> Path | list[Path]:
-        """Save regulation text as Markdown.
+        """Save regulation text as Markdown, or as text, HTML, JSON, EPUB,
+        Word or PDF.
 
         Returns the file written, or with ``tree=True`` the list of files.
 
@@ -941,6 +947,12 @@ class ECFR:
         date: DateLike | None
             Point-in-time date. Defaults to the date in the citation, else the
             most recent available.
+        format: Format | None
+            ``"markdown"``, ``"text"``, ``"html"``, ``"json"``, ``"epub"``,
+            ``"docx"`` or ``"pdf"``. Defaults to the file's suffix
+            (``hipaa.pdf``), or Markdown. In a tree, text and HTML get a file
+            per section like Markdown, and the others a file per part. Word
+            and PDF need the ``docx`` and ``pdf`` extras.
         **hierarchy: Hierarchy
             Levels that refine the citation: subtitle, chapter, subchapter,
             part, subpart, section or appendix, e.g. ``part="164"``.
@@ -952,6 +964,7 @@ class ECFR:
             front_matter=front_matter,
             date=date,
             hierarchy=hierarchy,
+            format=format,
         )
 
     def _save(
@@ -964,23 +977,27 @@ class ECFR:
         date: DateLike | None = None,
         hierarchy: Hierarchy | None = None,
         layout: int = LAYOUT,
+        format: Format | None = None,
     ) -> Path | list[Path]:
         """``save``, plus the file layout: 1 writes a tree with ecfr-md 0.x's
         names, which ``sync`` uses for trees saved that way."""
         hierarchy = hierarchy or Hierarchy()
         address, cited, date = _cite(citation, hierarchy, date)
+        kind = format_for(path, format, tree=tree)
+        require(kind)  # Before downloading anything.
         if str(path).endswith(("/", "\\")):  # Path() would drop this: a directory.
             Path(path).mkdir(parents=True, exist_ok=True)
         if cited.paragraph or address.group is not None:
             node = self.get(citation, date=date, **hierarchy)
-            written = node.save(path, front_matter=front_matter)
+            written = node.save(path, front_matter=front_matter, format=kind)
             return [written] if tree else written
         pinned = self._snapshot(cited.title, _day(date))
         date = self._when(cited.title, date)
         cited = self._complete(cited, date)
         with self._full_text(cited, date) as download, download.path.open("rb") as f:
             names = None
-            if tree:  # Names first: a later sibling can change an earlier one's.
+            if tree and kind in PER_SECTION:
+                # Names first: a later sibling can change an earlier one's.
                 with download.path.open("rb") as first:
                     names = tree_names(file_events(first), layout=layout, free=True)
             source = Source(
@@ -991,17 +1008,30 @@ class ECFR:
                 download.retrieved,
                 pinned,
             )
-            files = save_events(
-                file_events(f),
-                source,
-                Path(path),
-                tree=tree,
-                front_matter=front_matter,
-                free=True,
-                on_file=self.progress.file_written,
-                names=names,
-                layout=layout,
-            )
+            if kind == "markdown":
+                files = save_events(
+                    file_events(f),
+                    source,
+                    Path(path),
+                    tree=tree,
+                    front_matter=front_matter,
+                    free=True,
+                    on_file=self.progress.file_written,
+                    names=names,
+                    layout=layout,
+                )
+            else:
+                files = export.save_events(
+                    file_events(f),
+                    source,
+                    Path(path),
+                    kind,
+                    tree=tree,
+                    front_matter=front_matter,
+                    free=True,
+                    on_file=self.progress.file_written,
+                    names=names,
+                )
         return files if tree else files[0]
 
     @contextmanager

@@ -62,6 +62,13 @@ class ECFRTimeoutError(ECFRConnectionError):
     """The API did not respond within the configured timeout."""
 
 
+class MissingDependencyError(ECFRError, ImportError):
+    """An export format needs an optional extra that isn't installed.
+
+    The message says how to install it.
+    """
+
+
 class ResponseFormatError(ECFRError):
     """The API returned a body that could not be parsed as expected."""
 

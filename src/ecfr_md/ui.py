@@ -44,6 +44,7 @@ from ecfr_md.errors import (
     ECFRTimeoutError,
     InvalidCitationError,
     InvalidParameterError,
+    MissingDependencyError,
     NodeNotFoundError,
     NotFoundError,
     RateLimitError,
@@ -76,6 +77,7 @@ ERROR_TITLES: tuple[tuple[type[BaseException], str], ...] = (
     (NotFoundError, "Not found"),
     (APIError, "eCFR API error"),
     (ResponseFormatError, "Unexpected response from the eCFR"),
+    (MissingDependencyError, "Not installed"),
     (OSError, "File error"),
 )
 # Names for counts of outline entries: (one, many).
