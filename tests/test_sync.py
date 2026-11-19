@@ -4,22 +4,23 @@ import datetime as dt
 
 import pytest
 
-from ecfr_md.output import read_front_matter, snapshot_name
+from ecfr_md.address import Address
+from ecfr_md.output import Source, file_name, read_front_matter
 
 FULL = "/api/versioner/v1/full/2026-10-07/title-45.xml"
 FULL_2018 = "/api/versioner/v1/full/2018-01-01/title-45.xml"
-SECTION = "part-164/subpart-a/section-164.104.md"
+SECTION = "part-164/subpart-A/164.104.md"
 
 
 def snapshot(name):
-    """The default file name for text saved as of 2018-01-01 (see snapshot_name)."""
+    """The default file name for text saved as of 2018-01-01 (see file_name)."""
     return f"{name}@2018-01-01.md"
 
 
 def test_snapshot_names():
-    assert snapshot_name("45-cfr-part-164", dt.date(2018, 1, 1)) + ".md" == snapshot(
-        "45-cfr-part-164"
-    )
+    source = Source(45, dt.date(2018, 1, 1), pinned=True)
+    name = file_name(Address.parse("45 CFR Part 164"), source)
+    assert name == snapshot("45_part-164")
 
 
 @pytest.fixture
@@ -70,10 +71,10 @@ def test_sync_finds_saves_in_nested_folders(ecfr, api, part_xml, tmp_path):
 
 def test_a_dated_save_is_named_and_marked_with_its_date(ecfr, dated, tmp_path):
     saved = ecfr.save("45 CFR Part 164", tmp_path, date="2018-01-01")
-    assert saved == tmp_path / snapshot("45-cfr-part-164")
+    assert saved == tmp_path / snapshot("45_part-164")
     assert (read_front_matter(saved) or {})["pinned"] == "2018-01-01"
     latest = ecfr.save("45 CFR Part 164", tmp_path, date="2026-10-07")
-    assert latest == tmp_path / "45-cfr-part-164.md"
+    assert latest == tmp_path / "45_part-164.md"
     assert "pinned" not in (read_front_matter(latest) or {})
     # A name the user chose is kept as is.
     named = ecfr.save("45 CFR Part 164", tmp_path / "x.md", date="2018-01-01")
@@ -83,9 +84,9 @@ def test_a_dated_save_is_named_and_marked_with_its_date(ecfr, dated, tmp_path):
 def test_a_dated_node_is_named_and_marked_with_its_date(ecfr, dated, tmp_path):
     section = ecfr.get("45 CFR 164.102", date="2018-01-01")
     saved = section.save(tmp_path)
-    assert saved.name == snapshot("45-cfr-164.102")
+    assert saved.name == snapshot("45_164.102")
     assert section.provenance["pinned"] == "2018-01-01"
-    assert ecfr.get("45 CFR 164.102").save(tmp_path).name == "45-cfr-164.102.md"
+    assert ecfr.get("45 CFR 164.102").save(tmp_path).name == "45_164.102.md"
     files = ecfr.get("45 CFR 164", date="2018-01-01").save(tmp_path, tree=True)
     assert all((read_front_matter(f) or {})["pinned"] == "2018-01-01" for f in files)
 
@@ -129,7 +130,7 @@ def test_sync_keeps_local_edits(ecfr, api, part_xml, tmp_path):
 
 def test_sync_keeps_edited_files_of_removed_sections(ecfr, api, part_xml, tmp_path):
     ecfr.save("45 CFR Part 164", tmp_path, tree=True)
-    edited = tmp_path / "part-164/subpart-a/section-164.108.md"
+    edited = tmp_path / "part-164/subpart-A/164.108.md"
     edit(edited, "Uno.", "Uno, noted.")
     without = (
         part_xml[: part_xml.index('<DIV8 N="164.108"')]
@@ -166,7 +167,7 @@ def test_a_file_without_its_blank_line_counts_as_edited(ecfr, tmp_path):
 
 def test_dry_run_writes_nothing(ecfr, api, part_xml, tmp_path):
     ecfr.save("45 CFR Part 164", tmp_path, tree=True)
-    (tmp_path / "part-164/subpart-a/section-164.106.md").unlink()
+    (tmp_path / "part-164/subpart-A/164.106.md").unlink()
     changed = part_xml.replace("Roman two.", "Roman two, amended.")
     changed = (
         changed[: changed.index('<DIV8 N="164.108"')]
@@ -175,12 +176,9 @@ def test_dry_run_writes_nothing(ecfr, api, part_xml, tmp_path):
     api.text(FULL, changed)
     before = {p: read(p) for p in tmp_path.rglob("*.md")}
     result = ecfr.sync(tmp_path, dry_run=True)
-    assert [p.name for p in result.added] == ["section-164.106.md"]
-    assert sorted(p.name for p in result.changed) == [
-        "index.md",
-        "section-164.104.md",
-    ]
-    assert [p.name for p in result.removed] == ["section-164.108.md"]
+    assert [p.name for p in result.added] == ["164.106.md"]
+    assert sorted(p.name for p in result.changed) == ["164.104.md", "index.md"]
+    assert [p.name for p in result.removed] == ["164.108.md"]
     assert {p: read(p) for p in tmp_path.rglob("*.md")} == before
     assert not list(tmp_path.rglob("*.part"))
 
@@ -196,10 +194,10 @@ def test_a_tree_save_removes_stale_files(ecfr, dated, part_xml, tmp_path):
     )
     dated.text(FULL_2018, with_extra)
     ecfr.save("45 CFR Part 164", tmp_path, tree=True, date="2018-01-01")
-    stale = tmp_path / "part-164/subpart-a/section-164.110.md"
+    stale = tmp_path / "part-164/subpart-A/164.110.md"
     mine = tmp_path / "part-164/notes.md"
     mine.write_text("my own notes\n", encoding="utf-8")
-    edited = tmp_path / "part-164/subpart-a/section-164.108.md"
+    edited = tmp_path / "part-164/subpart-A/164.108.md"
     assert stale.exists()
 
     without_subpart = (
@@ -219,9 +217,9 @@ def test_a_tree_save_removes_stale_files(ecfr, dated, part_xml, tmp_path):
 
 def test_a_section_tree_save_writes_one_file(ecfr, tmp_path):
     written = ecfr.save("45 CFR 164.102", tmp_path, tree=True)
-    assert written == [tmp_path / "section-164.102.md"]
+    assert written == [tmp_path / "164.102.md"]
     again = ecfr.get("45 CFR 164.102").save(tmp_path, tree=True)
-    assert [p.name for p in again] == ["section-164.102.md"]
+    assert [p.name for p in again] == ["164.102.md"]
 
 
 # The command
@@ -249,7 +247,7 @@ def test_sync_command_options(run, api, part_xml, capsys, tmp_path):
     assert run("sync", str(tmp_path), "--force", "--include-dated") == 0
     capsys.readouterr()
     assert "Mine." not in read(section)
-    dated = tmp_path / snapshot("45-cfr-part-164")
+    dated = tmp_path / snapshot("45_part-164")
     assert "pinned" not in (read_front_matter(dated) or {})
 
 

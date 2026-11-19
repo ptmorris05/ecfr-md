@@ -142,9 +142,9 @@ def test_sync_rewrites_only_what_changed(ecfr, api, part_xml, tmp_path):
     )
     api.text(FULL, edited)
     result = ecfr.sync(tmp_path)
-    assert sorted(p.name for p in result.changed) == ["index.md", "section-164.104.md"]
-    assert [p.name for p in result.removed] == ["section-164.108.md"]
-    assert "amended" in (tmp_path / "part-164/subpart-a/section-164.104.md").read_text(
+    assert sorted(p.name for p in result.changed) == ["164.104.md", "index.md"]
+    assert [p.name for p in result.removed] == ["164.108.md"]
+    assert "amended" in (tmp_path / "part-164/subpart-A/164.104.md").read_text(
         encoding="utf-8"
     )
     assert mine.exists()  # Files ecfr-md didn't write are left alone.
@@ -208,8 +208,8 @@ def test_search_save(run, api, capsys, results, tmp_path):
     new = tmp_path / "new"  # Created: it was saved as a single file.
     assert run("search", "minimum", "--save", str(new)) == 0
     assert sorted(p.name for p in new.iterdir()) == [
-        "45-cfr-164.104.md",
-        "45-cfr-164.106.md",
+        "45_164.104.md",
+        "45_164.106.md",
     ]
     full = [r for r in api.requests if r.url.path == FULL]
     assert len(full) == 1  # Both sections came from one request for part 164.

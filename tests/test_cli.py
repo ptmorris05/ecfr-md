@@ -38,7 +38,7 @@ def test_get_file_and_tree(run, capsys, tmp_path):
 
 def test_get_all_titles(run, api, capsys, tmp_path):
     assert run("get", "--all", "-o", str(tmp_path / "flat")) == 0
-    assert [p.name for p in (tmp_path / "flat").iterdir()] == ["45-cfr.md"]
+    assert [p.name for p in (tmp_path / "flat").iterdir()] == ["45.md"]
     assert run("get", "--all", "--tree", "-o", str(tmp_path / "cfr")) == 0
     assert (tmp_path / "cfr" / "part-164" / "index.md").is_file()
     assert not any("title-35" in str(r.url) for r in api.requests)  # Reserved.
@@ -111,7 +111,7 @@ def test_invalid_arguments_exit_with_usage_code(run, capsys):
 def test_ambiguous_paragraph_exits_with_candidates(run, capsys):
     assert run("get", "45 CFR 164.108(1)") == 1
     err = capsys.readouterr().err
-    assert "More than one match" in err and "45 CFR 164.108(1)" in err
+    assert "More than one match" in err and "45/164.108/1~1, 45/164.108/1~2" in err
 
 
 def test_future_date_gives_the_latest_text_with_a_warning(run, capsys, tmp_path):
@@ -142,7 +142,7 @@ def test_get_from_a_list_of_citations(run, capsys, tmp_path):
     )
     assert run("get", "--from", str(listing), "-o", str(tmp_path / "out")) == 0
     names = sorted(p.name for p in (tmp_path / "out").iterdir())
-    assert names == ["45-cfr-164.104-a.md", "45-cfr-164.106.md"]
+    assert names == ["45_164.104_a.md", "45_164.106.md"]
     assert "Saved" in capsys.readouterr().err
 
 
@@ -188,7 +188,7 @@ def test_from_lists_comments_repeats_and_stdin(run, tmp_path, monkeypatch):
     monkeypatch.setattr("sys.stdin", io.TextIOWrapper(io.BytesIO(text.encode())))
     assert run("get", "--from", "-", "-o", str(tmp_path / "out")) == 0
     names = sorted(p.name for p in (tmp_path / "out").iterdir())
-    assert names == ["45-cfr-164.104.md", "45-cfr-164.106.md", "45-cfr-164.108.md"]
+    assert names == ["45_164.104.md", "45_164.106.md", "45_164.108.md"]
 
 
 def test_from_reports_every_bad_line(run, capsys, tmp_path):
@@ -204,7 +204,7 @@ def test_from_saves_what_it_can(run, capsys, tmp_path):
     listing = tmp_path / "list.txt"
     listing.write_text("45 CFR 164.104\n45 CFR 164.999\n", encoding="utf-8")
     assert run("get", "--from", str(listing), "-o", str(tmp_path / "out")) == 1
-    assert [p.name for p in (tmp_path / "out").iterdir()] == ["45-cfr-164.104.md"]
+    assert [p.name for p in (tmp_path / "out").iterdir()] == ["45_164.104.md"]
     assert "1 of 2 citations could not be saved" in capsys.readouterr().err
 
 
@@ -233,7 +233,7 @@ def test_output_dash_and_new_directories(run, capsys, tmp_path):
     assert run("get", "45", "CFR", "164.104", "-o", "-") == 0
     assert capsys.readouterr().out.startswith("# §")
     assert run("get", "45", "CFR", "164.104", "-o", f"{tmp_path}/new/") == 0
-    assert [p.name for p in (tmp_path / "new").iterdir()] == ["45-cfr-164.104.md"]
+    assert [p.name for p in (tmp_path / "new").iterdir()] == ["45_164.104.md"]
 
 
 def test_terminals_get_panels_and_pipes_get_lines():

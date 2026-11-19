@@ -11,22 +11,33 @@ Two kinds of saved file are kept as they are unless asked otherwise:
 snapshots saved with a past date (front matter ``pinned``), and files edited
 since they were saved (their text no longer matches the front matter
 ``digest``).
+
+Files saved by ecfr-md 0.x have no ``layout`` in their front matter and
+lowercase names ("subpart-e/section-164.502.md", "45-cfr-164.502.md"). They
+are updated in place, under those names, unless ``migrate`` is given: then
+they are renamed to today's layout ("subpart-E/164.502.md", "45_164.502.md").
+Files the user named are never renamed.
 """
 
 from __future__ import annotations
 
+import datetime as dt
 import filecmp
 import os
+import re
 import shutil
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ecfr_md.address import Address
 from ecfr_md.errors import InvalidParameterError
+from ecfr_md.markdown import LAYOUT
 from ecfr_md.output import (
     edited,
     is_ours,
+    legacy_file_name,
     read_front_matter,
     remove_files,
     stale_files,
@@ -45,7 +56,8 @@ class SyncResult:
 
     ``kept`` holds snapshots saved with a past date (files, or a tree's top
     folder), left at that date. ``modified`` holds files edited since they
-    were saved, left as they are.
+    were saved, left as they are. ``moved`` holds (old, new) paths of files
+    renamed to today's layout by ``migrate``.
     """
 
     added: list[Path] = field(default_factory=list)
@@ -54,12 +66,14 @@ class SyncResult:
     unchanged: list[Path] = field(default_factory=list)
     kept: list[Path] = field(default_factory=list)
     modified: list[Path] = field(default_factory=list)
+    moved: list[tuple[Path, Path]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
 class _Options:
     dry_run: bool = False
     force: bool = False
+    migrate: bool = False
 
 
 def sync(
@@ -69,29 +83,116 @@ def sync(
     dry_run: bool = False,
     include_dated: bool = False,
     force: bool = False,
+    migrate: bool = False,
 ) -> SyncResult:
     """Update a saved file or directory to the latest eCFR text."""
     result = SyncResult()
-    options = _Options(dry_run, force)
+    options = _Options(dry_run, force, migrate)
     for root, tree in _roots(path):
         meta = read_front_matter(root / "index.md" if tree else root) or {}
-        citation = meta.get("citation")
+        # Files saved since addresses have one; older ones have a citation.
+        citation = meta.get("address") or meta.get("citation")
         if not citation or not str(meta.get("generator", "")).startswith("ecfr-md"):
             raise InvalidParameterError(f"{root} has no ecfr-md front matter to sync")
-        if meta.get("pinned") and not include_dated:
-            result.kept.append(root)
+        old = int(meta.get("layout") or 1) < LAYOUT
+        pinned = meta.get("pinned")
+        renamed = None
+        if migrate and not tree and old:
+            renamed = _new_name(root, str(meta.get("citation")), pinned)
+        if pinned and not include_dated:
+            if renamed:  # Kept at its date, under its new name.
+                _move(root, renamed, result, options)
+            else:
+                result.kept.append(root)
             continue
+        layout = LAYOUT if migrate or not old else 1
         with tempfile.TemporaryDirectory(prefix="ecfr-md-sync-") as tmp:
             target = Path(tmp) / root.name
             if tree:
-                ecfr.save(citation, tmp, tree=True)
+                ecfr._save(citation, tmp, tree=True, layout=layout)
             else:
-                ecfr.save(citation, target)
+                ecfr._save(citation, target, tree=False, layout=layout)
             # The fresh copy's top folder may be named differently from a
             # folder the user renamed; compare by content, not by name.
             fresh = next(Path(tmp).iterdir()) if tree else target
-            _merge(fresh, root, result, options)
+            if tree and migrate and old:
+                _migrate(fresh, root, result, options)
+            elif renamed and not (edited(root) and not force):
+                _merge(fresh, root, result, options)
+                _move(root, renamed, result, options)
+            else:
+                _merge(fresh, root, result, options)
     return result
+
+
+def _new_name(path: Path, citation: str, pinned: str | None) -> Path | None:
+    """Today's name for a file ecfr-md 0.x named, or None if the user named it."""
+    date = dt.date.fromisoformat(pinned) if pinned else None
+    if path.name != legacy_file_name(citation, date):
+        return None
+    return path.with_name(replace(Address.parse(citation), date=date).file_name())
+
+
+def _move(old: Path, new: Path, result: SyncResult, options: _Options) -> None:
+    if not options.dry_run:
+        os.replace(old, new)
+    for found in (result.changed, result.unchanged):
+        if old in found:
+            found[found.index(old)] = new
+    result.moved.append((old, new))
+
+
+def _migrate(new: Path, old: Path, result: SyncResult, options: _Options) -> None:
+    """Move a tree saved by ecfr-md 0.x to today's layout, updating its text.
+
+    Files are matched by citation. Folders keep a name the user gave them;
+    ones ecfr-md named are renamed. Old files go before new ones arrive, so
+    on a case-insensitive file system "subpart-e" really becomes "subpart-E".
+    """
+    root = old.with_name(new.name) if _same_name(old.name, new.name) else old
+    ours: dict[str, Path] = {}
+    for path in sorted(old.rglob("*.md")):
+        meta = read_front_matter(path) or {}
+        if str(meta.get("generator", "")).startswith("ecfr-md") and meta.get(
+            "citation"
+        ):
+            ours.setdefault(str(meta["citation"]), path)
+    removed: list[Path] = []
+    arriving: list[tuple[Path, Path]] = []
+    for file in sorted(new.rglob("*.md")):
+        destination = root / file.relative_to(new)
+        citation = str((read_front_matter(file) or {}).get("citation"))
+        prior = ours.pop(citation, None)
+        if prior is not None and edited(prior) and not options.force:
+            result.modified.append(prior)
+            continue
+        arriving.append((file, destination))
+        if prior is None:
+            result.added.append(destination)
+        else:
+            removed.append(prior)
+            result.moved.append((prior, destination))
+    for stale in ours.values():
+        if edited(stale) and not options.force:
+            result.modified.append(stale)
+        else:
+            removed.append(stale)
+            result.removed.append(stale)
+    if options.dry_run:
+        return
+    remove_files(removed, old)
+    if root != old:
+        old.rename(root)
+    for file, destination in arriving:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(file, destination)
+
+
+def _same_name(a: str, b: str) -> bool:
+    """Whether two folder names differ only as old and new layouts name them."""
+    return re.sub(r"[^a-z0-9]+", "-", a.casefold()) == re.sub(
+        r"[^a-z0-9]+", "-", b.casefold()
+    )
 
 
 def _roots(path: Path) -> list[tuple[Path, bool]]:

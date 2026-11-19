@@ -248,6 +248,8 @@ def test_change_to_dict():
     assert json.loads(json.dumps(data)) == data
     assert data == {
         "citation": "45 CFR 164.502",
+        "address": "45/164.502",
+        "uri": "cfr:45/164.502@2024-01-02",
         "level": "section",
         "identifier": "164.502",
         "heading": "Heading.",
@@ -288,6 +290,8 @@ def test_match_to_dict():
     assert json.loads(json.dumps(data)) == data
     assert data == {
         "citation": "45 CFR 164.514",
+        "address": "45/164.514",
+        "uri": "cfr:45/164.514@2017-01-01",
         "level": "section",
         "identifier": "164.514",
         "heading": "Heading",

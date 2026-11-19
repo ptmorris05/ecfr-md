@@ -170,10 +170,11 @@ def test_pasted_citations(text, expected):
     [
         (
             "45 CFR 164.502 (2023)",
-            r'^"\(2023\)" looks like a year; for text as of a date use --date 2023 '
-            r'\(Python: date="2023"\)$',
+            r'^"\(2023\)" is an edition year, which a Citation has no place for; '
+            r"Address\.parse reads it as the date of that year's annual edition "
+            r'\(or use date="2023"\)$',
         ),
-        ("45 CFR 164.502(1999).", r'^"\(1999\)" looks like a year'),
+        ("45 CFR 164.502(1999).", r'^"\(1999\)" is an edition year'),
         ("45 CRF 164.502", r"^\"CRF\" isn't recognised; did you mean CFR\?$"),
         ("45 C.R.F. 164", r"^\"C\.R\.F\.\" isn't recognised; did you mean CFR\?$"),
         ("45CFT164.502", r"^\"CFT\" isn't recognised"),

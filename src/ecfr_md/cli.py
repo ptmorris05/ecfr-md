@@ -3,7 +3,7 @@
 Common commands:
 
     ecfr-md get 45 CFR 164.502                 print a section
-    ecfr-md get "45 CFR 164.502(a)(1)"         a paragraph (quote parentheses)
+    ecfr-md get 45/164.502/a/1                 a paragraph, by its address
     ecfr-md get 45 CFR Part 164 -o hipaa.md    save to a file
     ecfr-md get 45 CFR 164 --tree -o hipaa/    one file per section
     ecfr-md get --all --tree -o cfr/           every title
@@ -40,7 +40,7 @@ from rich.console import Console, RenderableType
 from rich.logging import RichHandler
 from rich.text import Text
 
-from ecfr_md.citation import Citation
+from ecfr_md.address import Address
 from ecfr_md.client import ECFR, Admin, Search, Versioner
 from ecfr_md.config import Settings, __version__
 from ecfr_md.errors import ECFRError, InvalidCitationError, InvalidParameterError
@@ -114,8 +114,10 @@ def get(
     Parameters
     ----------
     citation: str
-        What to get: a title number or citation such as 45, 45 CFR 164,
-        45 CFR Part 164 Subpart E or 45 CFR 164.502(a)(1). The hierarchy
+        What to get: a title number, citation or address such as 45,
+        45 CFR 164, 45 CFR Part 164 Subpart E, 45/164.502/a/1 or an eCFR
+        link. Several (45/164.502 45/164.504) are saved to an --output
+        directory. Asked for if left out in a terminal. The hierarchy
         options below refine it.
     output: str | None
         File to write; "-" for stdout. A name ending in "/" or an existing
@@ -156,12 +158,18 @@ def get(
             )
         _get_all(ecfr, _directory(output, "--all"), tree, front_matter, date)
         return
-    if not citation:
+    if not citation and sys.stdin.isatty() and err_console.is_terminal:
+        citation = (err_console.input("Citation or address: "),)
+    if not any(word.strip() for word in citation):
         raise InvalidParameterError(
             "Say what to get, e.g. ecfr-md get 45 CFR 164, or --all for every title"
         )
+    places = _places(citation)
+    if len(places) > 1:
+        _get_listed(ecfr, places, output, tree, front_matter, date)
+        return
     target = _directory(output, "--tree") if tree else _file(output)
-    cited = _citation(citation)
+    cited = places[0]
     terminal = _terminal(ecfr)
     if target is None:
         with terminal.live():
@@ -252,6 +260,63 @@ def _file(output: str | None) -> Path | None:
     return path
 
 
+def _places(words: Sequence[str]) -> list[str]:
+    """The places named on the command line: one citation in several words
+    ("45 CFR 164.502"), or several ("45/164.502 45/164.504"), as addresses."""
+    text = _citation(tuple(words))
+    try:
+        found = Address.parse_many(text)
+    except InvalidCitationError:
+        if len(words) < 2:
+            raise
+        try:  # Each word a citation of its own: "45/164.502" "12 CFR 1026.1".
+            found = [a for word in words for a in Address.parse_many(word)]
+        except InvalidCitationError:
+            raise InvalidCitationError(
+                f"{text!r} isn't a citation or address; e.g. 45 CFR 164.502, "
+                "45/164.502/a/1, or several: 45/164.502 45/164.504"
+            ) from None
+    return [str(a) for a in found]
+
+
+def _get_listed(
+    ecfr: ECFR,
+    places: list[str],
+    output: str | None,
+    tree: bool,
+    front_matter: bool,
+    date: DateLike | None,
+) -> None:
+    """Several citations: printed one after another, or each saved."""
+    if output is None or output == "-":
+        with _terminal(ecfr).live():
+            nodes = ecfr.get_many(places, date=date)
+        _print_markdown("\n".join(node.to_markdown() for node in nodes))
+        return
+    if not tree:
+        _save_many(
+            ecfr, places, _directory(output, "Several citations"), front_matter, date
+        )
+        return
+    directory = _directory(output, "--tree")
+    terminal = _terminal(ecfr)
+    files: list[Path] = []
+    with terminal.live():
+        for place in places:
+            files += ecfr.save(
+                place, directory, tree=True, front_matter=front_matter, date=date
+            )
+    terminal.summary(
+        "Saved",
+        {
+            "Citations": f"{len(places):,}",
+            "Output": str(directory),
+            "Files": f"{len(files):,}",
+            "Size": _total_size(files),
+        },
+    )
+
+
 def _read_citations(text: str, name: str) -> list[str]:
     """Citations in a --from file, each once, or every line that isn't one."""
     citations: dict[str, None] = {}  # Ordered, without repeats.
@@ -261,7 +326,7 @@ def _read_citations(text: str, name: str) -> list[str]:
         if not line or line.startswith("#"):
             continue
         try:
-            for cited in Citation.parse_many(line):
+            for cited in Address.parse_many(line):
                 citations[str(cited)] = None
         except InvalidCitationError as exc:
             problems.append(f"{name}:{number}: {exc}")
@@ -284,6 +349,16 @@ def _get_many(
     data = sys.stdin.buffer.read() if source == "-" else Path(source).read_bytes()
     name = "stdin" if source == "-" else source
     citations = _read_citations(data.decode("utf-8-sig"), name)
+    _save_many(ecfr, citations, output, front_matter, date)
+
+
+def _save_many(
+    ecfr: ECFR,
+    citations: list[str],
+    output: Path,
+    front_matter: bool,
+    date: DateLike | None,
+) -> None:
     terminal = _terminal(ecfr)
     with terminal.live():
         results = ecfr.get_many(citations, date=date, errors="return")
@@ -552,6 +627,7 @@ def sync_command(
     dry_run: bool = False,
     include_dated: bool = False,
     force: bool = False,
+    migrate: bool = False,
     ecfr: Client,
 ) -> None:
     """Update Markdown saved by ecfr-md to the latest text.
@@ -572,11 +648,19 @@ def sync_command(
         Also update files saved with a past --date to the latest text.
     force: bool
         Also overwrite or delete files edited since they were saved.
+    migrate: bool
+        Rename files and folders saved by ecfr-md 0.x (45-cfr-164.502.md,
+        subpart-e/section-164.502.md) to today's names (45_164.502.md,
+        subpart-E/164.502.md). Without it they keep their names.
     """
     terminal = _terminal(ecfr)
     with terminal.live():
         result = ecfr.sync(
-            path, dry_run=dry_run, include_dated=include_dated, force=force
+            path,
+            dry_run=dry_run,
+            include_dated=include_dated,
+            force=force,
+            migrate=migrate,
         )
     if not (
         result.added
@@ -584,6 +668,7 @@ def sync_command(
         or result.removed
         or result.kept
         or result.modified
+        or result.moved
     ):
         checked = len(result.unchanged)
         terminal.done(
@@ -600,6 +685,8 @@ def sync_command(
     ):
         for file in files[:20]:
             terminal.note(f"{kind} {file}")
+    for old, new in result.moved[:20]:
+        terminal.note(f"> {old} -> {new}")
     if result.kept:
         terminal.note("= kept at saved date; use --include-dated to update them")
     if result.modified:
@@ -614,7 +701,8 @@ def sync_command(
             "Unchanged": f"{len(result.unchanged):,}",
             "Kept at saved date": f"{len(result.kept):,}",
             "Modified locally": f"{len(result.modified):,}",
-        },
+        }
+        | ({"Renamed": f"{len(result.moved):,}"} if migrate else {}),
     )
 
 

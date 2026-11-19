@@ -71,8 +71,9 @@ def test_paragraph_label_heading_and_tree():
     assert s["a"].label == "(a)"
     assert s["a"].heading == ""  # (a) has no text of its own.
     paragraph = s["(a)(1)"]
+    assert paragraph.slug == "1"
     assert paragraph.to_markdown_tree() == {
-        PurePosixPath(f"{paragraph.slug}.md"): paragraph.to_markdown()
+        PurePosixPath("1_1.1_a_1.md"): paragraph.to_markdown()
     }
 
 

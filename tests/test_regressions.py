@@ -50,7 +50,7 @@ def test_sync_survives_a_renamed_folder(ecfr, tmp_path):
     (tmp_path / "part-164").rename(tmp_path / "hipaa")
     result = ecfr.sync(tmp_path)
     assert result.removed == []
-    assert (tmp_path / "hipaa" / "subpart-a" / "section-164.104.md").exists()
+    assert (tmp_path / "hipaa" / "subpart-A" / "164.104.md").exists()
 
 
 def test_sync_skips_other_index_files(ecfr, tmp_path):
@@ -124,7 +124,7 @@ def test_files_from_different_titles_do_not_overwrite_each_other(tmp_path):
     load(xml.format("Title 42"), title=42).save(tmp_path)
     load(xml.format("Title 45"), title=45).save(tmp_path)
     names = sorted(p.name for p in tmp_path.iterdir())
-    assert names == ["42-cfr-425.706.md", "45-cfr-425.706.md"]
+    assert names == ["42_425.706.md", "45_425.706.md"]
 
 
 def test_retried_connection_errors_leave_no_stale_progress(api, settings):

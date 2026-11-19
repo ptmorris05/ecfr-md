@@ -197,7 +197,7 @@ def test_module_functions_share_one_client(api, monkeypatch, tmp_path):
     assert [n.citation for n in ecfr_md.get_many(["45 CFR 164.102"])] == [
         "45 CFR 164.102"
     ]
-    assert ecfr_md.save("45 CFR 164.102", tmp_path) == tmp_path / "45-cfr-164.102.md"
+    assert ecfr_md.save("45 CFR 164.102", tmp_path) == tmp_path / "45_164.102.md"
     files = ecfr_md.save("45 CFR Part 164", tmp_path / "tree", tree=True)
     assert len(files) == 7
     assert ecfr_md.outline("45 CFR Part 164").identifier == "164"

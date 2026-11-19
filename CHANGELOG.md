@@ -28,6 +28,36 @@ Install from GitHub; ecfr-md is not on PyPI.
 - `get -o -` prints to stdout; `get --from -` reads stdin; `--from` lines
   may have `# comments`, quotes and lists.
 - `cache info --json`.
+- Addresses: one short, shell-safe name for every place in the CFR, e.g.
+  `45/164.502/a/1`, `45/part-164/subpart-E`, `12/part-1026/supplement-I`,
+  `26/1.401.k-1` (26 CFR 1.401(k)-1), `45/164.501/1~2` (the second of two
+  (1)s), `45/164.502@2020-01-01`; lists (`45/164.502,164.504`) and ranges of
+  paragraphs (`45/164.502/b..d`).
+- `Address`: `Address.parse` reads addresses, citations (now also Bluebook
+  forms, spaced `164.502 a 1` and dotted `164.502.a.1` markers), eCFR, LII and
+  GovInfo links, GovInfo granule ids, USLM identifiers, `cfr:` URIs and the
+  names of saved files, old and new. `str()`, `.citation()` (`"ofr"` or
+  `"bluebook"`), `.url()`, `.uri()`, `.file_name()`; `Address.parse_many` for
+  lists.
+- Everything that takes a citation takes any of those: `get`, `save`,
+  `outline`, `changes`, `get_many`, `search(within=)`, `get --from` and the
+  CLI's citation words.
+- A trailing year, as in a Bluebook citation (`45 C.F.R. § 164.502 (2018)`),
+  means that year's annual edition of the title (January 1 for titles 1–16,
+  April 1 for 17–27, July 1 for 28–41, October 1 for 42–50), instead of being
+  an error. A date in an address (`@2020-01-01`) is used likewise.
+- `Node.address`, `Node.uri` (`cfr:45/164.502@2024-01-01`), `Node.cite(style=,
+  year=)`; `address` and `uri` on `Outline`, `Change`, `Match` and `TitleInfo`
+  and in every `to_dict()`. `Paragraph.markers` (as `path`) and
+  `Paragraph.occurrence`.
+- Node and outline lookups take addresses, relative or not: `part["subpart-E"]`,
+  `part["164.512/k/1"]`, `section["a/1"]`, `section["1~2"]`, `node[address]`.
+- `ecfr-md get 45/164.502 45/164.504 -o DIR/` saves several, one file each
+  (printed one after another without `-o`). `ecfr-md get` with no citation, in
+  a terminal, asks for one ("Citation or address:").
+- Saved files' front matter records `address` and `layout: 2`.
+- `sync(migrate=True)` (`ecfr-md sync --migrate`) renames files and trees
+  saved by ecfr-md 0.x to today's layout; `SyncResult.moved` lists them.
 
 - `ecfr-md get --all -o DIR`: every title, one file each, or with `--tree` one
   folder per title (`DIR/title-N/`). Reserved titles are skipped; `sync DIR`
@@ -43,9 +73,9 @@ Install from GitHub; ecfr-md is not on PyPI.
 - Citations are accepted as people paste them: surrounding quotes and
   invisible characters are ignored, `Supp. I` and `app. J` are completed from
   the part (`12 CFR pt. 1026, app. J`), `et seq.` is ignored, and
-  `Subpart E of Part 164` and `Part 164 of Title 45` work. A trailing year
-  such as `(2023)`, `CRF` for `CFR`, unbalanced parentheses, and ranges or
-  lists of sections are rejected with what to do instead.
+  `Subpart E of Part 164` and `Part 164 of Title 45` work. `CRF` for `CFR`,
+  unbalanced parentheses, and ranges of sections are rejected with what to do
+  instead.
   `Citation.parse_many` splits a list such as `45 CFR §§ 164.502, 164.506`.
 - `to_dict(depth=, include_raw=)` on nodes (also `text=`), `Outline`, `Change`
   and `Match`: JSON-ready dicts with the same keys (`citation`, `level`,
@@ -94,6 +124,26 @@ Install from GitHub; ecfr-md is not on PyPI.
   accepted for levels; argument and setting errors are in plain words.
 - When stderr isn't a terminal, messages and summaries are whole lines.
 - Narrow terminals get lists instead of squeezed tables.
+- **Breaking:** saved files are named by address. A single file is the
+  address with `_` for `/`: `45_164.502.md` (was `45-cfr-164.502.md`),
+  `45_part-164_subpart-E.md`, `45_164.502_a_1@2020-01-01.md` for text as of a
+  past date. Trees use the eCFR's case and addresses' names:
+  `part-164/subpart-E/164.502.md` (was `part-164/subpart-e/section-164.502.md`),
+  `part-1026/supplement-I.md` (was
+  `part-1026/appendix-supplement-i-to-part-1026.md`). Subject groups no longer
+  get a folder (their sections go in the subpart's, under the group's heading
+  in `index.md`); an appendix to a subpart goes in that subpart's folder; names
+  that differ only in case get `~2` in code-point order (`subpart-CC`,
+  `subpart-Cc~2`), not `-2` in document order. `sync` keeps updating files
+  and trees saved before under their old names; `--migrate` renames them.
+- **Breaking:** `Node.slug` is the node's name in a saved tree (`"164.502"`,
+  `"subpart-E"`, `"supplement-I"`; a paragraph's marker, `"a"`), and
+  `to_markdown_tree()` uses the new names.
+- **Breaking:** where a paragraph marker repeats among its siblings, as in
+  definitions, `ecfr.get` of the bare marker (`45 CFR 164.108(1)`) raises
+  `AmbiguousNodeError` naming each by address (`45/164.108/1~1`, `.../1~2`).
+- `Citation.parse` still rejects a trailing year, which a `Citation` can't
+  hold, and says that `Address.parse` reads it.
 
 - **Breaking:** `Paragraph.text` is the paragraph and its subparagraphs, like
   `text` on every other node and `to_markdown()`. Its own lead text is now
@@ -127,7 +177,7 @@ Install from GitHub; ecfr-md is not on PyPI.
   `changes` shows a single section's heading once; search excerpts end at a
   whole word.
 - Default file names for text as of a past date include the date, e.g.
-  `45-cfr-part-164@2018-01-01.md`, so snapshots don't overwrite each other.
+  `45_part-164@2018-01-01.md`, so snapshots don't overwrite each other.
 - Saving a tree over an earlier save of the same tree removes files ecfr-md
   wrote for sections the new save doesn't have, so a tree never mixes dates.
 - Telling a past date from the latest uses the title list (kept for a few

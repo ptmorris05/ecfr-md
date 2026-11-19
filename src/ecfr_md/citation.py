@@ -104,8 +104,9 @@ class Citation:
 
         Raises :class:`InvalidCitationError`, saying what to do instead, for a
         range or list of sections (:meth:`parse_many` expands lists), a
-        trailing year such as ``(2023)``, ``CRF`` for ``CFR`` and unbalanced
-        parentheses.
+        trailing year such as ``(2023)`` (:class:`~ecfr_md.address.Address`
+        reads it as that year's annual edition), ``CRF`` for ``CFR`` and
+        unbalanced parentheses.
         """
         source = _clean(str(text))
         if typo := CFR_TYPO.match(source):
@@ -126,8 +127,9 @@ class Citation:
         normalised = ET_SEQ.sub("", normalised).rstrip(".;:,")
         if year := YEAR.search(normalised):
             raise InvalidCitationError(
-                f'"{year[0].strip()}" looks like a year; for text as of a date use '
-                f'--date {year[1]} (Python: date="{year[1]}")'
+                f'"{year[0].strip()}" is an edition year, which a Citation has no '
+                "place for; Address.parse reads it as the date of that year's "
+                f'annual edition (or use date="{year[1]}")'
             )
         normalised = SUPP.sub("Supplement", normalised)
         # An em dash in a section the eCFR names by a range becomes "X - Y".

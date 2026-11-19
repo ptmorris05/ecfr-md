@@ -11,7 +11,7 @@ from ecfr_md import InvalidParameterError, load
 from ecfr_md import markdown as md
 from ecfr_md.cache import default_directory
 from ecfr_md.errors import api_error
-from ecfr_md.output import page_path, read_front_matter
+from ecfr_md.output import page_path, read_front_matter, save_events
 
 FULL = "/api/versioner/v1/full/2026-10-07/title-45.xml"
 
@@ -27,7 +27,7 @@ def test_sync_adds_files_for_new_sections_and_removes_empty_folders(
     )
     api.text(FULL, added)
     result = ecfr.sync(tmp_path)
-    assert [p.name for p in result.added] == ["section-164.110.md"]
+    assert [p.name for p in result.added] == ["164.110.md"]
 
     without_subpart = (
         part_xml[: part_xml.index("<DIV6")]
@@ -36,7 +36,7 @@ def test_sync_adds_files_for_new_sections_and_removes_empty_folders(
     api.text(FULL, without_subpart)
     result = ecfr.sync(tmp_path)
     assert len(result.removed) == 6
-    assert not (tmp_path / "part-164" / "subpart-a").exists()
+    assert not (tmp_path / "part-164" / "subpart-A").exists()
 
 
 def test_sync_errors(ecfr, tmp_path):
@@ -125,11 +125,25 @@ def test_subject_group_files_in_a_tree(tmp_path: Path):
         '<DIV8 N="108.150" TYPE="SECTION"><HEAD>§ 108.150 X.</HEAD></DIV8>'
         "</DIV7></DIV6></DIV5>"
     )
-    load(xml, title=13, date=dt.date(2026, 9, 15)).save(tmp_path, tree=True)
-    index = tmp_path / "part-108/subpart-c/subject-group-ecfr1a/index.md"
+    part = load(xml, title=13, date=dt.date(2026, 9, 15))
+    part.save(tmp_path / "new", tree=True)
+    # Groups have no folder: their sections are in the subpart's, under a heading.
+    index = (tmp_path / "new/part-108/subpart-C/index.md").read_text(encoding="utf-8")
+    assert "## Organizing\n\n- [§ 108.150 X.](108.150.md)" in index
+    assert (tmp_path / "new/part-108/subpart-C/108.150.md").exists()
+    # ecfr-md 0.x gave them folders, which sync still writes for its trees.
+    save_events(
+        md.element_events(part.element),
+        part.source,
+        tmp_path / "old",
+        tree=True,
+        layout=1,
+    )
+    index = tmp_path / "old/part-108/subpart-c/subject-group-ecfr1a/index.md"
     meta = read_front_matter(index)
     assert meta["citation"] == "13 CFR Part 108 Subpart C - Organizing"
     assert meta["source"].endswith("/title-13/part-108/subject-group-ECFR1a")
+    assert "address" not in meta and "layout" not in meta
 
 
 def test_malformed_metadata_is_ignored(tmp_path: Path):

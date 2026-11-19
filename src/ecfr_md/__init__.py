@@ -15,6 +15,7 @@ settings, or to close connections when done, use :class:`ECFR`:
 ...     part = ecfr.get("45 CFR Part 164")
 """
 
+from ecfr_md.address import Address
 from ecfr_md.citation import Citation
 from ecfr_md.client import ECFR
 from ecfr_md.compare import Comparison, Difference
@@ -73,6 +74,7 @@ from ecfr_md.syncing import SyncResult
 __all__ = [
     "ECFR",
     "APIError",
+    "Address",
     "AmbiguousNodeError",
     "Appendix",
     "BadRequestError",
