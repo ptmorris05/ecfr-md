@@ -60,6 +60,9 @@ class Source:
     # ``sync`` leaves alone.
     pinned: bool = False
     site: str = SITE_URL  # The eCFR web site that page links go to.
+    # Link templates for other codes ("usc", "fr", "public_law"), if not the
+    # defaults; see find_references.
+    links: tuple[tuple[str, str], ...] = ()
 
 
 def web_url(
@@ -184,7 +187,13 @@ def linker(
     :func:`markdown.write_document`): to ``href``'s choice, else the web."""
 
     def link(block: str, chain: list[ET.Element]) -> str:
-        return link_markdown(block, context(source, base, chain), href)
+        return link_markdown(
+            block,
+            context(source, base, chain),
+            href,
+            urls=dict(source.links),
+            site=source.site,
+        )
 
     return link
 
@@ -327,7 +336,9 @@ def save_events(
             hierarchy = address.hierarchy
             if links and index is not None:
                 href = tree_link(source, index, relative)
-                body = link_markdown(body, address, href)
+                body = link_markdown(
+                    body, address, href, urls=dict(source.links), site=source.site
+                )
             page = page_path(chain[-1])
             fields = provenance(
                 source,

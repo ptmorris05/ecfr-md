@@ -28,7 +28,7 @@ import weakref
 import xml.etree.ElementTree as ET
 from abc import ABC, abstractmethod
 from collections import OrderedDict
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from functools import cached_property
@@ -191,7 +191,12 @@ class Node(ABC):
 
     def _linked(self) -> str:
         """The Markdown with its cross-references as links."""
-        return link_markdown(self._markdown(), self._context())
+        return link_markdown(
+            self._markdown(),
+            self._context(),
+            urls=dict(self.source.links),
+            site=self.source.site,
+        )
 
     @abstractmethod
     def _markdown(self) -> str:
@@ -406,7 +411,13 @@ class Node(ABC):
         """Cross-references in :attr:`text`: "§ 164.501", "paragraph (a)(1)
         of this section", "42 U.S.C. 1320d", ... with what each points to.
         See :func:`~ecfr_md.references.find_references`."""
-        return find_references(self.text, self._context(), markdown=True)
+        return find_references(
+            self.text,
+            self._context(),
+            markdown=True,
+            urls=dict(self.source.links),
+            site=self.source.site,
+        )
 
     def _context(self) -> Address:
         """Where this node's text is, for resolving relative references."""
@@ -1115,17 +1126,22 @@ def load_file(
     lazy: bool = False,
     images: str | None = None,
     site: str | None = None,
+    links: Mapping[str, str] | None = None,
 ) -> Division:
     """Like :func:`load`, for XML in a file, read without a copy in memory.
 
     With ``lazy``, each part is written to a file of its own and parsed only
     when needed, so a large title takes little memory to navigate. Image
-    links are made absolute on ``images``; page links go to ``site``.
+    links are made absolute on ``images``; page links go to ``site``, and
+    links to other codes follow the templates in ``links`` (see
+    :func:`~ecfr_md.references.find_references`).
     """
     hierarchy = hierarchy or as_hierarchy({})
     source = Source(title, date, hierarchy, url, retrieved, pinned)
     if site:
         source = replace(source, site=site)
+    if links:
+        source = replace(source, links=tuple(links.items()))
     if not lazy:
         root = _outer(_parse(path))
         if images:

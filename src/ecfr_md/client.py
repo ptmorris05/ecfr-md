@@ -616,6 +616,7 @@ class ECFR:
                 lazy=_above_part(fetched),
                 images=self.settings.images,
                 site=self.settings.site_url,
+                links=self.settings.links,
             )
         node._ecfr = self
         if whole is not None:  # The section or appendix, out of its part.
@@ -1217,6 +1218,7 @@ class ECFR:
                 download.retrieved,
                 pinned,
                 site=self.settings.site_url,
+                links=tuple(self.settings.links.items()),
             )
             events = images_on(file_events(f), self.settings.images)
             if kind == "markdown":

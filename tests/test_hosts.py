@@ -223,6 +223,30 @@ def test_links_and_images_go_to_the_configured_hosts(api, part_xml, tmp_path):
     assert title.url.startswith("https://mirror.example/")
 
 
+def test_references_link_to_the_configured_sites(api, part_xml, tmp_path):
+    api.text(FULL, part_xml.replace("[78 FR 5692", "See § 164.104 and [78 FR 5692"))
+    settings = {
+        "site_url": "https://mirror.example",
+        "fr_url": "https://fr.example/{volume}/{page}",
+    }
+    with connect(api, **settings) as ecfr:
+        part = ecfr.get("45 CFR Part 164")
+        ecfr.save("45 CFR Part 164", tmp_path / "tree", tree=True)
+        ecfr.save("45 CFR Part 164", tmp_path / "one.md", links=True)
+    section = part["164.102"]
+    urls = [r.url for r in section.references]
+    assert urls == [
+        "https://mirror.example/current/title-45/section-164.104",
+        "https://fr.example/78/5692",
+    ]
+    linked = section.to_markdown(links=True)
+    assert "(https://fr.example/78/5692)" in linked
+    saved = (tmp_path / "tree/part-164/subpart-A/164.102.md").read_text("utf-8")
+    assert "(https://fr.example/78/5692)" in saved and "(164.104.md)" in saved
+    one = (tmp_path / "one.md").read_text("utf-8")
+    assert "(https://fr.example/78/5692)" in one
+
+
 def test_changes_and_matches_link_to_the_site(api):
     version = {
         "date": "2024-01-05", "amendment_date": "2024-01-05",

@@ -27,11 +27,11 @@ BASE_URL = "https://www.ecfr.gov"
 SITE_URL = BASE_URL
 BULK_URL = "https://www.govinfo.gov/bulkdata/ECFR"
 USC_URL = (
-    "https://uscode.house.gov/view.xhtml?req=granuleid:USC-prelim-title{title}"
-    "-section{section}&num=0&edition=prelim"
+    "https://uscode.house.gov/view.xhtml"
+    "?req=granuleid:USC-prelim-title{title}-section{section}&num=0&edition=prelim"
 )
 FR_URL = "https://www.federalregister.gov/citation/{volume}-FR-{page}"
-PUBLIC_LAW_URL = "https://www.govinfo.gov/link/plaw/{congress}/public/{number}"
+PUBLIC_LAW_URL = "https://www.congress.gov/public-law/{congress}{suffix}-congress/public-law/{number}"
 PROJECT_URL = "https://github.com/ptmorris05/ecfr-md"
 # Identifies the client to the eCFR's operators, with where to find it.
 USER_AGENT = f"ecfr-md/{__version__} (+{PROJECT_URL})"
@@ -113,7 +113,10 @@ class Settings(BaseModel):
     )
     public_law_url: str = Field(
         default=PUBLIC_LAW_URL,
-        description="Link for a public law; {congress} and {number}.",
+        description=(
+            "Link for a public law; {congress}, its {suffix} (st, nd, rd, th) "
+            "and {number}."
+        ),
     )
     user_agent: str = Field(
         default=USER_AGENT,
@@ -171,6 +174,15 @@ class Settings(BaseModel):
     def images(self) -> str:
         """Where images in the text are: ``image_url``, else ``site_url``."""
         return self.image_url or self.site_url
+
+    @property
+    def links(self) -> dict[str, str]:
+        """Link templates for other codes, as ``find_references`` takes them."""
+        return {
+            "usc": self.usc_url,
+            "fr": self.fr_url,
+            "public_law": self.public_law_url,
+        }
 
     @property
     def config_file(self) -> Path:
