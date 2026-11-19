@@ -17,3 +17,4 @@ examples/output/
 # Test coverage
 .coverage
 htmlcov/
+site/
