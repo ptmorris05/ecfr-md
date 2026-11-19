@@ -375,3 +375,6 @@ def test_tables_become_lists_when_narrow():
     middling = Console(file=io.StringIO(), width=70)
     middling.print(changes_table([change], width=70))
     assert "Effective" not in middling.file.getvalue()  # The first to go.
+    wide = Console(file=io.StringIO(), width=100)
+    wide.print(changes_table([change], width=100))
+    assert "Effective" in wide.file.getvalue()
