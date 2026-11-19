@@ -1,6 +1,6 @@
 [project]
 name = "ecfr-md"
-version = "0.2.0rc1"
+version = "0.2.0"
 description = "Code of Federal Regulations text from the eCFR API as navigable Python objects and Markdown."
 readme = "README.md"
 license = "MIT"
