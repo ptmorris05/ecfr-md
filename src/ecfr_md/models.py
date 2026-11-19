@@ -7,6 +7,9 @@ don't cause errors; they are in ``model.model_extra``.
 from __future__ import annotations
 
 import datetime as dt
+import json
+import zlib
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
@@ -226,3 +229,70 @@ class ContentVersion(Model):
 class Versions(Model):
     content_versions: list[ContentVersion]
     meta: dict[str, object] = {}
+
+
+class Structure:
+    """A lean node of a title's table of contents, for keeping in memory.
+
+    A :class:`Node` per entry of a large title takes over 50 MB; this keeps
+    only what navigation needs, and the response compressed, so ``raw()``
+    can give the full :class:`Node` when asked.
+    """
+
+    __slots__ = (
+        "_source",
+        "children",
+        "identifier",
+        "label",
+        "parent",
+        "reserved",
+        "size",
+        "type",
+    )
+
+    def __init__(
+        self, data: dict[str, Any], parent: Structure | None, source: bytes
+    ) -> None:
+        identifier, label, kind = data.get("identifier"), data["label"], data["type"]
+        size = data.get("size")
+        if not isinstance(label, str) or not isinstance(kind, str):
+            raise ValueError("A structure node needs a label and a type")
+        self.identifier = None if identifier is None else str(identifier)
+        self.label = label
+        self.type = kind
+        self.reserved = bool(data.get("reserved", False))
+        self.size = int(size) if size is not None else None
+        self.parent = parent
+        self._source = source
+        self.children = tuple(
+            Structure(child, self, source) for child in data.get("children") or ()
+        )
+
+    @classmethod
+    def parse(cls, body: bytes) -> Structure:
+        """Read the structure endpoint's JSON; raises ValueError if malformed."""
+        try:
+            return cls(json.loads(body), None, zlib.compress(body))
+        except (KeyError, TypeError, AttributeError) as exc:
+            raise ValueError(f"Unexpected structure: {exc!r}") from exc
+
+    @classmethod
+    def of(cls, node: Node) -> Structure:
+        """The lean form of a full node."""
+        return cls.parse(node.model_dump_json(exclude_unset=True).encode())
+
+    def raw(self) -> Node:
+        """This entry as the API gave it, with everything below it."""
+        steps: list[int] = []
+        node = self
+        while node.parent is not None:
+            steps.append(_position(node.parent.children, node))
+            node = node.parent
+        data = json.loads(zlib.decompress(self._source))
+        for step in reversed(steps):
+            data = data["children"][step]
+        return Node.model_validate(data)
+
+
+def _position(siblings: tuple[Structure, ...], node: Structure) -> int:
+    return next(i for i, sibling in enumerate(siblings) if sibling is node)
