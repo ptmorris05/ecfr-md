@@ -6,7 +6,7 @@ and the `ecfr-md` command. Before 1.0, minor versions may change it.
 
 ## [Unreleased]
 
-Install from GitHub; ecfr-md is not on PyPI.
+On PyPI: `uv tool install ecfr-md` or `pip install ecfr-md`, with the extras `web`, `tui`, `mcp`, `docx`, `pdf` and `all`.
 
 ### Added
 

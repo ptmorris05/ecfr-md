@@ -44,7 +44,7 @@ uv add "ecfr-md[pdf]"
 pip install "ecfr-md[docx]"
 ```
 
-Every release is also on [GitHub](https://github.com/ptmorris05/ecfr-md/releases), with the wheel and source distribution attached and [build provenance](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations) you can check with `gh attestation verify FILE --repo ptmorris05/ecfr-md`. The latest code on `main`: `uv tool install "ecfr-md[all] @ git+https://github.com/ptmorris05/ecfr-md"`.
+Every release is also on [GitHub](https://github.com/ptmorris05/ecfr-md/releases), with the wheel and source distribution attached and [build provenance](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations) you can check with `gh attestation verify FILE --repo ptmorris05/ecfr-md`.
 
 PDFs are typeset by [Typst](https://typst.app/), whose Python wheels need no other software. The MCP server for AI agents needs the `mcp` extra (see [AI agents](#ai-agents)); `all` includes it.
 
