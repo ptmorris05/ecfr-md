@@ -73,6 +73,14 @@ def test_redline_in_a_terminal(ecfr, versions):
     assert "Changed" in screen.file.getvalue() and "Added" in screen.file.getvalue()
 
 
+def test_redline_shows_words_not_markdown():
+    from ecfr_md.ui import redline
+
+    found = compare("x", "*Old.* \\* \\* \\*", "**New.** \\* \\* \\*", *[None] * 2)  # type: ignore[arg-type]
+    words = "".join(t.plain for t in redline(found).renderables[1::3])
+    assert words == "Old.New. * * *"
+
+
 def test_module_level_compare_and_types():
     assert Comparison.__doc__ and Difference.__doc__
 
