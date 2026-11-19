@@ -1143,7 +1143,13 @@ def launcher(
     try:
         # Options given here win over ECFR_MD_* variables and the config file.
         given = {name: getattr(settings, name) for name in settings.model_fields_set}
-        settings = Settings.load(config_file, origin="CLI", **given)
+        try:
+            settings = Settings.load(config_file, origin="CLI", **given)
+        except InvalidParameterError:
+            if command not in (edit, path, set_setting, unset):
+                raise
+            # Bad settings mustn't stop the commands that fix them.
+            settings = Settings.load(config_file, origin="CLI", read=False, **given)
         with ECFR(settings, progress=terminal) as ecfr:
             command(*bound.args, **bound.kwargs, ecfr=ecfr)
     except BrokenPipeError:

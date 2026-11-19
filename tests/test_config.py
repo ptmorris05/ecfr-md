@@ -245,6 +245,17 @@ def test_quiet_and_verbose_from_the_environment(
     assert "45 CFR Part 164 from www.ecfr.gov: one API request" in caplog.text
 
 
+def test_bad_settings_can_be_fixed(run, capsys, isolated_config, monkeypatch):
+    isolated_config.write_text("concurrency = 99\n")
+    assert run("config", "show") == 2
+    assert "concurrency: Input should be less than" in capsys.readouterr().err
+    assert run("config", "set", "concurrency", "2") == 0
+    assert read_config(isolated_config) == {"concurrency": 2}
+    monkeypatch.setenv("ECFR_MD_TIMEOUT", "never")
+    assert run("config", "path") == 0
+    assert capsys.readouterr().out.strip() == str(isolated_config)
+
+
 def test_bad_settings_in_the_environment_are_usage_errors(run, capsys, monkeypatch):
     monkeypatch.setenv("ECFR_MD_CONCURRENCY", "many")
     assert run("titles") == 2

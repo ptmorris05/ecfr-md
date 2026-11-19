@@ -196,6 +196,7 @@ class Settings(BaseModel):
         *,
         env: Mapping[str, str] | None = None,
         origin: Origin = "SDK",
+        read: bool = True,
         **overrides: Any,
     ) -> Self:
         """Settings from the config file and environment, then ``overrides``.
@@ -203,17 +204,15 @@ class Settings(BaseModel):
         ``config`` is the config file; by default ``ECFR_MD_CONFIG`` or
         :func:`config_path`. A missing file is no error. ``env`` defaults to
         ``os.environ``; ``origin`` names where ``overrides`` came from in
-        :meth:`explain`.
+        :meth:`explain`. ``read=False`` skips the file and the environment,
+        but still records which file is the config file.
         """
         env = os.environ if env is None else env
         path = Path(config) if config else Path(env.get(CONFIG_ENV) or config_path())
         values: dict[str, Any] = {}
         origins: dict[str, Origin] = {}
-        for found, where in (
-            (read_config(path), f"file {path}"),
-            (_from_env(env), "env"),
-            (overrides, origin),
-        ):
+        given = [(read_config(path), f"file {path}"), (_from_env(env), "env")]
+        for found, where in [*(given if read else []), (overrides, origin)]:
             for key, value in found.items():
                 values[key] = value
                 origins[key] = (
