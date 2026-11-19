@@ -30,6 +30,16 @@ def test_get_file_and_tree(run, capsys, tmp_path):
     assert "Saved" in err and "Files" in err and "7" in err
 
 
+def test_get_all_titles(run, api, capsys, tmp_path):
+    assert run("get", "--all", "-o", str(tmp_path / "flat")) == 0
+    assert [p.name for p in (tmp_path / "flat").iterdir()] == ["45-cfr.md"]
+    assert run("get", "--all", "--tree", "-o", str(tmp_path / "cfr")) == 0
+    assert (tmp_path / "cfr" / "part-164" / "index.md").is_file()
+    assert not any("title-35" in str(r.url) for r in api.requests)  # Reserved.
+    assert "Titles" in capsys.readouterr().err
+    assert run("sync", str(tmp_path / "cfr")) == 0
+
+
 def test_get_flexible_date(run, api):
     api.text("/api/versioner/v1/full/2020-03-01/title-45.xml", "<DIV5 N='1'/>")
     assert run("get", "45", "--date", "March 2020") == 0
@@ -39,6 +49,8 @@ def test_get_flexible_date(run, api):
     ("tokens", "message"),
     [
         (("get",), "Say what to get"),
+        (("get", "--all"), "--all requires --output"),
+        (("get", "45", "--all", "-o", "out"), "leave out the citation"),
         (("get", "45", "--tree"), "--tree requires --output"),
         (("get", "45", "CFR", "164", "--part", "160"), "Conflicting part"),
     ],
