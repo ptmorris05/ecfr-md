@@ -1,3 +1,5 @@
+import re
+
 import pytest
 
 from ecfr_md import Citation, InvalidCitationError, InvalidParameterError
@@ -127,6 +129,125 @@ def test_parse_and_format(text, hierarchy, paragraph, canonical):
 def test_invalid_citations(text, message):
     with pytest.raises(InvalidCitationError, match=message):
         Citation.parse(text)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("\u201c45 CFR 164.502(a)\u201d", "45 CFR 164.502(a)"),
+        ("\u201845 CFR 164\u2019", "45 CFR Part 164"),
+        ('"45 CFR 164.502"', "45 CFR 164.502"),
+        ("\ufeff45\u200b CFR 164.502\u200b", "45 CFR 164.502"),
+        ("12 CFR 1026 Supp. I", "12 CFR Supplement I to Part 1026"),
+        ("12 CFR pt. 1026, Supp. I", "12 CFR Supplement I to Part 1026"),
+        ("12 cfr part 1026 supp I", "12 CFR Supplement I to Part 1026"),
+        ("12 CFR Supp. I to pt. 1026", "12 CFR Supplement I to Part 1026"),
+        ("12 C.F.R. pt. 1026, app. J", "12 CFR Appendix J to Part 1026"),
+        ("12 CFR 1026 App. J", "12 CFR Appendix J to Part 1026"),
+        ("12 CFR Part 1026 Appendix J", "12 CFR Appendix J to Part 1026"),
+        (
+            "45 CFR Part 164 Subpt. C app. A",
+            "45 CFR Appendix A to Subpart C of Part 164",
+        ),
+        (
+            "45 CFR app. A to subpt. C of pt. 164",
+            "45 CFR Appendix A to Subpart C of Part 164",
+        ),
+        ("45 CFR 164.500 et seq.", "45 CFR 164.500"),
+        ("45 CFR Part 164 et seq", "45 CFR Part 164"),
+        ("45 CFR subpart E of part 164", "45 CFR Part 164 Subpart E"),
+        ("Part 164 of Title 45", "45 CFR Part 164"),
+        ("Section 164.502 of Title 45.", "45 CFR 164.502"),
+        ("Subpart E of Part 164, of Title 45", "45 CFR Part 164 Subpart E"),
+    ],
+)
+def test_pasted_citations(text, expected):
+    assert str(Citation.parse(text)) == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        (
+            "45 CFR 164.502 (2023)",
+            r'^"\(2023\)" looks like a year; for text as of a date use --date 2023 '
+            r'\(Python: date="2023"\)$',
+        ),
+        ("45 CFR 164.502(1999).", r'^"\(1999\)" looks like a year'),
+        ("45 CRF 164.502", r"^\"CRF\" isn't recognised; did you mean CFR\?$"),
+        ("45 C.R.F. 164", r"^\"C\.R\.F\.\" isn't recognised; did you mean CFR\?$"),
+        ("45CFT164.502", r"^\"CFT\" isn't recognised"),
+        (
+            "45 CFR 164.502(a",
+            r"^unbalanced parentheses in '45 CFR 164\.502\(a'; each \( needs a",
+        ),
+        ("45 CFR 164.502)(a", r"^unbalanced parentheses"),
+        (
+            "164.502 45 CFR",
+            r"^'164\.502' needs a title number first, e\.g\. 45 CFR 164\.502$",
+        ),
+        (
+            "164.502 17 C.F.R.",
+            r"^'164\.502' needs a title number first, e\.g\. 17 CFR 164\.502$",
+        ),
+    ],
+)
+def test_pasted_mistakes_are_explained(text, message):
+    with pytest.raises(InvalidCitationError, match=message):
+        Citation.parse(text)
+
+
+RANGE = (
+    "is a range of several sections, but a citation names one. Cite the part or "
+    "subpart that contains them (e.g. 45 CFR Part 164), or put one citation per "
+    "line in a file and use --from FILE"
+)
+LIST = "lists several sections, but a citation names one"
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        ("45 CFR 164.500-164.534", RANGE),
+        ("45 CFR 164.502\u2013164.506", RANGE),
+        ("45 CFR 164.502 \u2013 164.506", RANGE),
+        ("45 CFR 164.500 through 164.534", RANGE),
+        ("45 CFR §§ 164.500 to 164.534", RANGE),
+        ("45 CFR §§ 164.502, 164.506", LIST),
+        ("45 CFR 164.502 and 164.506", LIST),
+        ("45 CFR 164.502 164.506", LIST),
+        ("43 CFR Part 4100 4110.1 & 4110.2", "e.g. 43 CFR Part 4100"),
+        ("45 CFR 164.502, 164.506", "Citation.parse_many splits a list"),
+    ],
+)
+def test_ranges_and_lists_are_explained(text, message):
+    with pytest.raises(InvalidCitationError, match=re.escape(message)):
+        Citation.parse(text)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("45 CFR §§ 164.502, 164.506", ["45 CFR 164.502", "45 CFR 164.506"]),
+        ("45 CFR 164.502 and 164.506(a).", ["45 CFR 164.502", "45 CFR 164.506(a)"]),
+        (
+            "\u201c45 C.F.R. 164.502, 164.504, and 164.506\u201d",
+            ["45 CFR 164.502", "45 CFR 164.504", "45 CFR 164.506"],
+        ),
+        ("45 CFR 164.502 or 164.506", ["45 CFR 164.502", "45 CFR 164.506"]),
+        ("45 CFR 164.502", ["45 CFR 164.502"]),
+        ("12 CFR pt. 1026, Supp. I", ["12 CFR Supplement I to Part 1026"]),
+        ("17 CFR 210.3-07 - 210.3-08", ["17 CFR 210.3-07 - 210.3-08"]),
+        (45, ["45 CFR"]),
+    ],
+)
+def test_parse_many_expands_lists(text, expected):
+    assert [str(c) for c in Citation.parse_many(text)] == expected
+
+
+def test_parse_many_rejects_ranges():
+    with pytest.raises(InvalidCitationError, match="range"):
+        Citation.parse_many("45 CFR 164.500-164.534")
 
 
 def test_keywords_refine_and_conflicts_are_rejected():
