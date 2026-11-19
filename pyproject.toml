@@ -46,8 +46,11 @@ docx = [
 pdf = [
     "typst>=0.15.2",
 ]
+tui = [
+    "textual>=8.2.8",
+]
 all = [
-    "ecfr-md[docx,pdf]",
+    "ecfr-md[docx,pdf,tui]",
 ]
 
 [tool.uv.build-backend]
@@ -67,6 +70,7 @@ dev = [
     "pytest-cov>=7.1.0",
     "python-docx>=1.2.0",
     "ruff>=0.17.0",
+    "textual>=8.2.8",
     "typst>=0.15.2",
 ]
 
