@@ -13,6 +13,7 @@ Common commands:
     ecfr-md cited-by 45 CFR 164.502            what cites it
     ecfr-md compare 45 CFR 164.502 --since 2024-01-01   what changed
     ecfr-md titles                             what titles exist
+    ecfr-md browse 45 CFR 164.502              read and navigate full screen
 
 Run ecfr-md COMMAND --help for a command's options. The options below go
 before the command. Every eCFR API endpoint is under ecfr-md api.
@@ -41,6 +42,7 @@ from rich.console import Console, RenderableType
 from rich.logging import RichHandler
 from rich.text import Text
 
+from ecfr_md import tui
 from ecfr_md.address import Address
 from ecfr_md.client import ECFR, Admin, Search, Versioner
 from ecfr_md.config import Settings, __version__
@@ -645,6 +647,34 @@ def cited_by(
     else:
         console.print(search_table(matches, width=console.width))
         terminal.note(_search_summary(matches, limit))
+
+
+@app.command
+def browse(
+    *citation: str,
+    date: DateLike | None = None,
+    ecfr: Client,
+) -> None:
+    """Read and navigate the CFR full screen: an outline beside the text,
+    cross-references to follow, search, history and export.
+
+    Needs the tui extra. Press ? in the browser for its keys.
+
+    Parameters
+    ----------
+    citation: str
+        Where to open, e.g. 45 CFR 164.502 or 45/164.502/a/1. Opens the
+        list of titles if left out.
+    date: DateLike | None
+        Point-in-time date. Defaults to the most recent available.
+    """
+    tui.require()
+    place = str(Address.parse(" ".join(citation))) if citation else None
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        raise InvalidParameterError(
+            "ecfr-md browse needs a terminal; to print text, use ecfr-md get"
+        )
+    tui.browse(ecfr, place, date=date)
 
 
 @app.command
