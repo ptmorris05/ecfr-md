@@ -151,9 +151,46 @@ Install from GitHub; ecfr-md is not on PyPI.
 - Text saved as of a past date records `pinned: "<date>"` in the front matter.
   `sync` keeps it at that date and lists it in `SyncResult.kept`;
   `include_dated=True` (`--include-dated`) updates it.
+- GovInfo's bulk eCFR XML as a second source of text. `source="auto"`
+  (the default; also `"api"` or `"bulk"`) picks one per request: past dates
+  and parts or less from the API, a title already in the cache as a bulk
+  copy from that copy, and larger text from whichever is estimated faster,
+  from request latency and download speed learned and kept in the cache
+  (`api_latency`, `bulk_bandwidth`, `learn_costs`, `bulk_min_bytes`). Bulk
+  is used only when GovInfo's file is as current as the eCFR, and any
+  failure falls back to the API. Bulk files are rewritten in the API's
+  dialect; on seven titles, 33,830 of 33,850 sections render identically.
+  `-v` logs which host served each text and why. A nightly test compares
+  the two sources.
+- Every host is a setting: `site_url` (page links), `image_url`, `bulk_url`,
+  and link templates for other codes (`usc_url`, `fr_url`,
+  `public_law_url`), besides `base_url`. Cache keys include the host, so a
+  mirror's text never mixes with the official text.
+- A config file (TOML; `--config PATH` or `ECFR_MD_CONFIG`, else
+  `config.toml` in the user config directory) and `ECFR_MD_*` variables for
+  every setting. `Settings.load()` reads them as the command line does:
+  arguments, then options, then the environment, then the file.
+  `Settings.explain()` gives each value and where it came from.
+- `ecfr-md config show | path | set KEY VALUE | unset KEY | edit`.
+- `ecfr_md.configure(...)` sets the module-level functions' settings.
 
 ### Changed
 
+- `ECFR()` without settings reads the config file and `ECFR_MD_*`
+  variables (`Settings.load()`); `Settings()` is still the defaults.
+  `Settings` rejects unknown names.
+- Divisions above the part from `get` read each part from disk when it's
+  needed: `get(40)` peaks at about 130 MB instead of 1.3 GB. Text is parsed
+  from its file rather than from bytes in memory.
+- Outlines are kept as lean entries (Title 40: 12 MB, was 56 MB) in bounded
+  caches; `Outline.raw` is built when asked for.
+- Large titles are fetched largest part first and joined file to file,
+  without holding parts in memory.
+- `get_many` fetches what it can't group by part in parallel.
+- `sync` asks whether anything was issued since a file's date before saving
+  it again; unchanged files cost at most one small request per title.
+- The link templates `USC_URL`, `FR_URL` and `PUBLIC_LAW_URL` are defined in
+  `ecfr_md.config` (still importable from `ecfr_md.references`).
 - **Breaking:** saving to a `.txt` file writes plain text, not Markdown, and
   other suffixes (`.html`, `.pdf`, ...) save that format; `get -o` no longer
   rejects them. A suffix that names no format is an error; names without a

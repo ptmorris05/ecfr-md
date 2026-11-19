@@ -95,20 +95,24 @@ ecfr-md cache clear
 | `search WORDS` | Lists current sections that contain the words as a phrase (quotes optional; `--no-phrase`: anywhere in the section). `--in CITATION` searches only a title or part of one. `--limit N` (default 20), `--all-versions`, `--save DIR`, `--json`, plus the API's filters (`--agency SLUG`, `--date`, `--last-modified-after`, …); an unknown agency is named, with suggestions. |
 | `sync PATH` | Updates a file, tree or directory saved by `get`, `search --save` or `--from`, searching folders to any depth. Rewrites only files whose text changed, deletes files for sections that no longer exist, and leaves other files alone. Keeps snapshots saved with a past `--date` (`--include-dated` updates them) and files you edited (`--force` overwrites them). `--dry-run` shows what would change. See [Keeping files up to date](#keeping-files-up-to-date). |
 | `cache info`, `cache clear` | Shows (`--json` too) or deletes the local cache. |
+| `config show`, `config path`, `config set KEY VALUE`, `config unset KEY`, `config edit` | Shows every setting and where its value came from (`--json` too), and how text sources are chosen; shows where the config file is; sets or removes a setting in it (`headers.NAME` for a header), checking the value first; opens it in `$VISUAL` or `$EDITOR`. See [Configuration](#configuration). |
 | `api admin …`, `api search …`, `api versioner …` | One command per API endpoint, printing its JSON. See [API](#api). |
 
 `titles`, `outline`, `changes`, `compare`, `search`, `references` and `cited-by` take `--json` for JSON output (`search --json` is `{"complete", "total_versions", "results"}`). A citation can be one quoted string or separate words, and anything in [Citations and addresses](#citations-and-addresses) works, eCFR links and saved files' names included; keywords such as `--part 164` work too. Without `-o`, `get` prints formatted text in a terminal and plain Markdown when piped. When stderr isn't a terminal (a pipe, a log, CI), messages and summaries are plain whole lines you can grep.
 
 A citation that names a subpart or appendix without its part, like `45 CFR Subpart E`, is checked against the title's table of contents: if several parts have one, the error lists them rather than guessing. A citation that doesn't exist says what does ("No subpart Z in 45 CFR Part 164. It has subparts A, B, C, D, E"). A date after the latest the eCFR has gives the latest text, with a warning, and files are labeled with the text's real date.
 
-Options that go before the command (`ecfr-md --help` lists them all):
+Options that go before the command (`ecfr-md --help` lists them all). Each setting can also be an `ECFR_MD_*` environment variable or a line in the config file; see [Configuration](#configuration).
 
 | Option | Environment variable | Default |
 | --- | --- | --- |
 | `-q`, `--quiet`: no progress or summary, only warnings and errors | `ECFR_MD_QUIET` | off |
-| `-v`, `--verbose`: log every request | `ECFR_MD_VERBOSE` | off |
+| `-v`, `--verbose`: log every request, and which host served the text and why | `ECFR_MD_VERBOSE` | off |
+| `--config PATH`: the config file | `ECFR_MD_CONFIG` | `config.toml` in the user config directory |
+| `--source auto\|api\|bulk`: where text comes from | `ECFR_MD_SOURCE` | `auto` |
+| `--base-url`, `--site-url`, `--image-url`, `--bulk-url`: hosts | `ECFR_MD_BASE_URL`, … | the official sites |
 | `--no-cache`, `--cache-dir PATH`, `--cache-max-age SECONDS` | `ECFR_MD_CACHE`, `ECFR_MD_CACHE_DIR`, `ECFR_MD_CACHE_MAX_AGE` | on, user cache directory |
-| `--user-agent TEXT`, `--headers.NAME VALUE` | `ECFR_MD_USER_AGENT`, `ECFR_MD_HEADERS` | `ecfr-md/<version>` |
+| `--user-agent TEXT`, `--headers.NAME VALUE` | `ECFR_MD_USER_AGENT`, `ECFR_MD_HEADERS` (a JSON object) | `ecfr-md/<version> (+project URL)` |
 | `--rate-limit N`: requests per second | `ECFR_MD_RATE_LIMIT` | none |
 | `--concurrency N`: most requests in flight at once, across all threads | `ECFR_MD_CONCURRENCY` | 2 |
 | `--timeout`, `--max-attempts`, `--backoff-initial`, `--backoff-max` | `ECFR_MD_…` | 60 s, 5, 1 s, 60 s |
@@ -507,8 +511,10 @@ JSON endpoints return pydantic models. Fields the API adds later are kept in `mo
 ecfr-md avoids requests it doesn't need:
 
 - **Cache, on by default.** Downloaded text is kept in the user cache directory (`~/Library/Caches/ecfr-md` on macOS, `~/.cache/ecfr-md` on Linux) and reused until the eCFR changes it. Every change the eCFR makes, including corrections to past dates, gets an issue date. To check a stored copy, ecfr-md reads the title list (one small request, reused for 5 minutes); only if the title has changed since the copy was made does it request the list of versions issued since, once per title. Text that hasn't changed isn't downloaded again. Titles still being updated aren't stored.
-- **Large titles are updated part by part.** When a large title changes, only the parts that changed are downloaded again.
-- **Several citations, one request.** `get_many([...])` and `ecfr-md get --from list.txt` fetch sections in the same small part (under 2 MB) with one request.
+- **Large titles are updated part by part.** When a large title changes, only the parts that changed are downloaded again. The largest parts are fetched first, so the slowest requests don't come last.
+- **Or in one request, from GovInfo.** A large title can take hundreds of API requests (Title 40: 379 requests and about 11 minutes), or one download of GovInfo's bulk file of the title (15 seconds). See [Sources](#sources).
+- **Several citations, one request.** `get_many([...])` and `ecfr-md get --from list.txt` fetch sections in the same small part (under 2 MB) with one request, and the rest in parallel, as many at once as `concurrency` allows.
+- **Sync asks first.** `sync` checks whether the eCFR has issued any change since a file's date before saving it again; an unchanged file costs at most one small request per title, and none if nothing was issued since.
 - **A section brings its part.** Reading a section or appendix in a part under 2 MB fetches the part, so `next`, `previous` and other sections of the part need no request. The table of contents is fetched once to tell (and cached).
 - **Offline.** If the eCFR can't be reached, ecfr-md uses the newest cached copy of the title list and the text, with an `ECFRWarning` that it may be out of date.
 - **One connection.** Requests share one HTTP/2 connection and ask for gzip, which the API sends about 5× smaller.
@@ -523,40 +529,81 @@ ecfr-md --no-cache get 45 CFR 164.502
 nodes = ecfr_md.get_many(["45 CFR 164.502", "45 CFR 164.506", "45 CFR 164.508"])
 ```
 
+## Sources
+
+Two official sources serve the same text: the eCFR API, any date and any piece of a title, and GovInfo's bulk XML, one file per title with the current text only. `source` chooses: `api`, `bulk`, or `auto` (the default), which picks one for each request:
+
+1. A past date comes from the API; bulk has only the current text.
+2. If a current bulk copy of the title is in the cache, the text is cut from it, with no request.
+3. A part or less comes from the API: one request.
+4. Larger text (a title, a chapter) comes from whichever is estimated faster: the API requests it needs (one, or one per part not already cached for a large title) × the time per request ÷ the requests in flight, against the title's bulk download ÷ the download speed. Ties go to the API. The estimates start from `api_latency` and `bulk_bandwidth` and, with `learn_costs`, are refined from each download, kept in the cache. `bulk_min_bytes` replaces the estimate: text of at least that many bytes comes from bulk.
+5. Bulk is used only if GovInfo's file was modified on or after the title's latest issue date (one `HEAD` request, remembered for a few minutes). If anything goes wrong with bulk, the text comes from the API, with a message in the log.
+
+GovInfo lays its files out for print. ecfr-md rewrites them as the API's XML: volumes merged, divisions named as in the table of contents, print tables of contents dropped, sections and appendices named as the eCFR names them, tables marked up as the API marks them up. Measured in November 2026 on titles 1, 3, 10, 14, 21, 29 and 45, 33,830 of 33,850 sections and appendices render identically (Title 45: 5,735 of 5,735); the rest differ in the source data (blanks of different lengths, a table headnote or an empty column one publication has). A nightly test renders titles from both sources and compares them. `ecfr-md -v` logs which host served each text and why, the front matter's `api` field is the request it came from (an eCFR API URL or the GovInfo file), and `ecfr-md config show` explains the current rule.
+
+```sh
+ecfr-md -v get 40 --tree -o title-40/   # 40 CFR from www.govinfo.gov: downloading the title (~19 s) beats 379 API requests (~758 s)
+ecfr-md --source api get 40 -o 40.md   # Always the API
+```
+
 ## Configuration
 
-`Settings` in Python; options before the command or `ECFR_MD_*` environment variables on the command line.
+Every setting can be given in Python, as an option before the command, as an `ECFR_MD_*` environment variable, or in the config file, which is TOML: `config.toml` in the user config directory (`~/Library/Application Support/ecfr-md` on macOS, `~/.config/ecfr-md` on Linux, `%LOCALAPPDATA%\ecfr-md` on Windows), or the file given by `--config PATH` or `ECFR_MD_CONFIG`. They apply in that order: Python arguments win over options, which win over the environment, which wins over the file; anything not given is the default, the official sites. Python reads the environment and the file too, so scripts and the command line agree.
 
-```python
-from ecfr_md import ECFR, Settings
+| Setting | Default | Is |
+| --- | --- | --- |
+| `base_url` | `https://www.ecfr.gov` | The eCFR API. |
+| `site_url` | `https://www.ecfr.gov` | The eCFR web site: page links in front matter, outlines and cross-references. |
+| `image_url` | `site_url` | Where images in the text are. |
+| `source` | `auto` | `auto`, `api` or `bulk`; see [Sources](#sources). |
+| `bulk_url` | `https://www.govinfo.gov/bulkdata/ECFR` | GovInfo's bulk eCFR XML. |
+| `bulk_min_bytes` | none | With `auto`, bulk for text at least this large instead of estimating. |
+| `api_latency`, `bulk_bandwidth`, `learn_costs` | 4 s, 2.5 MB/s, on | The estimates `auto` starts from, and whether to refine them. |
+| `usc_url`, `fr_url`, `public_law_url` | uscode.house.gov, federalregister.gov, congress.gov | Links for citations of other codes: `{title}` and `{section}`; `{volume}` and `{page}`; `{congress}`, `{suffix}` and `{number}`. |
+| `user_agent`, `headers` | `ecfr-md/<version> (+project URL)`, none | Who's asking. Consider `headers={"From": "you@example.com"}` (`--headers.From you@example.com`), so the eCFR's operators can reach you. |
+| `timeout`, `max_attempts`, `backoff_initial`, `backoff_max` | 60 s, 5, 1 s, 60 s | Requests and retries. |
+| `rate_limit`, `concurrency` | none, 2 | Requests per second, and at once. |
+| `cache`, `cache_dir`, `cache_max_age` | on, user cache directory, none | The cache. |
 
-ECFR(
-    Settings(
-        user_agent="my-app/1.0 (me@example.com)",
-        headers={"From": "me@example.com"},
-        timeout=60,
-        max_attempts=5,
-        backoff_initial=1,
-        backoff_max=60,
-        rate_limit=None,
-        concurrency=4,
-        cache=True,
-        cache_dir=None,
-        cache_max_age=None,
-    )
-)
+```toml
+# config.toml
+source = "auto"
+site_url = "https://www.ecfr.gov"
+concurrency = 2
+
+[headers]
+From = "me@example.com"
 ```
 
 ```sh
-ecfr-md --user-agent "my-app/1.0" --rate-limit 2 get 45
-ECFR_MD_USER_AGENT="my-app/1.0" ecfr-md get 45
+ecfr-md config set headers.From me@example.com   # Saved in the config file
+ecfr-md config show                              # Each value, and where it came from
+ecfr-md --site-url https://mirror.example get 45 CFR 164.502
+ECFR_MD_SOURCE=api ecfr-md get 45
+```
+
+```python
+import ecfr_md
+from ecfr_md import ECFR, Settings
+
+ECFR()                                      # The config file and ECFR_MD_* variables
+ECFR(Settings.load(source="api"))           # The same, with source set here
+ECFR(Settings(user_agent="my-app/1.0"))     # Only what's given here, and defaults
+ecfr_md.configure(site_url="https://mirror.example")  # For ecfr_md.get(...) and the rest
+
+for name, (value, origin) in Settings.load().explain().items():
+    print(name, value, origin)              # e.g. source auto default
 ```
 
 - Retries: connection errors, timeouts, 429 and 5xx, with exponential backoff and jitter. `Retry-After` is used when present.
 - `rate_limit`: maximum requests per second (default: none). When the API answers 429, the rate is halved and every request pauses; it recovers gradually as requests succeed.
-- `concurrency`: parts fetched at once for large titles.
+- `concurrency`: requests in flight at once, for large titles and `get_many`.
 - `cache_dir`: where the cache lives; `cache_max_age` (seconds) forces a fresh download of older copies.
 - `ECFRWarning` is issued while the eCFR is updating a title.
+
+## Memory
+
+Large text is never held twice. Downloads stream to disk; `save` writes Markdown as the XML is read. A title or other division above the part from `get` keeps only its divisions' headings in memory and reads each part from disk when it's needed, keeping the most recent few: `get(40)`, Title 40's 160 MB of XML, peaks at about 130 MB of memory (it was 1.3 GB), and walking every section of it at about 240 MB. Tables of contents are kept as lean entries (12 MB for Title 40, was 56 MB), and the client keeps only the most recently used ones.
 
 ## Limitations
 
