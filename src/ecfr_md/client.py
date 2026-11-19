@@ -40,7 +40,6 @@ from tenacity import (
     RetryCallState,
     Retrying,
     retry_if_exception,
-    stop_after_attempt,
     wait_exponential_jitter,
 )
 
@@ -60,13 +59,14 @@ from ecfr_md.errors import (
     InvalidParameterError,
     NodeNotFoundError,
     NotFoundError,
+    RateLimitError,
     ResponseFormatError,
     ServerError,
     TitleNotFoundError,
     api_error,
 )
 from ecfr_md.markdown import DIV_TAG, file_events
-from ecfr_md.network import Throttle
+from ecfr_md.network import Limiter, Throttle
 from ecfr_md.params import (
     DateLike,
     Hierarchy,
@@ -112,6 +112,7 @@ INCOMPLETE = frozenset({"subtitle", "chapter", "subchapter", "subpart", "appendi
 # A subpart is never added, since an appendix "to Subpart C" isn't inside it.
 ABOVE_PART = ("subtitle", "chapter", "subchapter", "part")
 MAX_PER_PAGE = 1000  # Search results per request.
+MAX_SLOW_DOWNS = 10  # 429s waited out for one request before giving up.
 
 # Structure node types above the part level, as XML division tags.
 DIVISIONS = {
@@ -372,6 +373,7 @@ class ECFR:
             transport=transport,
         )
         self._throttle = Throttle(settings.rate_limit)
+        self._limiter = Limiter(settings.concurrency)
         directory = settings.cache_dir or default_directory()
         self._store = Store(
             directory if settings.cache else None, settings.cache_max_age
@@ -382,7 +384,7 @@ class ECFR:
         self._changes: dict[tuple[int, dt.date], list[models.ContentVersion]] = {}
         self._memo_lock = threading.Lock()
         self._retrying = Retrying(
-            stop=stop_after_attempt(settings.max_attempts),
+            stop=self._stop,
             wait=self._wait,
             retry=retry_if_exception(_is_transient),
             before_sleep=self._log_retry,
@@ -1167,7 +1169,7 @@ class ECFR:
         self._throttle.wait()
         logger.debug("GET %s", url)
         self.progress.started(url)
-        with self._translate_errors(request):
+        with self._limiter, self._translate_errors(request):
             response = self._http.send(request)
         self._check(response)
         self.progress.finished(url, response.num_bytes_downloaded, cached=False)
@@ -1184,7 +1186,7 @@ class ECFR:
         logger.debug("GET %s (streaming)", url)
         self.progress.started(url)
         retrieved = dt.datetime.now(dt.UTC)
-        with self._translate_errors(request):
+        with self._limiter, self._translate_errors(request):
             response = self._http.send(request, stream=True)
             try:
                 if response.is_error:
@@ -1211,9 +1213,17 @@ class ECFR:
             if pause is not None:
                 pause = min(pause, self.settings.backoff_max)
             self.progress.rate_changed(self._throttle.rejected(pause))
+            in_flight = self._limiter.rejected()
+            logger.warning(
+                "The eCFR asked to slow down (429); now %d request%s at a time. "
+                "Lower --concurrency or set --rate-limit to avoid this.",
+                in_flight,
+                "" if in_flight == 1 else "s",
+            )
             raise error
         if response.is_error:
             raise api_error(response)
+        self._limiter.succeeded()
         if (rate := self._throttle.succeeded()) is not None:
             self.progress.rate_changed(rate)
 
@@ -1234,6 +1244,18 @@ class ECFR:
             raise ECFRConnectionError(
                 f"Could not reach {request.url}: {exc or type(exc).__name__}"
             ) from exc
+
+    def _stop(self, state: RetryCallState) -> bool:
+        """Give up after ``max_attempts`` failures, not counting 429s.
+
+        A 429 means "slow down", which the throttle and limiter do; it isn't
+        a failure of the request. Up to ``MAX_SLOW_DOWNS`` are waited out.
+        """
+        exc = state.outcome.exception() if state.outcome else None
+        slowed = getattr(state, "slow_downs", 0) + isinstance(exc, RateLimitError)
+        state.slow_downs = slowed  # type: ignore[attr-defined]
+        failures = state.attempt_number - slowed
+        return failures >= self.settings.max_attempts or slowed >= MAX_SLOW_DOWNS
 
     def _wait(self, state: RetryCallState) -> float:
         """Exponential backoff with jitter, honouring any Retry-After header."""

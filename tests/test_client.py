@@ -392,7 +392,8 @@ def test_honours_retry_after(api):
     assert time.monotonic() - start < 5  # Retry-After: 0 overrode the 30s backoff.
 
 
-def test_rate_limit_error_exposes_retry_after(ecfr, api):
+def test_rate_limit_error_exposes_retry_after(ecfr, api, monkeypatch):
+    monkeypatch.setattr("ecfr_md.client.MAX_SLOW_DOWNS", 2)
     api.text(FULL, "", status=429, **{"Retry-After": "0"})
     with pytest.raises(RateLimitError) as info:
         ecfr.api.versioner.full(45)

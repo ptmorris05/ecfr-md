@@ -55,10 +55,13 @@ class Settings(BaseModel):
         description="Maximum requests per second (unlimited if unset).",
     )
     concurrency: int = Field(
-        default=4,
+        default=2,
         ge=1,
         le=16,
-        description="Requests in flight at once when fetching parts.",
+        description=(
+            "Most requests in flight at once, across all threads. The eCFR "
+            "answers 429 (slow down) to 3 or more, so more isn't faster."
+        ),
     )
     cache: bool = Field(
         default=True,
