@@ -27,7 +27,7 @@ def test_get_section_and_paragraph(ecfr):
 def test_get_part_navigation_and_history(ecfr):
     part = ecfr.get(45, part="164", date="2020-06-01")
     assert part.date.isoformat() == "2020-06-01"
-    assert part["164.502(a)(1)(i)"].text == "**(i)** To the individual;"
+    assert part["164.502(a)(1)(i)"].own_text == "**(i)** To the individual;"
     assert sum(1 for _ in part.iter("section")) > 30
 
 

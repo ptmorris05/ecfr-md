@@ -77,7 +77,10 @@ def test_ambiguous_lookups_raise_instead_of_guessing(part):
     section = part["164.108"]
     with pytest.raises(AmbiguousNodeError, match=r"2 nodes match '\(1\)'") as info:
         section["(1)"]
-    assert [p.text for p in info.value.candidates] == ["**(1)** One.", "**(1)** Uno."]
+    assert [p.own_text for p in info.value.candidates] == [
+        "**(1)** One.",
+        "**(1)** Uno.",
+    ]
     with pytest.raises(AmbiguousNodeError):
         part["164.108(1)"]
     with pytest.raises(AmbiguousNodeError):
@@ -149,10 +152,10 @@ def test_paragraph_text_and_headings(part):
     assert isinstance(first, Paragraph)
     assert first.citation == "45 CFR 164.104(a)(1)"
     assert first.heading == "First"
-    assert first.text == "**(1)** *First.* One."
+    assert first.own_text == "**(1)** *First.* One."
     assert part["164.104(a)"].heading == "Standard: Run in"
-    assert part["164.104(c)"].text == "**(c)** [Reserved]"
-    assert part["164.104(i)"].text == "**(i)** Letter i, not roman one."
+    assert part["164.104(c)"].own_text == "**(c)** [Reserved]"
+    assert part["164.104(i)"].own_text == "**(i)** Letter i, not roman one."
     assert part["164.104(a)(2)"].to_markdown() == (
         "**(2)** Two.\n\n**(i)** Roman one.\n\n**(ii)** Roman two.\n\n"
         "**(A)** Upper.\n\n**(1)** Italic one.\n"

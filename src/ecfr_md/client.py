@@ -480,7 +480,7 @@ class ECFR:
                 raise DateOutOfRangeError(reason) from exc
             raise
         path = _path(structure, cited)
-        return Outline.build(path[-1], cited.title, _levels(path))
+        return Outline.build(path[-1], cited.title, _levels(path), date=date)
 
     @validated
     def changes(

@@ -99,7 +99,7 @@ Exit codes: `0` success, `1` API, network or file error, `2` invalid usage.
 import ecfr_md
 
 section = ecfr_md.get("45 CFR 164.502")
-section["(a)(1)"].text  # one paragraph, as Markdown
+section["(a)(1)"].text  # a paragraph and its subparagraphs, as Markdown
 section.save("164.502.md")  # returns the path
 
 ecfr_md.get("45 CFR 164.502", date="2020-01-01")  # as of a date
@@ -217,24 +217,41 @@ part.get("164.999")  # None if missing
 part.iter("section")  # all sections
 part.find(level="appendix")  # first match
 
-paragraph = part["164.512(k)(1)(i)"]
-paragraph.citation  # '45 CFR 164.512(k)(1)(i)'
-paragraph.heading  # 'Armed Forces personnel'
-paragraph.text  # its own Markdown
+paragraph = part["164.512(k)"]
+paragraph.citation  # '45 CFR 164.512(k)'
+paragraph.heading  # 'Standard: Uses and disclosures for specialized government functions'
+paragraph.text  # (k) and everything in it, as Markdown
+paragraph.own_text  # only (k)'s lead text, up to (k)(1)
 paragraph.parent, paragraph.section, paragraph.ancestors
 ```
 
-Nodes have `level`, `identifier`, `heading`, `citation`, `hierarchy`, `date`, `provenance`, `parent`, `children`, `to_markdown()`, `to_markdown_tree()` and `save()`.
+Nodes have `level`, `identifier`, `heading`, `citation`, `url` (the eCFR page), `hierarchy`, `date`, `provenance`, `parent`, `children`, `text`, `to_markdown()`, `to_markdown_tree()`, `toc()`, `to_dict()` and `save()`. `text` is everything inside the node on every level, the same as `to_markdown()`.
+
+Level names (`"section"`, `"subject_group"`, …) are case-insensitive; a name that isn't a level, such as `"sections"`, raises `InvalidParameterError` listing the levels. `Level` members are strings, so `node.level == "section"` works.
+
+### Sized for a prompt
+
+```python
+part.toc()  # citations and headings, indented, down to paragraphs; no text
+part.toc(depth=2)  # two levels below the part
+part.to_markdown(max_chars=20_000)  # cut at a paragraph break, with a note
+```
+
+### JSON
+
+`to_dict()` returns a dict that `json.dumps` accepts, with the same keys on nodes, outlines, changes and matches: `citation`, `level`, `identifier`, `heading`, `date` (ISO format), `url`, plus `text` and `children` on nodes, `reserved`, `size` and `children` on outlines, `issued`, `effective` and `kind` on changes, and `excerpt`, `starts_on` and `ends_on` on matches. `depth=` limits the children (`0` for none), `text=False` leaves out nodes' text (a node's text includes its children's), and `include_raw=True` adds the API's response as `raw`. Use `to_dict()` rather than `dataclasses.asdict` or pydantic, which don't know about dates and back-references.
+
+In Jupyter, nodes display as Markdown and outlines as a nested list, cut at about 20,000 characters.
 
 If more than one node matches a key, `node[key]` raises `AmbiguousNodeError` with the matches in `.candidates`. `find()` returns the first match.
 
 ### Outlines, changes and search results
 
-`outline()` returns the table of contents as an `Outline`, without the text. It navigates like a node (`outline["Subpart E"]`, `outline.iter("section")`, `.parent`, `.children`) and has `level`, `identifier`, `heading`, `citation`, `reserved` and `size`; `str(outline)` is the indented table of contents.
+`outline()` returns the table of contents as an `Outline`, without the text. It navigates like a node (`outline["Subpart E"]`, `outline.iter("section")`, `outline.find(level="appendix")`, `.parent`, `.ancestors`, `.children`) and has `level`, `identifier`, `heading`, `citation`, `url`, `reserved` and `size`; `str(outline)` is the indented table of contents. `level` is a `Level`, or the eCFR's own type name (such as `"hed1"`) for unnumbered headings.
 
-`changes()` returns `Change` objects, newest first: `citation`, `heading`, `issued` (when the eCFR published it), `effective` and `kind` (`"substantive"`, `"editorial"` or `"removed"`).
+`changes()` returns `Change` objects, newest first: `citation`, `level`, `heading`, `url`, `issued` (when the eCFR published it), `effective` and `kind` (`"substantive"`, `"editorial"` or `"removed"`).
 
-`search()` returns `Match` objects, best first: `citation` (pass it to `get`), `heading`, `excerpt`, `starts_on` and `ends_on`. The list's `.total` is how many the eCFR found. Words are matched as a phrase unless `phrase=False` or the query has its own quotes; `limit`, `all_versions` and the API's filters (`agency_slugs`, `date`, `last_modified_after`, …) are keywords.
+`search()` returns `Match` objects, best first: `citation` (pass it to `get`), `level`, `identifier`, `heading`, `url`, `excerpt`, `starts_on` and `ends_on`. The list's `.total` is how many the eCFR found. Words are matched as a phrase unless `phrase=False` or the query has its own quotes; `limit`, `all_versions` and the API's filters (`agency_slugs`, `date`, `last_modified_after`, …) are keywords.
 
 Each keeps the API's response in `.raw`.
 
@@ -337,7 +354,7 @@ ECFR_MD_USER_AGENT="my-app/1.0" ecfr-md get 45
 
 ## Public API
 
-Everything exported from `ecfr_md` (the module-level functions, `ECFR`, `Settings`, `Citation`, the node classes, `Level`, `Outline`, `Change`, `Match`, `Matches`, `load`, `Progress`, `SyncResult`, the search enums and typed dicts, and the exceptions), plus the response models in `ecfr_md.models`. Other modules are internal. The `ecfr-md` command and its options are public too.
+Everything exported from `ecfr_md` (the module-level functions, `ECFR`, `Settings`, `Citation`, the node classes, `Level`, `LevelName`, `Outline`, `Change`, `Match`, `Matches`, `load`, `Progress`, `SyncResult`, the search enums and typed dicts, and the exceptions), plus the response models in `ecfr_md.models`. Other modules are internal. The `ecfr-md` command and its options are public too.
 
 ## Errors
 

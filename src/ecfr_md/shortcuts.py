@@ -2,10 +2,14 @@
 
 They share one :class:`~ecfr_md.client.ECFR` with default settings, created on
 first use and closed at exit. For other settings, use ``ECFR(Settings(...))``.
+
+Each function has its method's docstring, copied at import so the two can't
+drift; signatures are written out so type checkers see them.
 """
 
 import atexit
 import threading
+from collections.abc import Callable
 from pathlib import Path
 from typing import Literal, Unpack, overload
 
@@ -19,6 +23,18 @@ _shared: ECFR | None = None
 _lock = threading.Lock()
 
 
+def _documented_by[F: Callable[..., object]](
+    method: Callable[..., object],
+) -> Callable[[F], F]:
+    """Give a function ``method``'s docstring, parameter docs included."""
+
+    def apply(func: F) -> F:
+        func.__doc__ = method.__doc__
+        return func
+
+    return apply
+
+
 def client() -> ECFR:
     """The client the module-level functions use."""
     global _shared
@@ -29,6 +45,7 @@ def client() -> ECFR:
         return _shared
 
 
+@_documented_by(ECFR.get)
 def get(
     citation: str | int,
     /,
@@ -36,12 +53,11 @@ def get(
     date: DateLike | None = None,
     **hierarchy: Unpack[Hierarchy],
 ) -> Node:
-    """Regulation text as a navigable node. See :meth:`ECFR.get`."""
     return client().get(citation, date=date, **hierarchy)
 
 
+@_documented_by(ECFR.get_many)
 def get_many(citations: list[str | int], *, date: DateLike | None = None) -> list[Node]:
-    """Several citations, sharing requests where possible. See :meth:`ECFR.get_many`."""
     return client().get_many(citations, date=date)
 
 
@@ -71,6 +87,7 @@ def save(
 ) -> list[Path]: ...
 
 
+@_documented_by(ECFR.save)
 def save(
     citation: str | int,
     /,
@@ -81,7 +98,6 @@ def save(
     date: DateLike | None = None,
     **hierarchy: Unpack[Hierarchy],
 ) -> Path | list[Path]:
-    """Save regulation text as Markdown. See :meth:`ECFR.save`."""
     shared = client()
     if tree:
         return shared.save(
@@ -92,6 +108,7 @@ def save(
     )
 
 
+@_documented_by(ECFR.outline)
 def outline(
     citation: str | int,
     /,
@@ -99,10 +116,10 @@ def outline(
     date: DateLike | None = None,
     **hierarchy: Unpack[Hierarchy],
 ) -> Outline:
-    """The table of contents, without text. See :meth:`ECFR.outline`."""
     return client().outline(citation, date=date, **hierarchy)
 
 
+@_documented_by(ECFR.changes)
 def changes(
     citation: str | int,
     /,
@@ -111,10 +128,10 @@ def changes(
     until: DateLike | None = None,
     **hierarchy: Unpack[Hierarchy],
 ) -> list[Change]:
-    """Changes the eCFR has issued, newest first. See :meth:`ECFR.changes`."""
     return client().changes(citation, since=since, until=until, **hierarchy)
 
 
+@_documented_by(ECFR.search)
 def search(
     query: str,
     /,
@@ -124,12 +141,11 @@ def search(
     all_versions: bool = False,
     **filters: Unpack[SearchFilters],
 ) -> Matches:
-    """Sections and appendices that match a search. See :meth:`ECFR.search`."""
     return client().search(
         query, limit=limit, phrase=phrase, all_versions=all_versions, **filters
     )
 
 
+@_documented_by(ECFR.sync)
 def sync(path: str | Path) -> SyncResult:
-    """Update Markdown saved by ecfr-md. See :meth:`ECFR.sync`."""
     return client().sync(path)
