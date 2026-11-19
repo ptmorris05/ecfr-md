@@ -221,10 +221,6 @@ def _nav(request: Request) -> Navigator:
     return request.app.state.navigator
 
 
-def _variant(request: Request, rest: str) -> tuple[str, str]:
-    return pages.split_variant(rest)
-
-
 def home(request: Request) -> Response:
     nav = _nav(request)
     variant = request.path_params.get("variant", "")
@@ -266,7 +262,7 @@ def _page_date(request: Request) -> dt.date | None:
 def text_page(request: Request) -> Response:
     """A title, division, part, section or appendix: its contents or text."""
     nav = _nav(request)
-    rest, variant = _variant(request, request.path_params["rest"])
+    rest, variant = pages.split_variant(request.path_params["rest"])
     date = _page_date(request)
     try:
         address = pages.parse_page(f"/current/{rest}")
@@ -325,12 +321,8 @@ def _page_context(request: Request, place: pages.Place) -> dict[str, Any]:
 
 
 def _export_links(place: pages.Place) -> list[dict[str, Any]]:
-    path = "/export" + place.href.removeprefix("/current").split("#")[0]
-    if place.date is not None:
-        path = "/export/" + place.href.split("/", 3)[3].split("#")[0]
-    query = (
-        {"date": place.text_date.isoformat()} if place.date and place.text_date else {}
-    )
+    path = f"/export/{place.rest}"
+    query = {"date": place.date.isoformat()} if place.date else {}
     found = []
     for name in FORMATS:
         available = True
@@ -521,7 +513,7 @@ def search(request: Request) -> Response:
 def history(request: Request) -> Response:
     """The changes the eCFR has issued to a place, newest first."""
     nav = _nav(request)
-    rest, variant = _variant(request, request.path_params["rest"])
+    rest, variant = pages.split_variant(request.path_params["rest"])
     try:
         address = pages.parse_page(f"/current/{rest}")
     except InvalidCitationError as exc:
@@ -567,7 +559,7 @@ def _compare_href(address: str | Address, later: dt.date, earlier: dt.date) -> s
 def compare(request: Request) -> Response:
     """A redline of a place between two dates."""
     nav = _nav(request)
-    rest, variant = _variant(request, request.path_params["rest"])
+    rest, variant = pages.split_variant(request.path_params["rest"])
     try:
         later = to_date(request.path_params["later"])
         earlier = to_date(request.path_params["earlier"])
