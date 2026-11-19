@@ -103,7 +103,7 @@ def test_config_files_round_trip(tmp_path):
         "cache": False,
         "concurrency": 1,
         "timeout": 2.5,
-        "cache_dir": "/tmp/x",
+        "cache_dir": str(Path("/tmp/x")),
         "headers": {"From": 'me "quoted"'},
     }
     assert read_config(tmp_path / "missing.toml") == {}
@@ -156,7 +156,10 @@ def test_config_show_says_where_each_value_is_from(run, capsys, monkeypatch):
 def test_config_show_json(run, capsys, isolated_config):
     assert run("--cache-dir", "/tmp/c", "config", "show", "--json") == 0
     data = json.loads(capsys.readouterr().out)
-    assert data["settings"]["cache_dir"] == {"value": "/tmp/c", "from": "CLI"}
+    assert data["settings"]["cache_dir"] == {
+        "value": str(Path("/tmp/c")),
+        "from": "CLI",
+    }
     assert data["config_file"] == str(isolated_config)
     assert data["sources"].startswith("Past dates")
 
