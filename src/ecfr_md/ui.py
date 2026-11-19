@@ -52,6 +52,7 @@ from ecfr_md.errors import (
     TitleNotFoundError,
 )
 from ecfr_md.progress import Progress
+from ecfr_md.references import Reference
 from ecfr_md.results import Change, Match, Outline, TitleInfo
 
 ACCENT = "#5fafff"
@@ -525,6 +526,15 @@ def search_table(matches: Sequence[Match], width: int = 80) -> RenderableType:
             excerpt = textwrap.shorten(m.excerpt, EXCERPT_WIDTH, placeholder="…")
             cell.append(f"\n{excerpt}", style=DIM)
         table.add_row(m.citation, cell)
+    return table
+
+
+def references_table(references: Sequence[Reference]) -> Table:
+    table = Table(box=box.SIMPLE_HEAD, header_style=f"bold {ACCENT}", pad_edge=False)
+    table.add_column("Text", style="bold")
+    table.add_column("Refers to")
+    for r in references:
+        table.add_row(r.text, r.citation if r.target else Text(r.url, style=DIM))
     return table
 
 

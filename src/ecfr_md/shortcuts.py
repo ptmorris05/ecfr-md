@@ -80,6 +80,7 @@ def save(
     front_matter: bool = True,
     date: DateLike | None = None,
     format: Format | None = None,
+    links: bool | None = None,
     **hierarchy: Unpack[Hierarchy],
 ) -> Path: ...
 
@@ -94,6 +95,7 @@ def save(
     front_matter: bool = True,
     date: DateLike | None = None,
     format: Format | None = None,
+    links: bool | None = None,
     **hierarchy: Unpack[Hierarchy],
 ) -> list[Path]: ...
 
@@ -108,6 +110,7 @@ def save(
     front_matter: bool = True,
     date: DateLike | None = None,
     format: Format | None = None,
+    links: bool | None = None,
     **hierarchy: Unpack[Hierarchy],
 ) -> Path | list[Path]:
     shared = client()
@@ -119,16 +122,23 @@ def save(
             front_matter=front_matter,
             date=date,
             format=format,
+            links=links,
             **hierarchy,
         )
     return shared.save(
-        citation, path, front_matter=front_matter, date=date, format=format, **hierarchy
+        citation,
+        path,
+        front_matter=front_matter,
+        date=date,
+        format=format,
+        links=links,
+        **hierarchy,
     )
 
 
 @_documented_by(ECFR.outline)
 def outline(
-    citation: str | int,
+    citation: str | int | None = None,
     /,
     *,
     date: DateLike | None = None,
@@ -158,6 +168,13 @@ def changes(
     **hierarchy: Unpack[Hierarchy],
 ) -> list[Change]:
     return client().changes(citation, since=since, until=until, **hierarchy)
+
+
+@_documented_by(ECFR.cited_by)
+def cited_by(
+    citation: str | int, /, *, limit: int = 20, date: DateLike | None = None
+) -> Matches:
+    return client().cited_by(citation, limit=limit, date=date)
 
 
 @_documented_by(ECFR.search)

@@ -14,6 +14,7 @@ import hashlib
 import html
 import json
 import os
+import posixpath
 import re
 import xml.etree.ElementTree as ET
 from collections.abc import Callable, Iterable
@@ -27,6 +28,7 @@ from ecfr_md.address import Address
 from ecfr_md.citation import Citation
 from ecfr_md.config import BASE_URL, DISCLAIMER, __version__
 from ecfr_md.params import Hierarchy, as_hierarchy
+from ecfr_md.references import Reference, link_markdown
 
 # XML division types that are API hierarchy levels.
 TYPE_LEVELS = {
@@ -118,13 +120,15 @@ def provenance(
     page: str | None = None,
     address: str | None = None,
     layout: int = markdown.LAYOUT,
+    links: bool | None = None,
 ) -> dict[str, Any]:
     """Metadata describing which text a document holds.
 
     ``page`` is the eCFR page path from the XML, when the API provided one;
     otherwise the page URL is built from the hierarchy. ``address`` defaults
     to the hierarchy's. With ``layout=1`` (ecfr-md 0.x's), there is no
-    ``address`` or ``layout``.
+    ``address`` or ``layout``. ``links`` records whether cross-references
+    were made links, so ``sync`` keeps that; None leaves it out.
     """
     if page:
         url = page_url(page, source.date, hierarchy, paragraph)
@@ -150,7 +154,47 @@ def provenance(
         "layout": layout if new else "",
         "disclaimer": DISCLAIMER,
     }
-    return {key: value for key, value in fields.items() if value}
+    kept = {key: value for key, value in fields.items() if value}
+    return kept if links is None else {**kept, "links": links}
+
+
+def context(source: Source, base: Hierarchy, chain: list[ET.Element]) -> Address:
+    """Where text inside a chain of divisions is, at a snapshot's date."""
+    levels = {
+        TYPE_LEVELS[e.get("TYPE", "")]: e.get("N", "")
+        for e in chain
+        if e.get("TYPE") in TYPE_LEVELS
+    }
+    date = source.date if source.pinned else None
+    return Address(source.title, as_hierarchy({**base, **levels}), date=date)
+
+
+def linker(
+    source: Source, base: Hierarchy, href: Callable[[Reference], str | None] | None
+) -> markdown.Linker:
+    """Link the cross-references in each block of a document (see
+    :func:`markdown.write_document`): to ``href``'s choice, else the web."""
+
+    def link(block: str, chain: list[ET.Element]) -> str:
+        return link_markdown(block, context(source, base, chain), href)
+
+    return link
+
+
+def tree_link(
+    source: Source, index: dict[str, str], file: PurePosixPath
+) -> Callable[[Reference], str | None]:
+    """Where a file of a saved tree links a reference: the file in the tree
+    that holds it, relative to ``file``, or None if it's outside the tree."""
+
+    def href(reference: Reference) -> str | None:
+        target = reference.target
+        if target is None or target.title != source.title:
+            return None
+        path = index.get(markdown.tree_key(target) or "")
+        return posixpath.relpath(path, file.parent.as_posix()) if path else None
+
+    return href
 
 
 def read_front_matter(path: Path) -> dict[str, Any] | None:
@@ -247,34 +291,43 @@ def save_events(
     on_file: Callable[[Path], object] | None = None,
     names: list[str] | None = None,
     layout: int = markdown.LAYOUT,
+    links: bool = False,
+    index: dict[str, str] | None = None,
 ) -> list[Path]:
     """Write Markdown for a stream of XML events and return the files written.
 
     ``base`` locates the first element (its ancestors' hierarchy); it defaults
     to the hierarchy of the request. A tree's ``names`` come from
-    :func:`markdown.tree_names` (a first pass over the same XML); without
-    them, the events are read into memory first. ``layout=1`` writes a tree
-    as ecfr-md 0.x did, to sync trees it saved.
+    :func:`markdown.tree_names` (a first pass over the same XML), as does
+    its ``index`` of files, needed with ``links``; without them, the events
+    are read into memory first. ``layout=1`` writes a tree as ecfr-md 0.x
+    did, to sync trees it saved. With ``links``, cross-references become
+    links: in a tree, to the file that holds them, else to the eCFR.
     """
     base = source.hierarchy if base is None else base
     if tree:
         written: list[Path] = []
-        if names is None:
+        if names is None or (links and index is None):
             events = list(events)
-            names = markdown.tree_names(events, layout=layout)
+            index = {}
+            names = markdown.tree_names(events, layout=layout, index=index)
 
         def emit_file(
             relative: PurePosixPath, body: str, chain: list[ET.Element], heading: str
         ) -> None:
-            levels = {
-                TYPE_LEVELS[e.get("TYPE", "")]: e.get("N", "")
-                for e in chain
-                if e.get("TYPE") in TYPE_LEVELS
-            }
-            hierarchy = as_hierarchy({**base, **levels})
+            address = context(source, base, chain)
+            hierarchy = address.hierarchy
+            if links and index is not None:
+                href = tree_link(source, index, relative)
+                body = link_markdown(body, address, href)
             page = page_path(chain[-1])
             fields = provenance(
-                source, hierarchy, heading=heading, page=page, layout=layout
+                source,
+                hierarchy,
+                heading=heading,
+                page=page,
+                layout=layout,
+                links=links,
             )
             if chain[-1].get("TYPE") == "SUBJGRP":  # Only in layout 1.
                 fields["citation"] = subject_group_citation(fields["citation"], heading)
@@ -320,7 +373,12 @@ def save_events(
                 if front_matter:
                     page = page_path(division)
                     fields = provenance(
-                        source, base, heading=heading, page=page, layout=layout
+                        source,
+                        base,
+                        heading=heading,
+                        page=page,
+                        layout=layout,
+                        links=links or None,
                     )
                     header = render_front_matter({**fields, "digest": BLANK_DIGEST})
                     out.write(header.encode("utf-8"))
@@ -328,7 +386,10 @@ def save_events(
                     # before its closing quote and the end of the front matter.
                     blank_at = out.tell() - len(END_OF_FRONT_MATTER) - 1 - 64
 
-            markdown.write_document(events, emit, on_heading=on_heading, free=free)
+            link = linker(source, base, None) if links else None
+            markdown.write_document(
+                events, emit, on_heading=on_heading, free=free, link=link
+            )
             write("\n")
             if blank_at is not None:
                 out.seek(blank_at)
