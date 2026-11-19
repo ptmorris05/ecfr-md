@@ -64,7 +64,8 @@ def test_get_accepts_flexible_dates(ecfr, api):
     api.text("/api/versioner/v1/full/2020-03-01/title-45.xml", "<DIV5 N='1'/>")
     for date in ("March 2020", "2020-03-01", dt.datetime(2020, 3, 1, 9, 30)):
         assert ecfr.get(45, date=date).date == dt.date(2020, 3, 1)
-    assert "/api/versioner/v1/titles.json" not in api.paths()  # Date given.
+    # The title list, kept for a few minutes, tells a past date from the latest.
+    assert api.paths().count("/api/versioner/v1/titles.json") == 1
 
 
 def body(path) -> str:
@@ -162,7 +163,8 @@ def test_store_skips_titles_being_processed(api, tmp_path):
 
 def test_without_cache_no_extra_requests(ecfr, api):
     ecfr.get("45 CFR 164.104", date="2026-10-07")
-    assert api.paths() == [FULL]
+    # The title list tells a past date (a pinned snapshot) from the latest.
+    assert api.paths() == ["/api/versioner/v1/titles.json", FULL]
 
 
 def test_cache_max_age(api, tmp_path):

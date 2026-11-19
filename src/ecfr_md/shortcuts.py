@@ -130,6 +130,14 @@ def search(
     )
 
 
-def sync(path: str | Path) -> SyncResult:
+def sync(
+    path: str | Path,
+    *,
+    dry_run: bool = False,
+    include_dated: bool = False,
+    force: bool = False,
+) -> SyncResult:
     """Update Markdown saved by ecfr-md. See :meth:`ECFR.sync`."""
-    return client().sync(path)
+    return client().sync(
+        path, dry_run=dry_run, include_dated=include_dated, force=force
+    )
