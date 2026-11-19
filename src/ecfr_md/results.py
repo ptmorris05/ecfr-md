@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from ecfr_md import models
+from ecfr_md.address import Address, relative, walk
 from ecfr_md.citation import KEYWORDS, Citation
 from ecfr_md.document import (
     REPR_MAX_CHARS,
@@ -62,6 +63,8 @@ class Outline:
     """The point-in-time date of the outline, if known."""
     url: str = field(default="", repr=False)
     """The eCFR web page for this entry."""
+    address: str = field(default="", repr=False)
+    """The entry's address, e.g. "45/part-164/subpart-E"."""
 
     def __post_init__(self) -> None:
         # Not a dataclass field, so dataclasses.asdict() doesn't loop forever.
@@ -87,8 +90,9 @@ class Outline:
         if node.type in KEYWORDS.values() and node.identifier:
             levels[node.type] = node.identifier
         located = as_hierarchy(levels)
-        if node.type == "subject_group" and node.identifier:
-            url = subject_group_url(Source(title, date), located, node.identifier)
+        group = node.identifier if node.type == "subject_group" else None
+        if group:
+            url = subject_group_url(Source(title, date), located, group)
         else:
             url = web_url(title, date, located)
         entry = cls(
@@ -101,6 +105,7 @@ class Outline:
             raw=node,
             date=date,
             url=url,
+            address=str(Address(title, located, group=group)),
         )
         entry._parent = parent
         entry.children = tuple(
@@ -126,15 +131,28 @@ class Outline:
     def __bool__(self) -> bool:
         return True
 
-    def __getitem__(self, key: str | int) -> Outline:
+    @property
+    def uri(self) -> str:
+        """The address at the outline's date, e.g. "cfr:45/part-164@2024-01-01"."""
+        return f"cfr:{self.address}@{self.date}" if self.date else f"cfr:{self.address}"
+
+    def __getitem__(self, key: str | int | Address) -> Outline:
         """A child by position, or the nearest entry by identifier.
 
-        Keys can name their level ("Subpart E", "§ 164.512") or be citations
-        ("45 CFR 164.512"). Raises NodeNotFoundError if nothing matches and
+        Keys can name their level ("Subpart E", "§ 164.512"), be citations
+        ("45 CFR 164.512") or addresses, relative or not ("subpart-E",
+        "45/164.512"). Raises NodeNotFoundError if nothing matches and
         AmbiguousNodeError if several entries match at the nearest depth.
         """
         if isinstance(key, int):
             return self.children[key]
+        title = int(self.address.split("/")[0])
+        if isinstance(key, str):
+            key = relative(key, title, in_section=False) or key
+        if isinstance(key, Address):
+            if key.title != title:
+                raise NodeNotFoundError(f"{key} is not in title {title}")
+            return walk(self, key, {})
         level, identifier = _lookup(key)
         matches = self._nearest(identifier, level)
         if len(matches) == 1:
@@ -147,7 +165,9 @@ class Outline:
             )
         raise NodeNotFoundError(f"No {key!r} in {self.citation}")
 
-    def get(self, key: str | int, default: Outline | None = None) -> Outline | None:
+    def get(
+        self, key: str | int | Address, default: Outline | None = None
+    ) -> Outline | None:
         """Like ``outline[key]``, but return ``default`` when nothing matches."""
         try:
             return self[key]
@@ -208,8 +228,9 @@ class Outline:
     ) -> dict[str, Any]:
         """This entry as a dict ready for ``json.dumps``.
 
-        Keys: ``citation``, ``level``, ``identifier``, ``heading``, ``date``
-        (ISO format, or None), ``url``, ``reserved``, ``size`` and ``children``.
+        Keys: ``citation``, ``address``, ``uri``, ``level``, ``identifier``,
+        ``heading``, ``date`` (ISO format, or None), ``url``, ``reserved``,
+        ``size`` and ``children``.
 
         Parameters
         ----------
@@ -222,6 +243,8 @@ class Outline:
         check_depth(depth)
         data: dict[str, Any] = {
             "citation": self.citation,
+            "address": self.address,
+            "uri": self.uri,
             "level": str(self.level),
             "identifier": self.identifier,
             "heading": self.heading,
@@ -295,6 +318,15 @@ def _page(title: str | None, date: dt.date, located: Hierarchy) -> str:
     return web_url(int(title or 0), date, located)
 
 
+def _address(title: str | None, located: Mapping[str, str | None]) -> str:
+    levels = as_hierarchy({k: v for k, v in located.items() if v})
+    return str(Address(int(title or 0), levels))
+
+
+def _uri(address: str, date: dt.date | None) -> str:
+    return f"cfr:{address}@{date.isoformat()}" if date else f"cfr:{address}"
+
+
 @dataclass(frozen=True)
 class TitleInfo:
     """A CFR title, and how current the eCFR's text of it is."""
@@ -329,6 +361,16 @@ class TitleInfo:
         return f"{self.number} CFR"
 
     @property
+    def address(self) -> str:
+        """E.g. "45"."""
+        return str(self.number)
+
+    @property
+    def uri(self) -> str:
+        """The title at its latest date, e.g. "cfr:45@2024-01-01"."""
+        return _uri(self.address, self.latest)
+
+    @property
     def url(self) -> str:
         """The title's eCFR page."""
         return web_url(self.number, self.latest, as_hierarchy({}))
@@ -336,12 +378,15 @@ class TitleInfo:
     def to_dict(self, *, include_raw: bool = False) -> dict[str, Any]:
         """This title as a dict ready for ``json.dumps``.
 
-        Keys: ``citation``, ``level`` ("title"), ``identifier``, ``heading``
-        (the name), ``date`` (latest, ISO format), ``url``, ``amended``,
-        ``reserved`` and ``processing``; with ``include_raw``, also ``raw``.
+        Keys: ``citation``, ``address``, ``uri``, ``level`` ("title"),
+        ``identifier``, ``heading`` (the name), ``date`` (latest, ISO format),
+        ``url``, ``amended``, ``reserved`` and ``processing``; with
+        ``include_raw``, also ``raw``.
         """
         data: dict[str, Any] = {
             "citation": self.citation,
+            "address": self.address,
+            "uri": self.uri,
             "level": "title",
             "identifier": str(self.number),
             "heading": self.name,
@@ -397,6 +442,18 @@ class Change:
         return _level_or_type(self.raw.type)
 
     @property
+    def address(self) -> str:
+        """The section or appendix changed, e.g. "45/164.502"."""
+        key = "appendix" if self.level == Level.APPENDIX else "section"
+        located = {"part": self.raw.part, key: self.identifier}
+        return _address(self.raw.title, located)
+
+    @property
+    def uri(self) -> str:
+        """The address as of this change, e.g. "cfr:45/164.502@2024-01-01"."""
+        return _uri(self.address, self.effective)
+
+    @property
     def url(self) -> str:
         """The eCFR page showing the text as of this change."""
         key = "appendix" if self.level == Level.APPENDIX else "section"
@@ -406,12 +463,15 @@ class Change:
     def to_dict(self, *, include_raw: bool = False) -> dict[str, Any]:
         """This change as a dict ready for ``json.dumps``.
 
-        Keys: ``citation``, ``level``, ``identifier``, ``heading``, ``date``
-        (when it took effect, ISO format), ``url``, ``issued``, ``effective``
-        and ``kind``; with ``include_raw``, also ``raw``, the API's version.
+        Keys: ``citation``, ``address``, ``uri``, ``level``, ``identifier``,
+        ``heading``, ``date`` (when it took effect, ISO format), ``url``,
+        ``issued``, ``effective`` and ``kind``; with ``include_raw``, also
+        ``raw``, the API's version.
         """
         data: dict[str, Any] = {
             "citation": self.citation,
+            "address": self.address,
+            "uri": self.uri,
             "level": str(self.level),
             "identifier": self.identifier,
             "heading": self.heading,
@@ -464,6 +524,17 @@ class Match:
         return Level.SECTION if self.raw.hierarchy.section else Level.APPENDIX
 
     @property
+    def address(self) -> str:
+        """The section or appendix, e.g. "45/164.514"."""
+        h = self.raw.hierarchy
+        return _address(h.title, {"part": h.part, self.level.value: self.identifier})
+
+    @property
+    def uri(self) -> str:
+        """The address as of ``starts_on``, e.g. "cfr:45/164.514@2024-01-01"."""
+        return _uri(self.address, self.starts_on)
+
+    @property
     def url(self) -> str:
         """The eCFR page showing the matching text, as of ``starts_on``."""
         h = self.raw.hierarchy
@@ -474,13 +545,15 @@ class Match:
     def to_dict(self, *, include_raw: bool = False) -> dict[str, Any]:
         """This match as a dict ready for ``json.dumps``.
 
-        Keys: ``citation``, ``level``, ``identifier``, ``heading``, ``date``
-        (``starts_on``, ISO format), ``url``, ``excerpt``, ``starts_on`` and
-        ``ends_on`` (None if current); with ``include_raw``, also ``raw``,
-        the API's search result.
+        Keys: ``citation``, ``address``, ``uri``, ``level``, ``identifier``,
+        ``heading``, ``date`` (``starts_on``, ISO format), ``url``,
+        ``excerpt``, ``starts_on`` and ``ends_on`` (None if current); with
+        ``include_raw``, also ``raw``, the API's search result.
         """
         data: dict[str, Any] = {
             "citation": self.citation,
+            "address": self.address,
+            "uri": self.uri,
             "level": self.level.value,
             "identifier": self.identifier,
             "heading": self.heading,

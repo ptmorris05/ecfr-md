@@ -93,28 +93,36 @@ def test_streaming_matches_in_memory_rendering(part, part_xml):
     assert md.join(blocks) == part.to_markdown()
 
     files: dict[PurePosixPath, str] = {}
+    names = md.tree_names(md.file_events(io.BytesIO(part_xml.encode())), free=True)
     events = md.file_events(io.BytesIO(part_xml.encode()))
-    md.write_tree(events, lambda p, body, *_: files.__setitem__(p, body), free=True)
+    md.write_tree(
+        events, lambda p, body, *_: files.__setitem__(p, body), names=names, free=True
+    )
     assert files == part.to_markdown_tree()
 
 
 def test_tree(part):
     files = part.to_markdown_tree()
-    sections = [f"part-164/subpart-a/section-{s}.md" for s in SECTIONS]
+    sections = [f"part-164/subpart-A/{s}.md" for s in SECTIONS]
     assert sorted(str(p) for p in files) == sorted(
         [
             "part-164/index.md",
-            "part-164/subpart-a/index.md",
+            "part-164/subpart-A/index.md",
             *sections,
-            "part-164/appendix-appendix-a-to-subpart-c-of-part-164.md",
+            # An appendix to a subpart goes in its folder, as its address says.
+            "part-164/subpart-C/appendix-A.md",
         ]
     )
     index = files[PurePosixPath("part-164/index.md")]
     assert index.startswith("# PART 164—SECURITY AND PRIVACY\n\n> **Authority:**")
-    assert "- [Subpart A—General Provisions](subpart-a/index.md)" in index
-    subpart = files[PurePosixPath("part-164/subpart-a/index.md")]
+    assert "- [Subpart A—General Provisions](subpart-A/index.md)" in index
+    subpart = files[PurePosixPath("part-164/subpart-A/index.md")]
     links = re.findall(r"\]\(([^)]+)\)", subpart)
-    assert links == [f"section-{s}.md" for s in SECTIONS]  # Document order.
+    assert links == [f"{s}.md" for s in SECTIONS]  # Document order.
+    assert (
+        "- [Appendix A to Subpart C of Part 164—Matrix](subpart-C/appendix-A.md)"
+        in index
+    )
 
 
 def test_tree_deduplicates_sibling_names():
@@ -124,7 +132,9 @@ def test_tree_deduplicates_sibling_names():
         '<DIV8 N="1.1" TYPE="SECTION"><HEAD>B</HEAD></DIV8></DIV5>'
     )
     names = sorted(p.name for p in load(xml, title=1).to_markdown_tree())
-    assert names == ["index.md", "section-1.1-2.md", "section-1.1.md"]
+    assert names == ["1.1.md", "1.1~2.md", "index.md"]
+    old = md.tree_names(md.element_events(md.parse(xml)), layout=1)
+    assert old == ["part-1", "section-1.1", "section-1.1-2"]
 
 
 @pytest.mark.parametrize(

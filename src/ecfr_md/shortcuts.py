@@ -160,7 +160,12 @@ def sync(
     dry_run: bool = False,
     include_dated: bool = False,
     force: bool = False,
+    migrate: bool = False,
 ) -> SyncResult:
     return client().sync(
-        path, dry_run=dry_run, include_dated=include_dated, force=force
+        path,
+        dry_run=dry_run,
+        include_dated=include_dated,
+        force=force,
+        migrate=migrate,
     )

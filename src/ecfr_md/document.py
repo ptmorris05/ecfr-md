@@ -8,6 +8,7 @@ on first access.
 >>> part = ecfr.get("45 CFR Part 164")
 >>> part["E"]                      # a subpart
 >>> part["164.502(a)(1)"]          # any descendant, down to paragraphs
+>>> part["164.502/a/1"]            # the same, as a relative address
 >>> [s.citation for s in part.iter("section")]
 >>> part.save("hipaa.md")
 
@@ -20,16 +21,17 @@ from __future__ import annotations
 import datetime as dt
 import difflib
 import re
-import string
 import xml.etree.ElementTree as ET
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Iterator, Sequence
+from dataclasses import replace
 from enum import StrEnum
 from functools import cached_property
 from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar, Literal, overload
 
 from ecfr_md import markdown
+from ecfr_md.address import POSITIONS, Address, marker_at, relative, walk
 from ecfr_md.citation import KEYWORDS, PARAGRAPH, Citation
 from ecfr_md.errors import (
     AmbiguousNodeError,
@@ -125,54 +127,11 @@ ITALIC_HEADING = re.compile(r"\*(?!\*)(.+?)\*(?!\*)")
 EXAMPLE_START = re.compile(r"[*\s]*(?:Example|Illustration)s?(?:\s+\d+)?\s*[.:*\u2014]")
 
 
-ROMAN_VALUES = {"m": 1000, "d": 500, "c": 100, "l": 50, "x": 10, "v": 5, "i": 1}
-ROMAN_SYMBOLS = (
-    ("m", 1000), ("cm", 900), ("d", 500), ("cd", 400), ("c", 100), ("xc", 90),
-    ("l", 50), ("xl", 40), ("x", 10), ("ix", 9), ("v", 5), ("iv", 4), ("i", 1),
-)  # fmt: skip
 ITALIC_LEVELS = (5, 6)
 LOOKAHEAD = 200  # Markers read ahead to tell (i) the letter from (i) the numeral.
 # Jupyter shows a node's Markdown; whole parts would swamp the notebook.
 REPR_MAX_CHARS = 20_000
 REPR_HINT = " — use .to_markdown()"
-
-
-def _letters(marker: str, alphabet: str) -> int | None:
-    """Position in a, ..., z, aa, ..., zz, aaa, ... (no upper limit)."""
-    if marker and set(marker) <= set(alphabet) and len(set(marker)) == 1:
-        return (len(marker) - 1) * len(alphabet) + alphabet.index(marker[0]) + 1
-    return None
-
-
-def _number(marker: str) -> int | None:
-    return int(marker) if marker.isdigit() and int(marker) > 0 else None
-
-
-def _roman(marker: str) -> int | None:
-    """Value of any canonical lowercase roman numeral, e.g. 'xliv' -> 44."""
-    if not marker or not set(marker) <= ROMAN_VALUES.keys():
-        return None
-    values = [ROMAN_VALUES[c] for c in marker]
-    total = sum(
-        -v if v < nxt else v for v, nxt in zip(values, [*values[1:], 0], strict=True)
-    )
-    canonical, rest = "", total
-    for symbol, value in ROMAN_SYMBOLS:
-        count, rest = divmod(rest, value)
-        canonical += symbol * count
-    return total if canonical == marker else None  # Rejects e.g. "iiii", "vx".
-
-
-# Position of a marker within each OFR paragraph level: (a), (1), (i), (A),
-# then italic (1) and (i). None means the marker can't be at that level.
-POSITIONS: dict[int, Callable[[str], int | None]] = {
-    1: lambda m: _letters(m, string.ascii_lowercase),
-    2: _number,
-    3: _roman,
-    4: lambda m: _letters(m, string.ascii_uppercase),
-    5: _number,
-    6: _roman,
-}
 
 
 class Node(ABC):
@@ -226,9 +185,10 @@ class Node(ABC):
     ) -> dict[str, Any]:
         """This node as a dict ready for ``json.dumps``.
 
-        Keys: ``citation``, ``level``, ``identifier``, ``heading``, ``date``
-        (ISO format, or None), ``url`` (the eCFR page), ``text`` (the full
-        Markdown, as :attr:`text`) and ``children`` (dicts like this one).
+        Keys: ``citation``, ``address``, ``uri``, ``level``, ``identifier``,
+        ``heading``, ``date`` (ISO format, or None), ``url`` (the eCFR page),
+        ``text`` (the full Markdown, as :attr:`text`) and ``children`` (dicts
+        like this one).
 
         Parameters
         ----------
@@ -245,6 +205,8 @@ class Node(ABC):
         check_depth(depth)
         data: dict[str, Any] = {
             "citation": self.citation,
+            "address": self.address,
+            "uri": self.uri,
             "level": self.level.value,
             "identifier": self.identifier,
             "heading": self.heading,
@@ -274,7 +236,7 @@ class Node(ABC):
 
     def to_markdown_tree(self) -> dict[PurePosixPath, str]:
         """Markdown files keyed by relative path, one per section or appendix."""
-        return {PurePosixPath(f"{self.slug}.md"): self.to_markdown()}
+        return {PurePosixPath(file_name(self._address())): self.to_markdown()}
 
     @overload
     def save(
@@ -297,7 +259,7 @@ class Node(ABC):
 
         Returns the file written, or with ``tree=True`` the list of files.
         By default this writes one file; an existing directory receives a file
-        named after the citation, e.g. ``45-cfr-164.502.md``. With
+        named after the address, e.g. ``45_164.502.md``. With
         ``tree=True``, ``path`` is a directory that gets one folder per
         hierarchy level and one file per section or appendix. Each
         file starts with YAML front matter (see :attr:`provenance`) unless
@@ -305,7 +267,7 @@ class Node(ABC):
         """
         target = Path(path)
         if target.is_dir() or str(path).endswith(("/", "\\")):
-            target = target / file_name(self.citation, self.source)
+            target = target / file_name(self._address(), self.source)
         body = self.to_markdown()
         text = with_front_matter(self.provenance, body) if front_matter else body
         written = write_text(target, text)
@@ -332,10 +294,15 @@ class Node(ABC):
         return next((n for n in chain if n.level is Level.SECTION), None)
 
     @property
-    def provenance(self) -> dict[str, str]:
-        """Citation, date, eCFR page, API request, retrieval time and generator."""
+    def provenance(self) -> dict[str, Any]:
+        """Citation, address, date, eCFR page, API request, retrieval time and
+        generator: the front matter of saved files."""
         return provenance(
-            self.source, self.hierarchy, heading=self.heading, page=self._page
+            self.source,
+            self.hierarchy,
+            heading=self.heading,
+            page=self._page,
+            address=self.address,
         )
 
     @property
@@ -346,7 +313,8 @@ class Node(ABC):
     @property
     @abstractmethod
     def slug(self) -> str:
-        """A file or folder name for the node, e.g. "section-164.502"."""
+        """The node's name in a saved tree: "part-164", "164.502" (its file
+        is "164.502.md"), "supplement-I"; a paragraph's marker, "a"."""
 
     @property
     def date(self) -> dt.date | None:
@@ -381,6 +349,30 @@ class Node(ABC):
         """Standard citation, e.g. ``45 CFR 164.502(a)(1)``."""
         return str(Citation(self.cfr_title, self.hierarchy))
 
+    def _address(self) -> Address:
+        return Address(self.cfr_title, self.hierarchy)
+
+    @property
+    def address(self) -> str:
+        """The node's address, without a date: ``45/164.502/a/1``,
+        ``45/part-164/subpart-E``. See :class:`~ecfr_md.address.Address`."""
+        return str(self._address())
+
+    @property
+    def uri(self) -> str:
+        """The address at the node's date: ``cfr:45/164.502/a/1@2024-01-01``."""
+        return replace(self._address(), date=self.date).uri()
+
+    def cite(
+        self, style: Literal["ofr", "bluebook"] = "ofr", year: int | None = None
+    ) -> str:
+        """A citation: ``"ofr"`` (:attr:`citation`, ``45 CFR 164.502(a)(1)``)
+        or ``"bluebook"`` (``45 C.F.R. § 164.502(a)(1) (2024)``), with
+        ``year`` or else the year of the node's date."""
+        if style == "ofr":
+            return self.citation
+        return replace(self._address(), date=self.date).citation(style, year)
+
     def __iter__(self) -> Iterator[Node]:
         return iter(self.children)
 
@@ -391,7 +383,7 @@ class Node(ABC):
         return True  # A node without children is still truthy.
 
     def __contains__(self, key: object) -> bool:
-        if not isinstance(key, str | int):
+        if not isinstance(key, str | int | Address):
             return False
         try:
             self[key]
@@ -401,17 +393,27 @@ class Node(ABC):
             pass
         return True
 
-    def __getitem__(self, key: str | int) -> Node:
+    def __getitem__(self, key: str | int | Address) -> Node:
         """A child by index, or the nearest descendant by identifier.
 
         Keys can be identifiers ("E", "164.502"), name their level
         ("Subpart E", "§ 164.502"), be full citations ("45 CFR Part 164
-        Subpart E", "164.502(a)(1)") or paragraph markers (``section["(a)(1)"]``).
+        Subpart E", "164.502(a)(1)") or paragraph markers (``section["(a)(1)"]``),
+        or be addresses, relative to the node or not: ``part["subpart-E"]``,
+        ``part["164.512/k/1"]``, ``section["a/1"]``, ``section["1~2"]`` (the
+        second (1)), ``node["45/164.502"]`` or an :class:`Address`.
         Raises NodeNotFoundError if nothing matches and AmbiguousNodeError if
         several nodes match at the nearest depth.
         """
         if isinstance(key, int):
             return self.children[key]
+        if isinstance(key, str):
+            in_section = self.level in (Level.SECTION, Level.PARAGRAPH)
+            key = relative(key, self.cfr_title, in_section) or key
+        if isinstance(key, Address):
+            if key.title != self.cfr_title:
+                raise NodeNotFoundError(f"{key} is not in title {self.cfr_title}")
+            return walk(self, key, self.source.hierarchy)
         if (cited := self._as_citation(key)) is not None:
             try:
                 return self._walk(cited)
@@ -430,7 +432,7 @@ class Node(ABC):
             node = _single(matches, f"({marker})", node)
         return node
 
-    def get(self, key: str | int, default: Node | None = None) -> Node | None:
+    def get(self, key: str | int | Address, default: Node | None = None) -> Node | None:
         """Like ``node[key]``, but return ``default`` when nothing matches.
 
         Ambiguous keys still raise AmbiguousNodeError.
@@ -568,7 +570,7 @@ class Division(Node):
 
     @property
     def slug(self) -> str:
-        return markdown.slug(self.element)
+        return markdown.segment(self.element)
 
     @property
     def _page(self) -> str | None:
@@ -586,6 +588,7 @@ class Division(Node):
         markdown.write_tree(
             markdown.element_events(self.element),
             lambda path, body, *_: files.__setitem__(path, body),
+            names=markdown.tree_names(markdown.element_events(self.element)),
         )
         return files
 
@@ -616,6 +619,7 @@ class Division(Node):
             tree=True,
             front_matter=front_matter,
             base=base,
+            names=markdown.tree_names(markdown.element_events(self.element)),
         )
 
 
@@ -664,8 +668,11 @@ class SubjectGroup(Division):
     def citation(self) -> str:
         return subject_group_citation(super().citation, self.heading)
 
+    def _address(self) -> Address:
+        return replace(super()._address(), group=self.identifier)
+
     @property
-    def provenance(self) -> dict[str, str]:
+    def provenance(self) -> dict[str, Any]:
         fields = super().provenance
         fields["citation"] = self.citation
         if self._page is None:
@@ -737,6 +744,25 @@ class Paragraph(Node):
         return tuple(n.identifier for n in chain if n.level is Level.PARAGRAPH)
 
     @property
+    def markers(self) -> tuple[str, ...]:
+        """The same as :attr:`path`: ``('a', '1', 'i')``."""
+        return self.path
+
+    @property
+    def occurrence(self) -> int | None:
+        """Which paragraph with this marker it is among its siblings, 1 for
+        the first, if the marker repeats (definitions sections repeat "(1)");
+        otherwise None."""
+        siblings = self.parent.children if self.parent else (self,)
+        same = [s for s in siblings if s.identifier == self.identifier]
+        return same.index(self) + 1 if len(same) > 1 else None
+
+    def _address(self) -> Address:
+        chain = (*reversed(self.ancestors), self)
+        markers = tuple(n.slug for n in chain if isinstance(n, Paragraph))
+        return Address(self.cfr_title, self.hierarchy, markers)
+
+    @property
     def heading(self) -> str:
         """The italic run-in heading, e.g. "Standard: Minimum necessary"."""
         if not self.blocks:
@@ -758,13 +784,14 @@ class Paragraph(Node):
         return str(Citation(self.cfr_title, self.hierarchy, self.path))
 
     @property
-    def provenance(self) -> dict[str, str]:
+    def provenance(self) -> dict[str, Any]:
         return provenance(
             self.source,
             self.hierarchy,
             heading=self.heading,
             paragraph=self.path,
             page=self._page,
+            address=self.address,
         )
 
     @property
@@ -777,8 +804,8 @@ class Paragraph(Node):
 
     @property
     def slug(self) -> str:
-        section = self.section.identifier if self.section else ""
-        return markdown.make_slug("paragraph", "-".join([section, *self.path]))
+        n = self.occurrence
+        return f"{self.identifier}~{n}" if n else self.identifier
 
     def _markdown(self) -> str:
         parts = [*self.blocks, *(c._markdown().rstrip("\n") for c in self.children)]
@@ -1094,28 +1121,13 @@ def _range_paths(start: list[str], end: list[str]) -> list[list[str]] | None:
     if first is None or last is None or last < first:
         return None
     paths = [start]  # Starts with any levels it shares with open paragraphs.
-    paths += [[_marker_at(level, n)] for n in range(first + 1, last + 1)]
+    paths += [[marker_at(level, n)] for n in range(first + 1, last + 1)]
     for depth, marker in enumerate(end[shared + 1 :], start=level + 1):
         final = POSITIONS[depth](marker) if depth in POSITIONS else None
         if final is None:
             return None
-        paths += [[_marker_at(depth, n)] for n in range(1, final + 1)]
+        paths += [[marker_at(depth, n)] for n in range(1, final + 1)]
     return paths
-
-
-def _marker_at(depth: int, position: int) -> str:
-    """The marker at a position of a level: (1, 3) -> "c", (3, 4) -> "iv"."""
-    if depth in (2, 5):
-        return str(position)
-    if depth in (3, 6):
-        numeral, rest = "", position
-        for symbol, value in ROMAN_SYMBOLS:
-            count, rest = divmod(rest, value)
-            numeral += symbol * count
-        return numeral
-    alphabet = string.ascii_lowercase if depth == 1 else string.ascii_uppercase
-    repeat, index = divmod(position - 1, len(alphabet))
-    return alphabet[index] * (repeat + 1)
 
 
 def _reentry(markers: list[tuple[str, str]], open_: list[Paragraph]) -> int:

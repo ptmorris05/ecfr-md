@@ -97,10 +97,10 @@ def test_save_streams_the_same_markdown_as_get(ecfr, tmp_path):
 
 def test_save_paragraph_citation(ecfr, tmp_path):
     file = ecfr.save("45 CFR 164.104(a)(1)", tmp_path, front_matter=False)
-    assert file == tmp_path / "45-cfr-164.104-a-1.md"
+    assert file == tmp_path / "45_164.104_a_1.md"
     assert file.read_text(encoding="utf-8") == "**(1)** *First.* One.\n"
     tree = ecfr.save("45 CFR 164.104(a)(1)", tmp_path, tree=True)
-    assert tree == [tmp_path / "45-cfr-164.104-a-1.md"]
+    assert tree == [tmp_path / "45_164.104_a_1.md"]
 
 
 OLD = "/api/versioner/v1/full/2020-01-01/title-45.xml"

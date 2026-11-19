@@ -11,6 +11,7 @@ from typing import Any
 import ecfr_md
 from ecfr_md import (
     ECFR,
+    Address,
     AmbiguousNodeError,
     Change,
     Citation,
@@ -39,7 +40,14 @@ def usage() -> None:
         nodes: list[Node] = ecfr.get_many(["45 CFR 164.502", "45 CFR 164.506"])
         changes: list[Change] = ecfr.changes("45 CFR Part 164", since="last year")
         outline: Outline = ecfr.outline("45 CFR Part 164")["Subpart E"]
-        result = ecfr.sync("out")
+        result = ecfr.sync("out", migrate=True)
+        moved: list[tuple[Path, Path]] = result.moved
+        address: Address = Address.parse("45 CFR 164.502(a)(1) (2018)")
+        cited: str = address.citation("bluebook")
+        same: Node = part[address] if address.title == 45 else part["164.502/a/1"]
+        print(
+            moved, cited, same.address, same.uri, same.cite("bluebook"), address.url()
+        )
         matches: Matches = ecfr.search("minimum necessary", limit=5)
         found = ecfr.api.search.results("minimum necessary", per_page=10)
     quick: Node = ecfr_md.get("45 CFR 164.502")

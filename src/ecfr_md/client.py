@@ -20,7 +20,7 @@ import xml.etree.ElementTree as ET
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import ExitStack, contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import (
     Annotated,
@@ -44,6 +44,13 @@ from tenacity import (
 )
 
 from ecfr_md import models
+from ecfr_md.address import (
+    APPENDIX_KEY,
+    Address,
+    appendix_subpart,
+    same_identifier,
+    walk,
+)
 from ecfr_md.cache import Store, default_directory
 from ecfr_md.citation import Citation
 from ecfr_md.config import RETRY_STATUS_CODES, SPLIT_ABOVE, Settings
@@ -65,7 +72,7 @@ from ecfr_md.errors import (
     TitleNotFoundError,
     api_error,
 )
-from ecfr_md.markdown import DIV_TAG, file_events
+from ecfr_md.markdown import DIV_TAG, LAYOUT, file_events, tree_names
 from ecfr_md.network import Limiter, Throttle
 from ecfr_md.params import (
     DateLike,
@@ -162,15 +169,17 @@ def _path(structure: models.Node, cited: Citation) -> list[models.Node]:
     taking the first would silently give the wrong text.
     """
     path = [structure]
+    h = cited.hierarchy
     for level in CITED_LEVELS:
-        wanted = cited.hierarchy.get(level)
+        wanted = h.get(level)
         if wanted is None:
             continue
-        found = [
-            chain
-            for chain in _chains(path[-1])
-            if chain[-1].type == level and chain[-1].identifier == wanted
-        ]
+        if level == "subpart" and "appendix" in h:
+            continue  # An appendix "to Subpart C" can sit beside it; see below.
+        if level == "appendix":
+            found = _appendices(path[-1], wanted, h.get("subpart"))
+        else:
+            found = _find(path[-1], level, wanted)
         if not found:
             raise NodeNotFoundError(_not_there(structure, path, level, wanted, cited))
         if len(found) > 1:
@@ -187,6 +196,83 @@ def _path(structure: models.Node, cited: Citation) -> list[models.Node]:
             )
         path += found[0]
     return path
+
+
+def _appendices(
+    node: models.Node, wanted: str, subpart: str | None
+) -> list[list[models.Node]]:
+    """Chains down to an appendix, telling "Appendix A to Part 164" from
+    "Appendix A to Subpart C of Part 164", which can sit in subpart C or
+    beside it."""
+
+    def belongs(chain: list[models.Node]) -> str | None:
+        inside = next((n.identifier for n in chain if n.type == "subpart"), None)
+        return appendix_subpart(chain[-1].identifier or "", inside)
+
+    found = _find(node, "appendix", wanted)
+    if subpart is None:
+        return [c for c in found if belongs(c) is None] or found
+    return [c for c in found if (belongs(c) or "").casefold() == subpart.casefold()]
+
+
+def _find(node: models.Node, level: str, wanted: str) -> list[list[models.Node]]:
+    """Chains down to the nodes at a level that a citation or address names:
+    exactly, else as addresses write identifiers ("appendix-A",
+    "50-1..50-200"), else ignoring case ("subpart-e" in old file names)."""
+    chains = [c for c in _chains(node) if c[-1].type == level]
+    for fold in (None, False, True):
+        found = [
+            chain
+            for chain in chains
+            if (
+                chain[-1].identifier == wanted
+                if fold is None
+                else same_identifier(level, chain[-1].identifier, wanted, fold)
+            )
+        ]
+        if found:
+            return found
+    # Sections numbered unlike their part, as eCFR links name them:
+    # "5420.5422.1" is § 5422.1 in part 5420.
+    return [
+        chain
+        for chain in chains
+        if level == "section"
+        and (part := _part_of([node, *chain])) is not None
+        and same_identifier(level, f"{part}.{chain[-1].identifier}", wanted, False)
+    ]
+
+
+def _part_of(chain: list[models.Node]) -> str | None:
+    return next((n.identifier for n in reversed(chain) if n.type == "part"), None)
+
+
+def _cite(
+    citation: str | int, hierarchy: Mapping[str, object], date: DateLike | None
+) -> tuple[Address, Citation, DateLike | None]:
+    """What a citation names, and the date to use: the one given, else the
+    citation's own ("@2020-01-01", or a Bluebook year's edition)."""
+    address = Address.parse(citation)
+    cited = address.to_citation().with_hierarchy(hierarchy)
+    if address.date is not None and date is not None and _day(date) != address.date:
+        raise InvalidParameterError(
+            f"{citation!r} is as of {address.date}, but date {_day(date)} was given "
+            "too; give one date"
+        )
+    return address, cited, address.date if date is None else date
+
+
+def _normalised(cited: Citation) -> bool:
+    """Whether a citation names something as an address writes it, so the
+    eCFR's own identifiers must be looked up: an appendix "appendix-A", a
+    range "50-1..50-200", a section whose parentheses were dots."""
+    for level, value in cited.hierarchy.items():
+        text = str(value)
+        if ".." in text or (level == "appendix" and APPENDIX_KEY.fullmatch(text)):
+            return True
+        if level == "section" and ("(" in text or " - " in text or text.count(".") > 1):
+            return True
+    return False
 
 
 def _chains(node: models.Node) -> Iterator[list[models.Node]]:
@@ -424,15 +510,18 @@ class ECFR:
         Parameters
         ----------
         citation: str | int
-            A title number or citation: ``45``, ``"45 CFR 164"``,
-            ``"45 CFR Part 164 Subpart E"``, ``"45 CFR 164.502(a)(1)(i)(A)"``.
-            Hierarchy keywords (``part="164"``, ...) refine it.
+            A title number, citation or address: ``45``, ``"45 CFR 164"``,
+            ``"45 CFR Part 164 Subpart E"``, ``"45 CFR 164.502(a)(1)(i)(A)"``,
+            ``"45/164.502/a/1"``, an eCFR link, a saved file's name, or
+            anything else :meth:`Address.parse <ecfr_md.address.Address.parse>`
+            reads. Hierarchy keywords (``part="164"``, ...) refine it.
         date: DateLike | None
             Point-in-time date: a ``date``, ``datetime`` or text such as
             ``"2020-01-01"``, ``"Jan 1 2020"`` or ``"last year"``. Defaults to
-            the most recent available.
+            the date in the citation (``@2020-01-01``, or a Bluebook year's
+            edition), else the most recent available.
         """
-        cited = Citation.parse(citation).with_hierarchy(hierarchy)
+        address, cited, date = _cite(citation, hierarchy, date)
         pinned = self._snapshot(cited.title, _day(date))
         date = self._when(cited.title, date)
         cited = self._complete(cited, date)
@@ -446,12 +535,16 @@ class ECFR:
                 retrieved=download.retrieved,
                 pinned=pinned,
             )
-        if not cited.paragraph:
+        if not cited.paragraph and address.group is None:
             return node
-        paragraph = node.get(str(cited))
-        if paragraph is None:
-            raise NodeNotFoundError(_missing_paragraph(node, cited, date))
-        return paragraph
+        # Paragraphs and subject groups are found in the text of what holds them.
+        inside = replace(address, hierarchy=cited.hierarchy)
+        try:
+            return node[inside]
+        except NodeNotFoundError:
+            if address.group is not None:
+                raise
+            raise NodeNotFoundError(_missing_paragraph(node, cited, date)) from None
 
     def titles(self) -> list[TitleInfo]:
         """Every CFR title: number, name, latest date, and whether reserved.
@@ -483,11 +576,12 @@ class ECFR:
         Parameters
         ----------
         citation: str | int
-            A title number or citation, as for :meth:`get`.
+            A title number, citation or address, as for :meth:`get`.
         date: DateLike | None
-            Point-in-time date. Defaults to the most recent available.
+            Point-in-time date. Defaults to the date in the citation, else the
+            most recent available.
         """
-        cited = Citation.parse(citation).with_hierarchy(hierarchy)
+        address, cited, date = _cite(citation, hierarchy, date)
         date = self._when(cited.title, date)
         try:
             structure = self._outline(cited.title, date)
@@ -496,7 +590,10 @@ class ECFR:
                 raise DateOutOfRangeError(reason) from exc
             raise
         path = _path(structure, cited)
-        return Outline.build(path[-1], cited.title, _levels(path), date=date)
+        entry = Outline.build(path[-1], cited.title, _levels(path), date=date)
+        if address.group is None:
+            return entry
+        return walk(entry, replace(address, hierarchy={}, paragraph=()), {})
 
     @validated
     def changes(
@@ -518,13 +615,15 @@ class ECFR:
         Parameters
         ----------
         citation: str | int
-            A title number or citation, as for :meth:`get`.
+            A title number, citation or address, as for :meth:`get`.
         since: DateLike | None
             Only changes issued on or after this date.
         until: DateLike | None
             Only changes issued on or before this date.
         """
-        cited = Citation.parse(citation).with_hierarchy(hierarchy)
+        cited = Address.parse(citation).to_citation().with_hierarchy(hierarchy)
+        if _normalised(cited):
+            cited = self._complete(cited, self._when(cited.title, None))
         versions: list[models.ContentVersion] = []
         page, pages = 1, 1
         while page <= pages:
@@ -624,6 +723,7 @@ class ECFR:
         dry_run: bool = False,
         include_dated: bool = False,
         force: bool = False,
+        migrate: bool = False,
     ) -> SyncResult:
         """Update Markdown saved by ecfr-md to the latest eCFR text.
 
@@ -642,6 +742,9 @@ class ECFR:
         force: bool
             Also overwrite or delete files edited since they were saved; by
             default they are left alone (``SyncResult.modified``).
+        migrate: bool
+            Rename files and folders saved by ecfr-md 0.x to today's layout
+            (``SyncResult.moved``); by default they keep their names.
         """
         return sync(
             self,
@@ -649,6 +752,7 @@ class ECFR:
             dry_run=dry_run,
             include_dated=include_dated,
             force=force,
+            migrate=migrate,
         )
 
     @overload
@@ -692,12 +796,14 @@ class ECFR:
             With ``"return"``, a citation that fails gives its exception in
             its place in the list, and the others are still fetched.
         """
-        cited = [Citation.parse(c) for c in citations]
+        addresses = [Address.parse(c) for c in citations]
+        cited = [a.to_citation() for a in addresses]
         results: dict[int, Node | ECFRError] = {}
         groups: dict[tuple[int, str], list[int]] = {}
         for i, c in enumerate(cited):
             section = c.hierarchy.get("section")
-            if section and set(c.hierarchy) <= {"part", "section"}:
+            simple = set(c.hierarchy) <= {"part", "section"} and not _normalised(c)
+            if section and simple and addresses[i].date is None:
                 part = c.hierarchy.get("part") or section.split(".")[0]
                 groups.setdefault((c.title, part), []).append(i)
         for (title, part), members in groups.items():
@@ -707,7 +813,7 @@ class ECFR:
                 continue
             node = self.get(title, date=when, part=part)
             for i in members:
-                if (found := node.get(str(cited[i]))) is not None:
+                if (found := node.get(addresses[i])) is not None:
                     results[i] = found
         for i in range(len(cited)):
             if i in results:
@@ -777,12 +883,36 @@ class ECFR:
             Start each file with YAML metadata: citation, date, source URL,
             retrieval time and a note that the eCFR is not an official edition.
         date: DateLike | None
-            Point-in-time date. Defaults to the most recent available.
+            Point-in-time date. Defaults to the date in the citation, else the
+            most recent available.
         """
-        cited = Citation.parse(citation).with_hierarchy(hierarchy)
+        return self._save(
+            citation,
+            path,
+            tree=tree,
+            front_matter=front_matter,
+            date=date,
+            hierarchy=hierarchy,
+        )
+
+    def _save(
+        self,
+        citation: str | int,
+        path: str | Path,
+        *,
+        tree: bool,
+        front_matter: bool = True,
+        date: DateLike | None = None,
+        hierarchy: Hierarchy | None = None,
+        layout: int = LAYOUT,
+    ) -> Path | list[Path]:
+        """``save``, plus the file layout: 1 writes a tree with ecfr-md 0.x's
+        names, which ``sync`` uses for trees saved that way."""
+        hierarchy = hierarchy or Hierarchy()
+        address, cited, date = _cite(citation, hierarchy, date)
         if str(path).endswith(("/", "\\")):  # Path() would drop this: a directory.
             Path(path).mkdir(parents=True, exist_ok=True)
-        if cited.paragraph:
+        if cited.paragraph or address.group is not None:
             node = self.get(citation, date=date, **hierarchy)
             written = node.save(path, front_matter=front_matter)
             return [written] if tree else written
@@ -790,6 +920,10 @@ class ECFR:
         date = self._when(cited.title, date)
         cited = self._complete(cited, date)
         with self._full_text(cited, date) as download, download.path.open("rb") as f:
+            names = None
+            if tree:  # Names first: a later sibling can change an earlier one's.
+                with download.path.open("rb") as first:
+                    names = tree_names(file_events(first), layout=layout, free=True)
             source = Source(
                 cited.title,
                 date,
@@ -806,6 +940,8 @@ class ECFR:
                 front_matter=front_matter,
                 free=True,
                 on_file=self.progress.file_written,
+                names=names,
+                layout=layout,
             )
         return files if tree else files[0]
 
@@ -913,14 +1049,14 @@ class ECFR:
         ``INCOMPLETE``) are looked up in the structure, which also catches a
         subpart that several parts have.
         """
-        if not cited.hierarchy.keys() & INCOMPLETE:
+        if not cited.hierarchy.keys() & INCOMPLETE and not _normalised(cited):
             return cited
         path = _path(self._outline(cited.title, date), cited)
         found = _levels(path)
         levels = {k: v for k in ABOVE_PART if (v := found.get(k)) is not None}
-        return Citation(
-            cited.title, as_hierarchy({**levels, **cited.hierarchy}), cited.paragraph
-        )
+        # The eCFR's own identifiers, for what an address wrote its way.
+        named = {k: found[k] for k in cited.hierarchy if k in found}
+        return Citation(cited.title, as_hierarchy({**levels, **named}), cited.paragraph)
 
     def _title(self, title: int) -> models.Title:
         """A title's dates, from a title list kept for a few minutes."""
@@ -1360,7 +1496,7 @@ class Search:
         params = dict(params)
         params["agency_slugs[]"] = params.pop("agency_slugs", None)
         if within := params.pop("within", None):
-            cited = Citation.parse(str(within))
+            cited = Address.parse(str(within)).to_citation()
             params["hierarchy[title]"] = cited.title
             for level, value in cited.hierarchy.items():
                 params[f"hierarchy[{level}]"] = value

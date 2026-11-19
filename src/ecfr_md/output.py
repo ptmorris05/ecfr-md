@@ -1,11 +1,12 @@
 """Saving Markdown with provenance.
 
-Saved files can start with YAML front matter: the citation, the point-in-time
-date (and ``pinned`` when that date was asked for and is older than the latest),
-the eCFR page and API request the text came from, when it was retrieved, the
-ecfr-md version and a ``digest`` of the text, so ``sync`` can tell when a file
-was edited. Files are written to a temporary name and renamed, so an
-interrupted save doesn't leave a partial file.
+Saved files can start with YAML front matter: the citation and address, the
+point-in-time date (and ``pinned`` when that date was asked for and is older
+than the latest), the eCFR page and API request the text came from, when it
+was retrieved, the ecfr-md version, the ``layout`` of file names (2; files
+saved by ecfr-md 0.x have none) and a ``digest`` of the text, so ``sync`` can
+tell when a file was edited. Files are written to a temporary name and
+renamed, so an interrupted save doesn't leave a partial file.
 """
 
 import datetime as dt
@@ -13,13 +14,16 @@ import hashlib
 import html
 import json
 import os
+import re
 import xml.etree.ElementTree as ET
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
+from typing import Any
 from urllib.parse import quote
 
 from ecfr_md import markdown
+from ecfr_md.address import Address
 from ecfr_md.citation import Citation
 from ecfr_md.config import BASE_URL, DISCLAIMER, __version__
 from ecfr_md.params import Hierarchy, as_hierarchy
@@ -76,7 +80,9 @@ def web_url(
     else:
         path = [f"{level}-{v}" for level in URL_LEVELS if (v := h.get(level))]
     when = f"on/{date}" if date else "current"
-    url = "/".join([BASE_URL, when, f"title-{title}", *(quote(p) for p in path)])
+    # Segments are quoted whole: an appendix name can contain "/".
+    segments = [quote(p, safe="") for p in path]
+    url = "/".join([BASE_URL, when, f"title-{title}", *segments])
     if paragraph and "section" in h:
         url += f"#p-{h['section']}" + "".join(f"({m})" for m in paragraph)
     return url
@@ -110,18 +116,26 @@ def provenance(
     heading: str = "",
     paragraph: tuple[str, ...] = (),
     page: str | None = None,
-) -> dict[str, str]:
+    address: str | None = None,
+    layout: int = markdown.LAYOUT,
+) -> dict[str, Any]:
     """Metadata describing which text a document holds.
 
     ``page`` is the eCFR page path from the XML, when the API provided one;
-    otherwise the page URL is built from the hierarchy.
+    otherwise the page URL is built from the hierarchy. ``address`` defaults
+    to the hierarchy's. With ``layout=1`` (ecfr-md 0.x's), there is no
+    ``address`` or ``layout``.
     """
     if page:
         url = page_url(page, source.date, hierarchy, paragraph)
     else:
         url = web_url(source.title, source.date, hierarchy, paragraph)
-    fields = {
+    if address is None:
+        address = str(Address(source.title, hierarchy, paragraph))
+    new = layout >= markdown.LAYOUT
+    fields: dict[str, Any] = {
         "citation": str(Citation(source.title, hierarchy, paragraph)),
+        "address": address if new else "",
         "heading": heading,
         "date": source.date.isoformat() if source.date else "",
         "pinned": source.date.isoformat() if source.date and source.pinned else "",
@@ -133,12 +147,13 @@ def provenance(
             else ""
         ),
         "generator": f"ecfr-md {__version__}",
+        "layout": layout if new else "",
         "disclaimer": DISCLAIMER,
     }
     return {key: value for key, value in fields.items() if value}
 
 
-def read_front_matter(path: Path) -> dict[str, str] | None:
+def read_front_matter(path: Path) -> dict[str, Any] | None:
     """The front matter of a saved file, or None if it has none."""
     try:
         with path.open(encoding="utf-8") as f:
@@ -160,7 +175,7 @@ def body_digest(body: bytes) -> str:
     return "sha256:" + hashlib.sha256(body).hexdigest()
 
 
-def with_front_matter(fields: dict[str, str], body: str) -> str:
+def with_front_matter(fields: dict[str, Any], body: str) -> str:
     """A whole saved file: front matter, including the body's digest, and body."""
     digest = body_digest(body.encode("utf-8"))
     return render_front_matter({**fields, "digest": digest}) + body
@@ -211,7 +226,7 @@ def subject_group_url(source: Source, hierarchy: Hierarchy, identifier: str) -> 
     return f"{page}/subject-group-{quote(identifier)}"
 
 
-def render_front_matter(fields: dict[str, str]) -> str:
+def render_front_matter(fields: dict[str, Any]) -> str:
     """YAML front matter; JSON strings are valid YAML, so values are quoted safely."""
     lines = [
         f"{key}: {json.dumps(value, ensure_ascii=False)}"
@@ -230,15 +245,23 @@ def save_events(
     free: bool = False,
     base: Hierarchy | None = None,
     on_file: Callable[[Path], object] | None = None,
+    names: list[str] | None = None,
+    layout: int = markdown.LAYOUT,
 ) -> list[Path]:
     """Write Markdown for a stream of XML events and return the files written.
 
     ``base`` locates the first element (its ancestors' hierarchy); it defaults
-    to the hierarchy of the request.
+    to the hierarchy of the request. A tree's ``names`` come from
+    :func:`markdown.tree_names` (a first pass over the same XML); without
+    them, the events are read into memory first. ``layout=1`` writes a tree
+    as ecfr-md 0.x did, to sync trees it saved.
     """
     base = source.hierarchy if base is None else base
     if tree:
         written: list[Path] = []
+        if names is None:
+            events = list(events)
+            names = markdown.tree_names(events, layout=layout)
 
         def emit_file(
             relative: PurePosixPath, body: str, chain: list[ET.Element], heading: str
@@ -250,8 +273,10 @@ def save_events(
             }
             hierarchy = as_hierarchy({**base, **levels})
             page = page_path(chain[-1])
-            fields = provenance(source, hierarchy, heading=heading, page=page)
-            if chain[-1].get("TYPE") == "SUBJGRP":
+            fields = provenance(
+                source, hierarchy, heading=heading, page=page, layout=layout
+            )
+            if chain[-1].get("TYPE") == "SUBJGRP":  # Only in layout 1.
                 fields["citation"] = subject_group_citation(fields["citation"], heading)
                 if page is None:
                     fields["source"] = subject_group_url(
@@ -260,12 +285,12 @@ def save_events(
             text = with_front_matter(fields, body) if front_matter else body
             written.append(_notify(on_file, write_text(path / relative, text)))
 
-        markdown.write_tree(events, emit_file, free=free)
+        markdown.write_tree(events, emit_file, names=names, free=free)
         _remove_stale(path, written)
         return written
 
     target = (
-        path / file_name(str(Citation(source.title, base)), source)
+        path / file_name(Address(source.title, base), source)
         if _is_directory(path)
         else path
     )
@@ -294,7 +319,9 @@ def save_events(
                 nonlocal blank_at
                 if front_matter:
                     page = page_path(division)
-                    fields = provenance(source, base, heading=heading, page=page)
+                    fields = provenance(
+                        source, base, heading=heading, page=page, layout=layout
+                    )
                     header = render_front_matter({**fields, "digest": BLANK_DIGEST})
                     out.write(header.encode("utf-8"))
                     # The digest is the last field: its hex digits end just
@@ -340,22 +367,22 @@ def _remove_stale(path: Path, written: list[Path]) -> None:
             remove_files([p for p in stale_files(root, keep) if not edited(p)], root)
 
 
-def file_name(citation: str, source: Source | None = None) -> str:
-    """A file name for a citation, e.g. "45-cfr-164.502-a.md".
+def file_name(address: Address, source: Source | None = None) -> str:
+    """The file a single node is saved to: its address with "/" as "_",
+    e.g. "45_164.502_a_1.md".
 
     Names include the title, so files from different titles saved into one
     directory don't overwrite each other, and a dated snapshot's date, e.g.
-    "45-cfr-part-164@2018-01-01.md", so snapshots don't either.
+    "45_part-164@2018-01-01.md", so snapshots don't either.
     """
-    name = markdown.make_slug("", citation).lstrip("-")
-    if source is not None and source.pinned and source.date:
-        name = snapshot_name(name, source.date)
-    return name + ".md"
+    date = source.date if source is not None and source.pinned else None
+    return replace(address, date=date).file_name()
 
 
-def snapshot_name(name: str, date: dt.date) -> str:
-    """A default name for text saved as of a past date: "<name>@<date>"."""
-    return f"{name}@{date.isoformat()}"
+def legacy_file_name(citation: str, pinned: dt.date | None = None) -> str:
+    """The name ecfr-md 0.x gave a saved file, e.g. "45-cfr-164.502-a.md"."""
+    name = re.sub(r"[^a-z0-9.]+", "-", citation.lower()).strip("-.")
+    return (f"{name}@{pinned.isoformat()}" if pinned else name) + ".md"
 
 
 def _is_directory(path: Path) -> bool:
