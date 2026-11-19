@@ -253,8 +253,8 @@ def openapi(base: str) -> dict[str, Any]:
                     _param(
                         "q",
                         "query",
-                        "Words (the exact phrase first, then all the words in any form) or a query: "
-                        + queries.SYNTAX,
+                        "Words (the exact phrase first, then all the words in "
+                        "any form) or a query: " + queries.SYNTAX,
                         True,
                         "minimum necessary",
                     ),
