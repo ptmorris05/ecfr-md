@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% from "_macros.html" import toc, meta, pager %}
+{% block title %}{{ page.title }}{% endblock %}
+{% block view %}contents{% endblock %}
+{% block main %}
+<article class="text contents">
+  {{ meta(page) }}
+  <h1>{{ page.heading }}</h1>
+  {% if page.level == "part" %}
+  <p class="aside">This part is {{ (page.entry.size or 0)|size }} of text. Open a subpart or section, or <a href="{{ page.href }}?full=1">read all of it</a>.</p>
+  {% endif %}
+  {{ toc(rows) }}
+</article>
+{% endblock %}
+{% block pager %}{{ pager(neighbours) }}{% endblock %}

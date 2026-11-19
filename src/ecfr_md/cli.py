@@ -18,6 +18,7 @@ Common commands:
     ecfr-md define "covered entity" 45 CFR 164.502   a defined term
     ecfr-md verify 45 CFR 164.502(a) --quote "..."      check a quotation
     ecfr-md mcp                                serve AI agents (MCP)
+    ecfr-md serve --open                       read in a web browser
 
 Run ecfr-md COMMAND --help for a command's options. The options below go
 before the command. Every eCFR API endpoint is under ecfr-md api.
@@ -35,7 +36,9 @@ import re
 import shlex
 import subprocess
 import sys
+import threading
 import warnings
+import webbrowser
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Annotated, Unpack
@@ -53,6 +56,7 @@ from ecfr_md.address import Address
 from ecfr_md.client import ECFR, Admin, Search, Versioner
 from ecfr_md.config import (
     ENV_PREFIX,
+    PROJECT_URL,
     Settings,
     __version__,
     read_config,
@@ -63,6 +67,7 @@ from ecfr_md.errors import (
     ECFRWarning,
     InvalidCitationError,
     InvalidParameterError,
+    MissingDependencyError,
 )
 from ecfr_md.params import DateLike, Hierarchy, SearchFilters, to_date
 from ecfr_md.progress import Progress
@@ -1055,6 +1060,67 @@ def sync_command(
         }
         | ({"Renamed": f"{len(result.moved):,}"} if migrate else {}),
     )
+
+
+@app.command
+def serve(
+    *,
+    port: Annotated[int, Parameter(alias="-p")] = 8000,
+    host: str = "127.0.0.1",
+    open_browser: Annotated[bool, Parameter(name="--open")] = False,
+    save_dir: Path | None = None,
+    ecfr: Client,
+) -> None:
+    """Read the CFR in a web browser: a navigator served on this computer.
+
+    Pages are fetched from the eCFR when first opened and kept in the cache
+    (--cache-dir), so what has been read is there offline. Every page is also
+    Markdown and JSON (add .md or .json), with /llms.txt for AI agents.
+    Needs the web extra. Stop with Ctrl+C.
+
+    Parameters
+    ----------
+    port: int
+        Port to listen on.
+    host: str
+        Address to listen on. The default answers only this computer;
+        0.0.0.0 answers others on the network too.
+    open_browser: bool
+        Open the navigator in the default browser.
+    save_dir: Path | None
+        Folder the export menu saves to on this computer. Without it,
+        exports are downloaded through the browser.
+    """
+    try:
+        import uvicorn
+
+        from ecfr_md.web import create_app
+    except ImportError:
+        package = f'"ecfr-md[web] @ git+{PROJECT_URL}"'
+        raise MissingDependencyError(
+            "ecfr-md serve needs the optional 'web' extra. Install it with: "
+            f"uv tool install {package}, or pip install {package}"
+        ) from None
+    local = host in ("127.0.0.1", "localhost", "::1")
+    terminal = _terminal(ecfr)
+    if not local:
+        err_console.print(
+            Text(
+                f"! Listening on {host}: other computers that can reach this one "
+                "can read through it and change its settings. Use the default "
+                "(127.0.0.1) to keep it to this computer.",
+                style="yellow",
+            ),
+            soft_wrap=True,
+        )
+    ecfr.progress = Progress()  # Pages show their own progress.
+    navigator = create_app(ecfr, save_dir=save_dir, hosts=None if local else ["*"])
+    shown = "localhost" if local else host
+    url = f"http://{'[' + shown + ']' if ':' in shown else shown}:{port}/"
+    terminal.note(f"Serving the CFR at {url} (Ctrl+C to stop)")
+    if open_browser:
+        threading.Timer(1.0, webbrowser.open, (url,)).start()
+    uvicorn.run(navigator, host=host, port=port, log_level="warning")
 
 
 cache_app = App(name="cache", help="The local cache of downloaded text.")

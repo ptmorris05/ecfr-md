@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Settings{% endblock %}
+{% block view %}settings{% endblock %}
+{% block crumb_tail %}<li><a href="/settings" aria-current="page">Settings</a></li>{% endblock %}
+{% block main %}
+<article class="text settings">
+  <h1>Settings</h1>
+  <p class="aside">The client this server reads the eCFR with. Changes apply at once to new pages; tick the box below to keep them in <code>{{ config }}</code> for next time.</p>
+  {% if applied %}<p class="ok" role="status">Applied: {{ applied|join(", ") }}.</p>{% endif %}
+  {% if saved %}<p class="ok" role="status">Written to <code>{{ saved }}</code>.</p>{% endif %}
+  {% if problems %}<p class="problem" role="alert">Not applied: {{ problems|length }} setting{{ "s" if problems|length != 1 }} need{{ "s" if problems|length == 1 }} a change.</p>{% endif %}
+  <form method="post" action="/settings" class="fields">
+    {% for f in fields %}
+    <div class="field kind-{{ f.kind }}{% if problems[f.name] %} invalid{% endif %}">
+      <label for="s-{{ f.name }}"><code>{{ f.name }}</code><span class="origin {{ f.origin|replace(' ', '-') }}">{{ f.origin }}</span></label>
+      {% if f.kind == "bool" %}
+      <input id="s-{{ f.name }}" name="{{ f.name }}" type="checkbox"{% if f.checked %} checked{% endif %}>
+      {% elif f.kind == "mapping" %}
+      <textarea id="s-{{ f.name }}" name="{{ f.name }}" rows="2" placeholder="Name: value, one per line" spellcheck="false">{{ f.value }}</textarea>
+      {% elif f.kind == "choice" %}
+      <select id="s-{{ f.name }}" name="{{ f.name }}">{% for c in f.choices %}<option{% if c == f.value %} selected{% endif %}>{{ c }}</option>{% endfor %}</select>
+      {% else %}
+      <input id="s-{{ f.name }}" name="{{ f.name }}" type="{{ 'number' if f.kind in ('int', 'float') else 'text' }}"{% if f.kind == 'float' %} step="any"{% endif %} value="{{ f.value }}" placeholder="{{ f.default or ('none' if f.optional else '') }}" spellcheck="false" aria-describedby="d-{{ f.name }}">
+      {% endif %}
+      <p class="help" id="d-{{ f.name }}">{{ f.description }}{% if f.default and f.kind != "bool" %} <span class="default">Default: <code>{{ f.default }}</code></span>{% endif %}</p>
+      {% if problems[f.name] %}<p class="problem">{{ problems[f.name] }}</p>{% endif %}
+    </div>
+    {% endfor %}
+    <div class="actions">
+      <label><input type="checkbox" name="write"> Also write to the config file</label>
+      <button type="submit">Apply</button>
+    </div>
+  </form>
+</article>
+{% endblock %}

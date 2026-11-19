@@ -211,8 +211,12 @@ class Settings(BaseModel):
         path = Path(config) if config else Path(env.get(CONFIG_ENV) or config_path())
         values: dict[str, Any] = {}
         origins: dict[str, Origin] = {}
-        given = [(read_config(path), f"file {path}"), (_from_env(env), "env")]
-        for found, where in [*(given if read else []), (overrides, origin)]:
+        given = (
+            [(read_config(path), f"file {path}"), (_from_env(env), "env")]
+            if read
+            else []
+        )
+        for found, where in [*given, (overrides, origin)]:
             for key, value in found.items():
                 values[key] = value
                 origins[key] = (

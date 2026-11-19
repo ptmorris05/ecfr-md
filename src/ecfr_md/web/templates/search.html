@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}{% if query %}{{ query }} — {% endif %}Search{% endblock %}
+{% block view %}search{% endblock %}
+{% block crumb_tail %}<li><a href="/search" aria-current="page">Search</a></li>{% endblock %}
+{% block main %}
+<article class="text search">
+  <form class="search-form" action="/search" method="get" role="search">
+    <label class="sr" for="q">Words to find</label>
+    <input id="q" name="q" type="search" value="{{ query }}" placeholder="Words or “a phrase”" autocomplete="off" autofocus>
+    <label class="within"><span>in</span> <input name="within" type="text" value="{{ within }}" placeholder="all titles" aria-label="Within a citation" autocomplete="off"></label>
+    <button type="submit">Search</button>
+  </form>
+  {% if error %}
+  <p class="problem" role="alert">{{ error }}</p>
+  {% elif query %}
+  <p class="meta" role="status">{% if results %}{{ results|length }} section{{ "s" if results|length != 1 }}{% if total %} · {{ "{:,}".format(total) }} matching versions{% endif %}{% else %}Nothing found{% endif %}</p>
+  <ol class="results">
+    {% for r in results %}
+    <li>
+      <a href="{{ r.href }}"><span class="cite">{{ r.citation }}</span> <span class="h">{{ r.heading }}</span></a>
+      <p class="excerpt">{{ r.html|safe }}</p>
+    </li>
+    {% endfor %}
+  </ol>
+  {% endif %}
+</article>
+{% endblock %}

@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}{{ page.citation }}, {{ since }} to {{ until }}{% endblock %}
+{% block view %}compare{% endblock %}
+{% block crumb_tail %}<li><a href="#" aria-current="page">Compare</a></li>{% endblock %}
+{% block main %}
+<article class="text redline">
+  <p class="meta"><span class="cite">{{ page.citation }}</span></p>
+  <h1 class="span"><a href="{{ earlier_href }}"><time datetime="{{ since }}">{{ since|longdate }}</time></a> <span class="arrow" aria-label="to">→</span> <a href="{{ later_href }}"><time datetime="{{ until }}">{{ until|longdate }}</time></a></h1>
+  <p class="aside legend">
+    {% if counts.changed or counts.added or counts.removed %}
+    {% if counts.changed %}<span>{{ counts.changed }} changed</span>{% endif %}
+    {% if counts.added %}<span><ins>{{ counts.added }} added</ins></span>{% endif %}
+    {% if counts.removed %}<span><del>{{ counts.removed }} removed</del></span>{% endif %}
+    <span class="quiet">{{ unchanged }} unchanged</span>
+    {% else %}No changes between these dates.{% endif %}
+    <label class="only"><input type="checkbox" data-only-changes> Changes only</label>
+  </p>
+  <div class="redline-body">{{ redline }}</div>
+</article>
+{% endblock %}
