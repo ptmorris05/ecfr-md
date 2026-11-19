@@ -15,6 +15,7 @@ import httpx2
 import pytest
 from conftest import PART_XML, TITLES
 from textual.widgets import Checkbox, Input, OptionList, Select, Static, Tree
+from textual.widgets._footer import FooterKey, FooterLabel
 from textual.worker import WorkerCancelled
 
 from ecfr_md import load, tui
@@ -251,11 +252,13 @@ async def test_starts_at_the_titles_and_opens_them(browser):
         assert shown(app) == "CFR" and status(app) == ""
         assert [p.kind for p in pieces] == ["heading", "entry", "entry"]
         assert pieces[2].dim  # Title 35 is reserved.
-        await keys(app, pilot, "j", "enter")
+        assert reader(app).cursor == 1  # On the first entry.
+        await keys(app, pilot, "enter")
         assert shown(app) == "Title 45" and status(app) == f"as of {LATEST}"
         assert app.view.node is None  # A title: its contents, not its text.
         await keys(app, pilot, "u")
         assert shown(app) == "CFR"
+        assert reader(app).cursor == 1  # On the title it came from.
         await keys(app, pilot, "u")  # Nothing above the CFR.
         assert shown(app) == "CFR"
 
@@ -315,7 +318,7 @@ async def test_references_are_followed_and_history_kept(browser):
         await settle(app, pilot)
         view = reader(app)
         await keys(app, pilot, "enter")  # The heading has no references.
-        await keys(app, pilot, "tab")
+        await keys(app, pilot, "right")
         assert (view.cursor, view.link) == (1, 0)  # § 164.102 in (a).
         await keys(app, pilot, "enter")
         assert shown(app).endswith("§ 164.102")
@@ -339,10 +342,10 @@ async def test_enter_chooses_among_several_references(browser, monkeypatch):
         view = reader(app)
         await keys(app, pilot, "j", "enter")  # (a) has three: the first is chosen.
         assert view.link == 0 and shown(app).endswith("§ 164.110")
-        await keys(app, pilot, "tab", "enter")  # Paragraph (b), right here.
+        await keys(app, pilot, "right", "enter")  # Paragraph (b), right here.
         assert shown(app).endswith("§ 164.110")
         assert "p-164.110(b)" in view.current.anchors
-        await keys(app, pilot, "shift+tab", "enter")  # 42 U.S.C. 1320d.
+        await keys(app, pilot, "left", "enter")  # 42 U.S.C. 1320d.
         assert opened and "uscode.house.gov" in opened[0]
         assert any("Opened" in n for n in notes(app))
         await keys(app, pilot, "b")
@@ -350,15 +353,15 @@ async def test_enter_chooses_among_several_references(browser, monkeypatch):
 
 
 @in_app
-async def test_tab_wraps_around_the_references(browser):
+async def test_left_and_right_wrap_around_the_references(browser):
     app = browser("45 CFR 164.110")
     async with app.run_test(size=(140, 40)) as pilot:
         await settle(app, pilot)
         view = reader(app)
-        await keys(app, pilot, "shift+tab")  # Back from the top: the last one.
+        await keys(app, pilot, "left")  # Back from the top: the last one.
         last = (view.cursor, view.link)
         assert view.pieces[last[0]].kind == "image"
-        await keys(app, pilot, "tab")
+        await keys(app, pilot, "right")
         assert (view.cursor, view.link) == (1, 0)
 
 
@@ -367,7 +370,7 @@ async def test_text_without_references(browser):
     app = browser("45 CFR 164.108")
     async with app.run_test(size=(140, 40)) as pilot:
         await settle(app, pilot)
-        await keys(app, pilot, "tab", "shift+tab")
+        await keys(app, pilot, "right", "left")
         assert reader(app).link is None
 
 
@@ -800,6 +803,207 @@ async def test_help_and_keys_held_while_a_dialog_is_open(browser):
         assert not isinstance(app.screen, Help)
 
 
+# Arrows, enter and escape ----------------------------------------------------
+
+
+def footer(app) -> list[str]:
+    """What the footer shows: each key's description, then group labels."""
+    found = [k.description for k in app.screen.query(FooterKey)]
+    return found + [str(label.render()) for label in app.screen.query(FooterLabel)]
+
+
+@in_app
+async def test_arrows_enter_and_escape_in_the_text(browser):
+    app = browser("45 CFR 164.110")
+    async with app.run_test(size=(140, 40)) as pilot:
+        await settle(app, pilot)
+        view = reader(app)
+        assert app.focused is view
+        assert {"Open", "Back", "Outline", "Paragraph", "Reference"} <= set(footer(app))
+        await keys(app, pilot, "down", "down", "up")
+        assert (view.cursor, view.link) == (1, None)
+        await keys(app, pilot, "right", "right", "left")
+        assert (view.cursor, view.link) == (1, 0)
+        await keys(app, pilot, "escape")  # Lets go of the reference first.
+        assert (view.cursor, view.link) == (1, None)
+        assert shown(app).endswith("§ 164.110")
+        await keys(app, pilot, "enter")  # Several: the first is chosen...
+        assert view.link == 0
+        await keys(app, pilot, "enter")  # ... and followed.
+        assert shown(app).endswith("§ 164.102")
+        await keys(app, pilot, "escape")  # Back.
+        assert shown(app).endswith("§ 164.110") and view.cursor == 1
+        await keys(app, pilot, "escape")  # The first place: up, onto it.
+        assert shown(app).endswith("Subpart A")
+        assert view.current.kind == "heading"
+        assert view.current.citation == "45 CFR 164.110"
+        for _ in range(4):
+            await keys(app, pilot, "escape")
+        assert shown(app) == "CFR" and view.current.citation == "45 CFR"
+        await keys(app, pilot, "escape")  # Nothing above: it stays open.
+        assert shown(app) == "CFR" and app.is_running
+        assert app.index == 0
+        await keys(app, pilot, "f")  # Forward goes back down the way it came.
+        assert shown(app) == "Title 45"
+        assert view.current.citation.endswith("Subtitle A")
+        await keys(app, pilot, "enter")  # An entry of contents opens.
+        assert shown(app) == "Title 45 > Subtitle A"
+
+
+@in_app
+async def test_arrows_scroll_through_a_long_paragraph(browser):
+    app = browser("45 CFR 164.104")
+    async with app.run_test(size=(60, 12)) as pilot:
+        await settle(app, pilot)
+        view = reader(app)
+        long = text.Piece("paragraph", ["word " * 300])
+        view.show([text.Piece("heading", ["Long"]), long, text.Piece("item", ["x"])])
+        await settle(app, pilot)
+        await keys(app, pilot, "down")
+        assert view.cursor == 1
+        await keys(app, pilot, "down")  # Through the paragraph, not past it.
+        assert view.cursor == 1 and view.scroll_y > 0
+        for _ in range(20):
+            await pilot.press("down")
+        await settle(app, pilot)
+        assert view.cursor == 2
+        await keys(app, pilot, "up")
+        assert view.cursor == 1
+        view.scroll_end(animate=False)
+        await settle(app, pilot)
+        bottom = view.scroll_y
+        await keys(app, pilot, "up")  # Up through it, too.
+        assert view.cursor == 1 and view.scroll_y < bottom
+        view.scroll_home(animate=False)
+        await settle(app, pilot)
+        await keys(app, pilot, "up")
+        assert view.cursor == 0
+
+
+@in_app
+async def test_enter_and_arrows_start_from_what_is_in_view(browser):
+    app = browser("45 CFR 164.110")
+    async with app.run_test(size=(140, 7)) as pilot:
+        await settle(app, pilot)
+        view = reader(app)
+        await keys(app, pilot, "end")  # Scrolled away from the cursor.
+        await keys(app, pilot, "enter")  # The cursor comes into view first.
+        assert view.cursor > 0 and shown(app).endswith("§ 164.110")
+        await keys(app, pilot, "home", "right")  # From the top again.
+        assert (view.cursor, view.link) == (1, 0)
+        await keys(app, pilot, "end", "right")
+        assert view.cursor > 1 and view.link is not None
+
+
+@in_app
+async def test_tab_moves_between_the_outline_and_the_text(browser):
+    app = browser("45 CFR 164.104")
+    async with app.run_test(size=(140, 40)) as pilot:
+        await settle(app, pilot)
+        tree = app.query_one("#outline", Tree)
+        await keys(app, pilot, "tab")
+        assert app.focused is tree
+        assert {"Read", "Text", "Move", "Fold"} <= set(footer(app))
+        await keys(app, pilot, "tab")
+        assert app.focused is reader(app)
+        await keys(app, pilot, "shift+tab", "escape")
+        assert app.focused is reader(app)
+        await keys(app, pilot, "o")  # Hidden...
+        assert not tree.display
+        await keys(app, pilot, "tab")  # ... and shown again.
+        assert tree.display and app.focused is tree
+
+
+@in_app
+async def test_tab_opens_the_outline_in_a_narrow_terminal(browser):
+    app = browser("45 CFR 164.104")
+    async with app.run_test(size=(70, 24)) as pilot:
+        await settle(app, pilot)
+        tree = app.query_one("#outline", Tree)
+        await keys(app, pilot, "tab")
+        assert tree.display and not reader(app).display and app.focused is tree
+        await keys(app, pilot, "tab")
+        assert not tree.display and app.focused is reader(app)
+        await keys(app, pilot, "tab", "escape")
+        assert not tree.display and app.focused is reader(app)
+
+
+@in_app
+async def test_arrows_in_the_outline(browser):
+    app = browser("45 CFR 164.104")
+    async with app.run_test(size=(140, 40)) as pilot:
+        await settle(app, pilot)
+        tree = app.query_one("#outline", Tree)
+
+        def at() -> str:
+            assert tree.cursor_node is not None
+            return str(tree.cursor_node.label).split("—")[0].split(" Heading")[0]
+
+        await keys(app, pilot, "tab")
+        assert at() == "§ 164.104"
+        await keys(app, pilot, "left")  # A section: to its subpart.
+        assert at() == "Subpart A"
+        await keys(app, pilot, "left")  # Open: it closes.
+        assert at() == "Subpart A" and tree.cursor_node.is_collapsed
+        await keys(app, pilot, "left", "right")  # To the part; it's open: in.
+        assert at() == "Subpart A"
+        await keys(app, pilot, "right", "right")  # Opens, then goes in.
+        assert at() == "§ 164.102"
+        await keys(app, pilot, "right")  # Nothing in a section.
+        assert at() == "§ 164.102"
+        await keys(app, pilot, "enter")  # Read it; the outline keeps the keys.
+        assert shown(app).endswith("§ 164.102") and app.focused is tree
+        for _ in range(7):
+            await keys(app, pilot, "left")
+        assert at() == "Title 45"
+        await keys(app, pilot, "left", "left")  # Closes; nothing above a title.
+        assert at() == "Title 45" and tree.cursor_node.is_collapsed
+
+
+@in_app
+async def test_arrows_in_dialogs(browser, site):
+    body = {"results": [result("164.104", "Nesting.", "")], "meta": {"total_count": 1}}
+    site.json(SEARCH, body)
+    app = browser("45 CFR 164.102")
+    async with app.run_test(size=(140, 40)) as pilot:
+        await settle(app, pilot)
+        await keys(app, pilot, "g")
+        box = app.screen.query_one(Input)
+        matches = app.screen.query_one("#matches", OptionList)
+        await keys(app, pilot, "down")  # No matches yet: it stays in the box.
+        assert app.focused is box
+        await typed(app, pilot, "164.10")
+        await keys(app, pilot, "down", "down")
+        assert app.focused is matches and matches.highlighted == 1
+        assert {"Move", "Choose", "Close"} <= set(footer(app))
+        await keys(app, pilot, "up", "up")  # From the top of the list: the box.
+        assert app.focused is box
+        await keys(app, pilot, "down")  # Back where it was in the list.
+        assert matches.highlighted == 0
+        await keys(app, pilot, "escape", "slash")
+        within = app.screen.query_one("#within", Checkbox)
+        await keys(app, pilot, "down", "down")  # No results: the checkbox.
+        assert app.focused is within
+        await keys(app, pilot, "up")
+        await typed(app, pilot, "nesting")
+        await keys(app, pilot, "enter")
+        assert isinstance(app.focused, OptionList)
+        await keys(app, pilot, "up")
+        assert app.focused is within
+        await keys(app, pilot, "down", "enter")
+        assert shown(app).endswith("§ 164.104")
+        await keys(app, pilot, "e")
+        path = app.screen.query_one("#path", Input)
+        await keys(app, pilot, "down", "down")  # To the file; nothing below it.
+        assert app.focused is path
+        await keys(app, pilot, "up", "enter")  # The formats.
+        assert isinstance(app.focused, OptionList)
+        await keys(app, pilot, "escape")  # Closes the list, not the dialog.
+        assert isinstance(app.screen, Export)
+        await keys(app, pilot, "escape")
+        assert not isinstance(app.screen, Export)
+
+
 # Layout and the outline ------------------------------------------------------
 
 
@@ -870,8 +1074,9 @@ async def test_nothing_to_do_before_anything_is_open(ecfr, site, tmp_path, monke
     monkeypatch.setattr(app, "_planted", lambda root: None)
     async with app.run_test(size=(140, 40)) as pilot:
         await settle(app, pilot)
-        for key in ("j", "right_square_bracket", "u", "y", "e", "h", "enter"):
+        for key in ("j", "right_square_bracket", "u", "y", "e", "h", "enter", "escape"):
             await keys(app, pilot, key)
+        await keys(app, pilot, "tab", "left", "right", "enter")  # An empty outline.
         assert app.view is None and status(app) == ""
         app._export((None, Path("x")))  # type: ignore[arg-type]
 

@@ -14,13 +14,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, cast
 
 from rich.table import Table as RichTable
+from rich.text import Text
 from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical, VerticalScroll
 from textual.content import Content
 from textual.screen import ModalScreen
-from textual.widgets import Checkbox, Input, OptionList, Select, Static
+from textual.widgets import Checkbox, Footer, Input, OptionList, Select, Static
 from textual.widgets.option_list import Option
 
 from ecfr_md.compare import Comparison
@@ -45,12 +46,19 @@ FORMAT_NAMES: dict[Format, str] = {
     "pdf": "PDF",
 }
 KIND_STYLES = {"removed": "$error", "substantive": "$warning", "editorial": MUTED}
+MOVE = Binding.Group("Move", compact=True)
 
 
 class Dialog[T](ModalScreen[T]):
-    """A panel over the text, closed with escape (or q, outside a text box)."""
+    """A panel over the text, closed with escape (or q, outside a text box).
+
+    Up and down move between its fields, from a text box down into the
+    list below it and, from the top of the list, back up; enter chooses.
+    """
 
     BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("up", "previous_field", "Previous", group=MOVE),
+        Binding("down", "next_field", "Next", group=MOVE),
         Binding("escape", "close", "Close"),
         Binding("q", "close", "Close", show=False),
     ]
@@ -101,14 +109,67 @@ class Dialog[T](ModalScreen[T]):
     def browser(self) -> Browser:
         return cast("Browser", self.app)
 
+    def on_mount(self) -> None:
+        """Its own keys below, over the text's."""
+        self.mount(Footer(compact=True, show_command_palette=False))
+
     def action_close(self) -> None:
         self.dismiss()
+
+    def action_next_field(self) -> None:
+        self._move(1)
+
+    def action_previous_field(self) -> None:
+        self._move(-1)
+
+    def _move(self, delta: int) -> None:
+        """Focus the next (or previous) field; an empty list is skipped,
+        and a list is entered at its first option."""
+        fields = [
+            w
+            for w in self.focus_chain
+            if not (isinstance(w, OptionList) and not w.option_count)
+        ]
+        focused = self.focused
+        index = fields.index(focused) + delta if focused in fields else -1
+        if not 0 <= index < len(fields):
+            return
+        field = fields[index]
+        field.focus()
+        if isinstance(field, OptionList) and field.highlighted is None:
+            field.highlighted = 0
+
+
+class Choices(OptionList):
+    """A dialog's list: up from its first option goes back to the field
+    above (the text box)."""
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("up", "cursor_up", "Previous", group=MOVE),
+        Binding("down", "cursor_down", "Next", group=MOVE),
+        Binding("enter", "select", "Choose"),
+    ]
+
+    def action_cursor_up(self) -> None:
+        if not self.highlighted:
+            dialog = self.screen
+            assert isinstance(dialog, Dialog)
+            dialog.action_previous_field()
+        else:
+            super().action_cursor_up()
+
+
+class FormatSelect(Select[Format], inherit_bindings=False):
+    """A choice of format that opens with enter or space, leaving up and
+    down to move between the dialog's fields."""
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("enter,space", "show_overlay", "Choose", show=False),
+    ]
 
 
 class GoTo(Dialog[str | None]):
     """A citation in any form, with matching entries of the outline below."""
-
-    BINDINGS: ClassVar[list[BindingType]] = [Binding("down", "into_list", show=False)]
 
     def __init__(self, complete: Callable[[str], Sequence[Outline]]) -> None:
         super().__init__()
@@ -123,9 +184,10 @@ class GoTo(Dialog[str | None]):
                 placeholder="45 CFR 164.502(a)(1), 45/164.502, part 160, …",
             )
             yield Static("", id="problem", classes="error")
-            yield OptionList(id="matches")
+            yield Choices(id="matches")
             yield Static(
-                "Any citation, address or eCFR link · ↓ for matches",
+                "Any citation, address or eCFR link · ↓ to the matches · "
+                "Enter opens · Esc cancels",
                 classes="hint footnote",
             )
 
@@ -145,12 +207,6 @@ class GoTo(Dialog[str | None]):
             Option(Content.assemble((e.citation, "bold"), "  ", (_heading(e), MUTED)))
             for e in self._found
         )
-
-    def action_into_list(self) -> None:
-        matches = self.query_one("#matches", OptionList)
-        if matches.option_count:
-            matches.focus()
-            matches.highlighted = 0
 
     @on(Input.Submitted)
     def _submitted(self, event: Input.Submitted) -> None:
@@ -198,7 +254,7 @@ class Search(Dialog[str | None]):
                     f"Only in {self._within.citation}", id="within", compact=True
                 )
             yield Static("", id="status", classes="hint")
-            yield OptionList(id="results")
+            yield Choices(id="results")
 
     @on(Input.Submitted)
     def _submitted(self, event: Input.Submitted) -> None:
@@ -300,7 +356,7 @@ class History(Dialog[None]):
         with Vertical():
             yield Static(f"History of {self._citation}", classes="title")
             yield Static("Loading…", id="status", classes="hint")
-            yield OptionList(id="changes")
+            yield Choices(id="changes")
 
     def on_mount(self) -> None:
         ecfr, citation = self.browser.ecfr, self._citation
@@ -409,7 +465,7 @@ class Export(Dialog[tuple[Format, Path] | None]):
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Static(f"Save {self._citation}", classes="title")
-            yield Select(
+            yield FormatSelect(
                 [(f"{FORMAT_NAMES[f]} ({SUFFIXES[f]})", f) for f in FORMATS],
                 value="markdown",
                 allow_blank=False,
@@ -420,7 +476,11 @@ class Export(Dialog[tuple[Format, Path] | None]):
                 str(self._directory / f"{self._stem}.md"), id="path", compact=True
             )
             yield Static("", id="problem", classes="error")
-            yield Static("Enter saves · Word and PDF need extras", classes="hint")
+            yield Static(
+                "↑↓ between the format and the file · Enter on the format lists "
+                "them, on the file saves · Word and PDF need extras",
+                classes="hint",
+            )
 
     @on(Select.Changed, "#format")
     def _format(self, event: Select.Changed) -> None:
@@ -440,36 +500,82 @@ class Export(Dialog[tuple[Format, Path] | None]):
         self.dismiss((format, Path(text).expanduser()))
 
 
-KEYS: tuple[tuple[str, str], ...] = (
-    ("g", "Go to a citation, address or eCFR link"),
-    ("/", "Search the eCFR"),
-    ("[  ]", "Previous and next section"),
-    ("j  k", "Next and previous paragraph"),
-    ("tab", "Next reference; shift+tab, previous"),
-    ("enter", "Follow the reference (or click it)"),
-    ("u", "Up a level"),
-    ("b  f", "Back and forward"),
-    ("d", "Text as of a date"),
-    ("h", "History of changes, with redlines"),
-    ("e", "Export: Markdown, text, HTML, JSON, EPUB, Word, PDF"),
-    ("y", "Copy the citation of the paragraph"),
-    ("o", "Show or hide the outline"),
-    ("q", "Quit"),
+KEYS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
+    (
+        "In the text",
+        (
+            ("↑  ↓", "Previous and next paragraph (also k, j)"),
+            ("←  →", "Previous and next reference"),
+            ("enter", "Follow the reference, or open the entry (or click it)"),
+            ("esc", "Back; from the first place, up a level"),
+            ("pgup  pgdn", "Scroll a screen up or down"),
+            ("home  end", "Scroll to the top or the bottom"),
+            ("tab", "To the outline"),
+        ),
+    ),
+    (
+        "In the outline",
+        (
+            ("↑  ↓", "Move"),
+            ("→", "Open a branch; in an open one, go into it"),
+            ("←", "Close a branch; in a closed one, go to the one above"),
+            ("enter", "Read it"),
+            ("esc  tab", "Back to the text"),
+        ),
+    ),
+    (
+        "In a dialog",
+        (
+            ("↑  ↓", "Between the box and the list, and through the list"),
+            ("enter", "Choose"),
+            ("esc", "Close"),
+        ),
+    ),
+    (
+        "Anywhere",
+        (
+            ("g", "Go to a citation, address or eCFR link"),
+            ("/", "Search the eCFR"),
+            ("[  ]", "Previous and next section"),
+            ("u", "Up a level"),
+            ("b  f", "Back and forward"),
+            ("d", "Text as of a date"),
+            ("h", "History of changes, with redlines"),
+            ("e", "Export: Markdown, text, HTML, JSON, EPUB, Word, PDF"),
+            ("y", "Copy the citation of the paragraph"),
+            ("o", "Show or hide the outline"),
+            ("q", "Quit"),
+        ),
+    ),
 )
 
 
 class Help(Dialog[None]):
     """The keys."""
 
+    DEFAULT_CSS = """
+    Help > Vertical {
+        height: 90%;
+    }
+    Help VerticalScroll {
+        height: 1fr;
+    }
+    """
+
     def compose(self) -> ComposeResult:
         table = RichTable.grid(padding=(0, 3))
         table.add_column(style="bold", no_wrap=True)
         table.add_column()
-        for key, does in KEYS:
-            table.add_row(key, does)
+        for place, keys in KEYS:
+            if table.row_count:
+                table.add_row()
+            table.add_row(Text(place, style="italic"))
+            for key, does in keys:
+                table.add_row(key, does)
         with Vertical():
             yield Static("Keys", classes="title")
-            yield Static(table)
+            with VerticalScroll():
+                yield Static(table)
             yield Static(
                 "\nThe eCFR is an editorial compilation, not an official legal "
                 "edition of the CFR.",
