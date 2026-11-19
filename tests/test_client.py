@@ -26,6 +26,7 @@ from ecfr_md import (
 )
 
 FULL = "/api/versioner/v1/full/2026-10-07/title-45.xml"
+TITLES = "/api/versioner/v1/titles.json"
 
 
 def test_sends_configured_headers(api):
@@ -64,7 +65,12 @@ def test_get_accepts_flexible_dates(ecfr, api):
     api.text("/api/versioner/v1/full/2020-03-01/title-45.xml", "<DIV5 N='1'/>")
     for date in ("March 2020", "2020-03-01", dt.datetime(2020, 3, 1, 9, 30)):
         assert ecfr.get(45, date=date).date == dt.date(2020, 3, 1)
-    assert "/api/versioner/v1/titles.json" not in api.paths()  # Date given.
+    # The title list (to check the date), the title's size, and its text.
+    assert set(api.paths()) == {
+        TITLES,
+        "/api/versioner/v1/structure/2020-03-01/title-45.json",
+        "/api/versioner/v1/full/2020-03-01/title-45.xml",
+    }
 
 
 def body(path) -> str:
@@ -162,7 +168,7 @@ def test_store_skips_titles_being_processed(api, tmp_path):
 
 def test_without_cache_no_extra_requests(ecfr, api):
     ecfr.get("45 CFR 164.104", date="2026-10-07")
-    assert api.paths() == [FULL]
+    assert api.paths() == [TITLES, FULL]
 
 
 def test_cache_max_age(api, tmp_path):
@@ -199,9 +205,10 @@ def test_download_restarts_after_a_dropped_connection(ecfr, api):
     assert api.paths().count(FULL) == 2
 
 
-def test_dates_after_the_latest_are_explained(ecfr):
-    with pytest.raises(DateOutOfRangeError, match="available up to 2026-10-07"):
-        ecfr.get("45 CFR 164.104", date="2030-01-01")
+def test_dates_after_the_latest_give_the_latest_text(ecfr):
+    with pytest.warns(ECFRWarning, match="no text after 2026-10-07"):
+        node = ecfr.get("45 CFR 164.104", date="2030-01-01")
+    assert node.date == dt.date(2026, 10, 7)  # Labeled with the text's real date.
 
 
 def test_dates_before_the_first_version_are_explained(ecfr, api):
@@ -219,7 +226,7 @@ def test_dates_before_the_first_version_are_explained(ecfr, api):
 
 
 def test_missing_content_is_still_not_found(ecfr):
-    with pytest.raises(NotFoundError):
+    with pytest.raises(LookupError, match=r"No section 164\.999 in 45 CFR Part 164"):
         ecfr.get("45 CFR 164.999")
 
 
@@ -310,7 +317,7 @@ def test_unexpected_json_raises_response_format_error(ecfr, api):
         (lambda e: e.api.search.results(per_page=5000), "per_page"),
         (lambda e: e.api.search.results(page=0), "page"),
         (lambda e: e.api.versioner.full(45, date="2025-16-01"), "date"),
-        (lambda e: e.api.versioner.full(45, section=164), "section"),
+        (lambda e: e.get(45, prt="164"), "did you mean part"),
         (lambda e: e.get("45 CFR banana"), "banana"),
         (lambda e: e.get("45 CFR 164", part="160"), "Conflicting part"),
         (lambda e: e.get(45, date="not a date"), "date"),

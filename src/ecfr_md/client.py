@@ -6,7 +6,9 @@ the common tasks. The three API services map onto ``ECFR.api.admin``,
 """
 
 import datetime as dt
+import difflib
 import functools
+import inspect
 import logging
 import os
 import re
@@ -14,12 +16,21 @@ import tempfile
 import threading
 import time
 import warnings
+import xml.etree.ElementTree as ET
 from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Literal, Self, Unpack, overload
+from typing import (
+    Annotated,
+    Literal,
+    Self,
+    Unpack,
+    get_args,
+    get_type_hints,
+    overload,
+)
 from xml.sax.saxutils import escape
 
 import httpx2
@@ -39,6 +50,7 @@ from ecfr_md.citation import Citation
 from ecfr_md.config import RETRY_STATUS_CODES, SPLIT_ABOVE, Settings
 from ecfr_md.document import Node, Source, load, save_events
 from ecfr_md.errors import (
+    AmbiguousNodeError,
     APIError,
     DateOutOfRangeError,
     ECFRConnectionError,
@@ -53,7 +65,7 @@ from ecfr_md.errors import (
     TitleNotFoundError,
     api_error,
 )
-from ecfr_md.markdown import file_events
+from ecfr_md.markdown import DIV_TAG, file_events
 from ecfr_md.network import Throttle
 from ecfr_md.params import (
     DateLike,
@@ -80,6 +92,25 @@ logger = logging.getLogger("ecfr_md")
 
 TITLES_TTL = 300  # Seconds to reuse the title list within a session.
 GROUP_BELOW = 2_000_000  # get_many fetches a whole part if it's smaller than this.
+# Citation levels, broadest first, as structure node types and API parameters.
+CITED_LEVELS = (
+    "subtitle",
+    "chapter",
+    "subchapter",
+    "part",
+    "subpart",
+    "section",
+    "appendix",
+)
+LEVEL_KEYS = frozenset(CITED_LEVELS)
+# The API ignores these levels unless every level above them is given too
+# ("subchapter=C" alone returns the whole title), and a subpart or appendix
+# without its part may be in several parts. Such citations are completed
+# from the structure first.
+INCOMPLETE = frozenset({"subtitle", "chapter", "subchapter", "subpart", "appendix"})
+# Levels taken from the structure to complete a citation: those above a part.
+# A subpart is never added, since an appendix "to Subpart C" isn't inside it.
+ABOVE_PART = ("subtitle", "chapter", "subchapter", "part")
 MAX_PER_PAGE = 1000  # Search results per request.
 
 # Structure node types above the part level, as XML division tags.
@@ -119,22 +150,100 @@ def _above_part(cited: Citation) -> bool:
 
 def _locate(structure: models.Node, cited: Citation) -> models.Node:
     """The structure node a citation points to, at any level."""
-    node = structure
-    levels = ("subtitle", "chapter", "subchapter", "part", "subpart", "section")
-    for level in (*levels, "appendix"):
-        if (wanted := cited.hierarchy.get(level)) is not None:
-            found = next(
-                (
-                    c
-                    for c in _descendants(node)
-                    if c.type == level and c.identifier == wanted
-                ),
-                None,
+    return _path(structure, cited)[-1]
+
+
+def _path(structure: models.Node, cited: Citation) -> list[models.Node]:
+    """Structure nodes from the title down to what a citation names.
+
+    Each level the citation gives must match exactly one node below the level
+    before it: "45 CFR Subpart E" names a subpart E in several parts, and
+    taking the first would silently give the wrong text.
+    """
+    path = [structure]
+    for level in CITED_LEVELS:
+        wanted = cited.hierarchy.get(level)
+        if wanted is None:
+            continue
+        found = [
+            chain
+            for chain in _chains(path[-1])
+            if chain[-1].type == level and chain[-1].identifier == wanted
+        ]
+        if not found:
+            raise NodeNotFoundError(_not_there(structure, path, level, wanted, cited))
+        if len(found) > 1:
+            places = [
+                Outline.build(chain[-1], cited.title, _levels([*path, *chain]))
+                for chain in found
+            ]
+            raise AmbiguousNodeError(
+                f"{level.title()} {wanted} is in {len(places)} places in title "
+                f"{cited.title}. Say which, e.g. {places[0].citation}. "
+                f"Candidates: {', '.join(p.citation for p in places[:10])}"
+                + (f" and {len(places) - 10} more" if len(places) > 10 else ""),
+                places,
             )
-            if found is None:
-                raise NodeNotFoundError(f"No {level} {wanted} in title {cited.title}")
-            node = found
-    return node
+        path += found[0]
+    return path
+
+
+def _chains(node: models.Node) -> Iterator[list[models.Node]]:
+    """Every descendant, with the nodes between ``node`` and it."""
+    for child in node.children:
+        yield [child]
+        for chain in _chains(child):
+            yield [child, *chain]
+
+
+def _levels(path: list[models.Node]) -> dict[str, str]:
+    """API hierarchy parameters for a path of structure nodes."""
+    return {n.type: n.identifier for n in path if n.type in LEVEL_KEYS and n.identifier}
+
+
+def _not_there(
+    structure: models.Node,
+    path: list[models.Node],
+    level: str,
+    wanted: str,
+    cited: Citation,
+) -> str:
+    """Say what's missing and what's there instead."""
+    title = cited.title
+    scope = path[-1]
+    where = (
+        str(Citation(title, as_hierarchy(_levels(path))))
+        if len(path) > 1
+        else f"title {title}"
+    )
+    if level == "section" and len(path) == 1:  # Look in the section's own part.
+        part = _find_part(structure, wanted.split(".")[0])
+        if part is not None:
+            scope, where = part, f"{title} CFR Part {part.identifier}"
+    message = f"No {level} {wanted} in {where}"
+    elsewhere = [
+        chain
+        for chain in _chains(structure)
+        if chain[-1].type == level and chain[-1].identifier == wanted
+    ]
+    if elsewhere and len(path) > 1:  # E.g. "164.502 --part 160".
+        above = _levels(elsewhere[0][:-1])
+        found = str(Citation(title, as_hierarchy(above))) if above else "the title"
+        return f"{message}; {level} {wanted} is in {found}"
+    if level == "section" and scope is structure:
+        return message  # Not every section in the title.
+    existing = [
+        c.identifier for c in _descendants(scope) if c.type == level and c.identifier
+    ]
+    if existing:
+        named = (
+            ", ".join(existing)
+            if len(existing) <= 12
+            else f"{existing[0]} to {existing[-1]} ({len(existing)} in all)"
+        )
+        plural = "sections" if level == "section" else f"{level}s"
+        return f"{message}. It has {plural} {named}"
+    return message
 
 
 def _find_part(outline: models.Node, part: str) -> models.Node | None:
@@ -164,18 +273,72 @@ def _describe(error: ErrorDetails) -> str:
     return f"{location}: {error['msg']} (got {error['input']!r:.80})"
 
 
+TYPE_NAMES = {"str": "a string", "int": "a whole number", "date": "a date"}
+
+
+def _explain(exc: ValidationError, names: list[str]) -> str:
+    """Validation errors in plain words, one per argument."""
+    by_argument: dict[str, list[ErrorDetails]] = {}
+    for error in exc.errors(include_url=False):
+        first = error["loc"][0] if error["loc"] else "argument"
+        name = names[first] if isinstance(first, int) and first < len(names) else first
+        by_argument.setdefault(str(name), []).append(error)
+    parts = []
+    for name, errors in by_argument.items():
+        given = f"got {errors[0]['input']!r:.80}"
+        if len(errors) > 1:  # One error per member of a union such as str | int.
+            kinds = [str(e["loc"][-1]) for e in errors]
+            wanted = " or ".join(TYPE_NAMES.get(k, k) for k in kinds)
+            parts.append(f"{name} should be {wanted}; {given}")
+        else:
+            message = errors[0]["msg"]
+            parts.append(f"{name}: {message[0].lower()}{message[1:]}; {given}")
+    return "; ".join(parts)
+
+
+def _keyword_fields(func: Callable) -> dict[str, object] | None:
+    """Field types of the TypedDict a function's ``**kwargs`` are unpacked from."""
+    hints = get_type_hints(func, include_extras=True)
+    for param in inspect.signature(func).parameters.values():
+        if param.kind is param.VAR_KEYWORD:
+            (fields,) = get_args(hints[param.name])  # Unpack[SomeTypedDict]
+            return get_type_hints(fields)
+    return None
+
+
 def validated[F: Callable](func: F) -> F:
-    """Validate arguments against type hints, raising InvalidParameterError."""
+    """Validate arguments against type hints, raising InvalidParameterError.
+
+    Keywords the function doesn't take are rejected, with a suggestion, rather
+    than dropped: ``get(45, prt="164")`` would otherwise fetch the whole title.
+    """
     checked = validate_call(func)
+    params = inspect.signature(func).parameters
+    names = list(params)
+    fields = _keyword_fields(func)
+    named = {n for n, p in params.items() if p.kind is p.KEYWORD_ONLY}
 
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
+        if fields is not None:
+            for key, value in list(kwargs.items()):
+                if key in named:
+                    continue
+                if key not in fields:
+                    known = sorted(named | fields.keys())
+                    close = difflib.get_close_matches(key, known, n=1)
+                    hint = f"; did you mean {close[0]}?" if close else "."
+                    raise InvalidParameterError(
+                        f"{func.__name__}() has no option {key!r}{hint} "
+                        f"Options: {', '.join(known)}"
+                    )
+                if fields[key] is str and isinstance(value, int):
+                    kwargs[key] = str(value)  # part=164 means part "164".
         try:
             return checked(*args, **kwargs)
         except ValidationError as exc:
-            details = "; ".join(map(_describe, exc.errors(include_url=False)))
             raise InvalidParameterError(
-                f"Invalid {func.__name__} argument: {details}"
+                f"Invalid {func.__name__} argument: {_explain(exc, names)}"
             ) from exc
 
     return wrapper  # type: ignore[return-value]
@@ -236,6 +399,13 @@ class ECFR:
     def close(self) -> None:
         self._http.close()
 
+    def _check_open(self) -> None:
+        if self._http.is_closed:
+            raise ECFRError(
+                "This ECFR client is closed; make a new one, or use it in a "
+                "with block and only inside it"
+            )
+
     @validated
     def get(
         self,
@@ -261,7 +431,8 @@ class ECFR:
             the most recent available.
         """
         cited = Citation.parse(citation).with_hierarchy(hierarchy)
-        date = _day(date) or self.api.versioner.latest_date(cited.title)
+        date = self._when(cited.title, date)
+        cited = self._complete(cited, date)
         with self._full_text(cited, date) as download:
             node = load(
                 download.path.read_bytes(),
@@ -301,9 +472,15 @@ class ECFR:
             Point-in-time date. Defaults to the most recent available.
         """
         cited = Citation.parse(citation).with_hierarchy(hierarchy)
-        date = _day(date) or self.api.versioner.latest_date(cited.title)
-        node = _locate(self._outline(cited.title, date), cited)
-        return Outline.build(node, cited.title, cited.hierarchy)
+        date = self._when(cited.title, date)
+        try:
+            structure = self._outline(cited.title, date)
+        except NotFoundError as exc:
+            if reason := self._explain_missing(cited, date):
+                raise DateOutOfRangeError(reason) from exc
+            raise
+        path = _path(structure, cited)
+        return Outline.build(path[-1], cited.title, _levels(path))
 
     @validated
     def changes(
@@ -410,10 +587,32 @@ class ECFR:
         """
         return sync(self, Path(path))
 
+    @overload
+    def get_many(
+        self,
+        citations: list[str | int],
+        *,
+        date: DateLike | None = None,
+        errors: Literal["raise"] = "raise",
+    ) -> list[Node]: ...
+
+    @overload
+    def get_many(
+        self,
+        citations: list[str | int],
+        *,
+        date: DateLike | None = None,
+        errors: Literal["return"],
+    ) -> list[Node | ECFRError]: ...
+
     @validated
     def get_many(
-        self, citations: list[str | int], *, date: DateLike | None = None
-    ) -> list[Node]:
+        self,
+        citations: list[str | int],
+        *,
+        date: DateLike | None = None,
+        errors: Literal["raise", "return"] = "raise",
+    ) -> list[Node] | list[Node | ECFRError]:
         """Fetch several citations, sharing requests where possible.
 
         Sections in the same small part (up to ``GROUP_BELOW`` bytes) are
@@ -425,9 +624,12 @@ class ECFR:
             Citations, as for :meth:`get`.
         date: DateLike | None
             Point-in-time date for all of them. Defaults to the most recent.
+        errors: "raise" | "return"
+            With ``"return"``, a citation that fails gives its exception in
+            its place in the list, and the others are still fetched.
         """
         cited = [Citation.parse(c) for c in citations]
-        results: dict[int, Node] = {}
+        results: dict[int, Node | ECFRError] = {}
         groups: dict[tuple[int, str], list[int]] = {}
         for i, c in enumerate(cited):
             section = c.hierarchy.get("section")
@@ -435,7 +637,7 @@ class ECFR:
                 part = c.hierarchy.get("part") or section.split(".")[0]
                 groups.setdefault((c.title, part), []).append(i)
         for (title, part), members in groups.items():
-            when = _day(date) or self.api.versioner.latest_date(title)
+            when = self._when(title, date)
             outline = _find_part(self._outline(title, when), part)
             if len(members) < 2 or outline is None or (outline.size or 0) > GROUP_BELOW:
                 continue
@@ -443,10 +645,16 @@ class ECFR:
             for i in members:
                 if (found := node.get(str(cited[i]))) is not None:
                     results[i] = found
-        return [
-            results[i] if i in results else self.get(citations[i], date=date)
-            for i in range(len(cited))
-        ]
+        for i in range(len(cited)):
+            if i in results:
+                continue
+            try:
+                results[i] = self.get(citations[i], date=date)
+            except ECFRError as exc:
+                if errors == "raise":
+                    raise
+                results[i] = exc
+        return [results[i] for i in range(len(cited))]  # type: ignore[return-value]
 
     @overload
     def save(
@@ -508,11 +716,14 @@ class ECFR:
             Point-in-time date. Defaults to the most recent available.
         """
         cited = Citation.parse(citation).with_hierarchy(hierarchy)
+        if str(path).endswith(("/", "\\")):  # Path() would drop this: a directory.
+            Path(path).mkdir(parents=True, exist_ok=True)
         if cited.paragraph:
             node = self.get(citation, date=date, **hierarchy)
             written = node.save(path, front_matter=front_matter)
             return [written] if tree else written
-        date = _day(date) or self.api.versioner.latest_date(cited.title)
+        date = self._when(cited.title, date)
+        cited = self._complete(cited, date)
         with self._full_text(cited, date) as download, download.path.open("rb") as f:
             source = Source(
                 cited.title, date, cited.hierarchy, download.url, download.retrieved
@@ -604,6 +815,43 @@ class ECFR:
                 )
             yield download
 
+    def _when(self, title: int, date: DateLike | None) -> dt.date:
+        """The date to fetch: the one given, or the latest, but never later.
+
+        The eCFR has no text after a title's latest date. Asking for a later
+        one gets the latest text, labeled with the latest date, so a saved file
+        never claims text "as of" a day the eCFR hasn't reached.
+        """
+        latest = self.api.versioner.latest_date(title)
+        day = _day(date)
+        if day is None:
+            return latest
+        if day > latest:
+            warnings.warn(
+                f"Title {title} has no text after {latest}; "
+                f"using {latest} instead of {day}",
+                ECFRWarning,
+                stacklevel=4,
+            )
+            return latest
+        return day
+
+    def _complete(self, cited: Citation, date: dt.date) -> Citation:
+        """The citation with the levels the API needs to find it.
+
+        Citations naming only a subchapter, a subpart or an appendix (see
+        ``INCOMPLETE``) are looked up in the structure, which also catches a
+        subpart that several parts have.
+        """
+        if not cited.hierarchy.keys() & INCOMPLETE:
+            return cited
+        path = _path(self._outline(cited.title, date), cited)
+        found = _levels(path)
+        levels = {k: v for k in ABOVE_PART if (v := found.get(k)) is not None}
+        return Citation(
+            cited.title, as_hierarchy({**levels, **cited.hierarchy}), cited.paragraph
+        )
+
     def _title(self, title: int) -> models.Title:
         """A title's dates, from a title list kept for a few minutes."""
         with self._memo_lock:
@@ -664,15 +912,27 @@ class ECFR:
         or when the single request fails, then joined into one XML file.
         """
         self.progress.fetching(str(cited), date)
+        # The API ignores subtitle, chapter and subchapter: asked for one, it
+        # returns the whole title. So such a division comes from the whole
+        # title (one request, cached for any other division in it), or part
+        # by part when the title is too large to ask for at once.
+        division = _above_part(cited) and bool(cited.hierarchy)
         with ExitStack() as stack:
             try:
-                if _above_part(cited) and self._text_size(cited, date) > SPLIT_ABOVE:
+                too_large = _above_part(cited) and (
+                    self._text_size(cited, date) > SPLIT_ABOVE
+                    or self._text_size(Citation(cited.title), date) > SPLIT_ABOVE
+                )
+                if too_large:
                     download = self._by_part(cited, date, stack)
                 else:
                     try:
+                        scope = {} if division else dict(cited.hierarchy)
                         download = stack.enter_context(
-                            self._text(cited.title, dict(cited.hierarchy), date)
+                            self._text(cited.title, scope, date)
                         )
+                        if division:
+                            download = self._extract(download, cited, date, stack)
                     except ServerError as exc:
                         if not _above_part(cited) or exc.status_code != 504:
                             raise
@@ -681,8 +941,50 @@ class ECFR:
             except NotFoundError as exc:
                 if reason := self._explain_missing(cited, date):
                     raise DateOutOfRangeError(reason) from exc
+                # Say what isn't there, in citations rather than an API URL.
+                # If the structure lists it, the 404 is something else.
+                _path(self._outline(cited.title, date), cited)
                 raise
             yield download
+
+    def _extract(
+        self, whole: Download, cited: Citation, date: dt.date, stack: ExitStack
+    ) -> Download:
+        """Copy one division (a subtitle, chapter, ...) out of a title's XML.
+
+        The title is read as a stream; everything outside the division is
+        discarded as soon as it has been read.
+        """
+        nodes = _path(self._outline(cited.title, date), cited)[1:]
+        wanted = [(DIVISIONS[n.type][1], n.identifier) for n in nodes]
+        fd, name = tempfile.mkstemp(prefix="ecfr-md-", suffix=".part")
+        os.close(fd)
+        target = Path(name)
+        stack.callback(target.unlink, missing_ok=True)
+        chain: list[tuple[str | None, str | None]] = []
+        found: ET.Element | None = None
+        with whole.path.open("rb") as f:
+            for event, element in file_events(f):
+                if not DIV_TAG.match(element.tag):
+                    if event == "end" and found is None:
+                        element.clear()
+                    continue
+                if event == "start":
+                    chain.append((element.get("TYPE"), element.get("N")))
+                    if found is None and chain[1:] == wanted:
+                        found = element
+                    continue
+                chain.pop()
+                if element is found:
+                    target.write_bytes(ET.tostring(element, encoding="utf-8"))
+                    break
+                if found is None:
+                    element.clear()
+        if found is None:  # The structure lists it, but the text doesn't have it.
+            raise NodeNotFoundError(
+                f"{cited} is not in the text of title {cited.title}"
+            )
+        return Download(target, whole.url, whole.retrieved)
 
     def _text_size(self, cited: Citation, date: dt.date) -> int:
         return _locate(self._outline(cited.title, date), cited).size or 0
@@ -758,9 +1060,6 @@ class ECFR:
     def _explain_missing(self, cited: Citation, date: dt.date) -> str | None:
         """Why a 404 happened, if it's because of the date."""
         try:
-            latest = self.api.versioner.latest_date(cited.title)
-            if date > latest:
-                return f"{cited} is available up to {latest}, not {date}"
             if not cited.hierarchy:
                 return None
             dates, page, pages = [], 1, 1
@@ -799,6 +1098,7 @@ class ECFR:
             ) from exc
 
     def _send(self, path: str, params: dict[str, str | list[str]]) -> httpx2.Response:
+        self._check_open()
         request = self._http.build_request("GET", path, params=params)
         url = str(request.url)
         self._throttle.wait()
@@ -814,6 +1114,7 @@ class ECFR:
         self, path: str, params: dict[str, str | list[str]], target: Path
     ) -> dt.datetime:
         """Download a body into ``target``; return when it was retrieved."""
+        self._check_open()
         request = self._http.build_request("GET", path, params=params)
         url = str(request.url)
         self._throttle.wait()

@@ -16,7 +16,6 @@ from ecfr_md import (
     InvalidCitationError,
     InvalidParameterError,
     NodeNotFoundError,
-    NotFoundError,
     ResponseFormatError,
     ServerError,
     Settings,
@@ -277,7 +276,7 @@ def test_missing_text_within_the_date_range_is_not_a_date_problem(ecfr, api):
         "/api/versioner/v1/versions/title-45.json", {"content_versions": [version]}
     )
     api.text(FULL, '{"error":"No matching content found."}', status=404)
-    with pytest.raises(NotFoundError):
+    with pytest.raises(LookupError):
         ecfr.get("45 CFR 164.104")
 
 

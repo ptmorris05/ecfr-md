@@ -1,6 +1,10 @@
 import json
+import logging
 
 import pytest
+
+from ecfr_md import cli
+from ecfr_md.errors import ECFRWarning
 
 
 def test_get_prints_markdown(run, capsys):
@@ -108,9 +112,12 @@ def test_ambiguous_paragraph_exits_with_candidates(run, capsys):
     assert "More than one match" in err and "45 CFR 164.108(1)" in err
 
 
-def test_out_of_range_date_is_a_usage_error(run, capsys):
-    assert run("get", "45", "--date", "2030-01-01") == 2
-    assert "available up to 2026-10-07" in capsys.readouterr().err
+def test_future_date_gives_the_latest_text_with_a_warning(run, capsys, tmp_path):
+    with pytest.warns(ECFRWarning, match="no text after 2026-10-07"):
+        assert (
+            run("get", "45", "--date", "2030-01-01", "-o", str(tmp_path / "a.md")) == 0
+        )
+    assert 'date: "2026-10-07"' in (tmp_path / "a.md").read_text(encoding="utf-8")
 
 
 def test_quiet_prints_nothing_but_the_result(run, capsys, tmp_path):
@@ -145,3 +152,27 @@ def test_cache_info_and_clear(run, capsys, isolated_cache):
     assert str(isolated_cache) in err.replace("\n", "") or "Entries" in err
     assert run("cache", "clear") == 0
     assert not isolated_cache.exists() or not any(isolated_cache.rglob("*"))
+
+
+@pytest.mark.parametrize("tokens", [(), ("api",), ("cache",), ("api", "admin")])
+def test_bare_command_groups_print_help(run, capsys, tokens):
+    assert run(*tokens) == 0
+    assert "Usage: ecfr-md" in capsys.readouterr().out
+
+
+def test_a_closed_pipe_is_not_an_error(run, monkeypatch):
+    def closed(text: str) -> None:
+        raise BrokenPipeError
+
+    monkeypatch.setattr(cli, "_print_markdown", closed)
+    monkeypatch.setattr(cli.os, "dup2", lambda *_: None)
+    assert run("get", "45", "CFR", "164") == 0
+
+
+def test_verbose_logs_only_our_requests(run):
+    assert run("-v", "api", "versioner", "titles") == 0
+    assert logging.getLogger("ecfr_md").level == logging.DEBUG
+    # HTTP/2 libraries would log every header; they keep the root's WARNING.
+    assert logging.getLogger("hpack").level == logging.NOTSET
+    assert run("api", "versioner", "titles") == 0
+    assert logging.getLogger("ecfr_md").level == logging.ERROR

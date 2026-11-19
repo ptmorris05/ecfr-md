@@ -21,8 +21,10 @@ import inspect
 import io
 import json
 import logging
+import os
 import shlex
 import sys
+import warnings
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Annotated, Unpack
@@ -537,20 +539,28 @@ def launcher(
     verbose: bool
         Log every request.
     """
+    # Only ecfr-md's own records: HTTP/2 libraries log every header at DEBUG.
     logging.basicConfig(
-        level=logging.DEBUG if verbose else logging.WARNING,
+        level=logging.WARNING,
         format="%(message)s",
-        handlers=[RichHandler(console=err_console, show_path=False)],
+        handlers=[RichHandler(console=err_console, show_path=False, show_time=False)],
     )
-    logging.getLogger("httpcore2").setLevel(logging.WARNING)
-    if not verbose:  # The terminal display reports retries itself.
-        logging.getLogger("ecfr_md").setLevel(logging.ERROR)
+    # The terminal display reports retries itself unless asked for every request.
+    logging.getLogger("ecfr_md").setLevel(logging.DEBUG if verbose else logging.ERROR)
     logging.captureWarnings(True)  # Show ECFRWarning through the same handler.
+    warnings.formatwarning = lambda message, *_args, **_kwargs: str(message)
     command, bound, _ = app.parse_args(tokens)
+    if "ecfr" not in inspect.signature(command).parameters:
+        command(*bound.args, **bound.kwargs)  # Help for a bare command group.
+        return 0
     terminal = Terminal(err_console, quiet=quiet)
     try:
         with ECFR(settings, progress=terminal) as ecfr:
             command(*bound.args, **bound.kwargs, ecfr=ecfr)
+    except BrokenPipeError:
+        # The reader stopped early, as `| head` does; that isn't an error.
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        return 0
     except InvalidParameterError as exc:
         terminal.error(exc)
         return EXIT_USAGE
