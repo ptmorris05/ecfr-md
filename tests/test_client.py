@@ -142,7 +142,7 @@ def test_store_reuses_text_until_the_eCFR_changes_it(api, part_xml, tmp_path):
     api.json(VERSIONS, {"content_versions": [version("160")], "meta": {}})
     assert session().date == dt.date(2026, 10, 8)
     assert api.paths().count(PART) == 0
-    assert api.requests[-1].url.params["issue_date[gte]"] == "2026-01-02"
+    assert api.requests[-1].url.params["issue_date[gte]"] == "2026-10-08"
 
     # Part 164 changed: downloaded again.
     api.json("/api/versioner/v1/titles.json", titles("2026-10-09", "2026-10-09"))

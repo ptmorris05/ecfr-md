@@ -25,7 +25,7 @@ from urllib.parse import quote
 from ecfr_md import markdown
 from ecfr_md.address import Address
 from ecfr_md.citation import Citation
-from ecfr_md.config import BASE_URL, DISCLAIMER, __version__
+from ecfr_md.config import DISCLAIMER, SITE_URL, __version__
 from ecfr_md.params import Hierarchy, as_hierarchy
 
 # XML division types that are API hierarchy levels.
@@ -57,6 +57,7 @@ class Source:
     # The date was asked for and is older than the latest: a snapshot that
     # ``sync`` leaves alone.
     pinned: bool = False
+    site: str = SITE_URL  # The eCFR web site that page links go to.
 
 
 def web_url(
@@ -64,6 +65,7 @@ def web_url(
     date: dt.date | None,
     hierarchy: Hierarchy,
     paragraph: tuple[str, ...] = (),
+    site: str = SITE_URL,
 ) -> str:
     """The eCFR page showing this text, e.g. .../on/2024-01-01/title-45/section-1.1."""
     h = hierarchy
@@ -82,7 +84,7 @@ def web_url(
     when = f"on/{date}" if date else "current"
     # Segments are quoted whole: an appendix name can contain "/".
     segments = [quote(p, safe="") for p in path]
-    url = "/".join([BASE_URL, when, f"title-{title}", *segments])
+    url = "/".join([site.rstrip("/"), when, f"title-{title}", *segments])
     if paragraph and "section" in h:
         url += f"#p-{h['section']}" + "".join(f"({m})" for m in paragraph)
     return url
@@ -100,10 +102,16 @@ def page_path(el: ET.Element | None) -> str | None:
 
 
 def page_url(
-    page: str, date: dt.date | None, hierarchy: Hierarchy, paragraph: tuple[str, ...]
+    page: str,
+    date: dt.date | None,
+    hierarchy: Hierarchy,
+    paragraph: tuple[str, ...],
+    site: str = SITE_URL,
 ) -> str:
     when = f"/on/{date}" if date else "/current"
-    url = BASE_URL + quote(page.replace("/on/_SUBSTITUTE_DATE_", when), safe="/")
+    url = site.rstrip("/") + quote(
+        page.replace("/on/_SUBSTITUTE_DATE_", when), safe="/"
+    )
     if paragraph and "section" in hierarchy:
         url += f"#p-{hierarchy['section']}" + "".join(f"({m})" for m in paragraph)
     return url
@@ -127,9 +135,9 @@ def provenance(
     ``address`` or ``layout``.
     """
     if page:
-        url = page_url(page, source.date, hierarchy, paragraph)
+        url = page_url(page, source.date, hierarchy, paragraph, source.site)
     else:
-        url = web_url(source.title, source.date, hierarchy, paragraph)
+        url = web_url(source.title, source.date, hierarchy, paragraph, source.site)
     if address is None:
         address = str(Address(source.title, hierarchy, paragraph))
     new = layout >= markdown.LAYOUT
@@ -222,7 +230,7 @@ def subject_group_citation(parent: str, heading: str) -> str:
 def subject_group_url(source: Source, hierarchy: Hierarchy, identifier: str) -> str:
     """The eCFR addresses subject groups under their part, not their subpart."""
     above = {k: v for k, v in hierarchy.items() if k in URL_LEVELS and k != "subpart"}
-    page = web_url(source.title, source.date, as_hierarchy(above))
+    page = web_url(source.title, source.date, as_hierarchy(above), site=source.site)
     return f"{page}/subject-group-{quote(identifier)}"
 
 

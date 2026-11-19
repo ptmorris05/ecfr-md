@@ -6,6 +6,10 @@ eCFR, including corrections applied to past dates, is issued after that token,
 so one request for "versions issued since the token" shows which entries are
 still current. Entries are written to a temporary file and renamed, so an
 interrupted download leaves no partial entry.
+
+Keys include the host the text came from, so text from a mirror never mixes
+with the official text. (Entries from the official eCFR keep the keys they
+had before hosts were part of them, so existing caches stay valid.)
 """
 
 import datetime as dt
@@ -19,6 +23,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ecfr_md.params import Hierarchy
+
+OFFICIAL_HOST = "www.ecfr.gov"  # Keys for its text don't name it.
 
 
 def default_directory() -> Path:
@@ -47,12 +53,20 @@ class Store:
         self.max_age = max_age
 
     def find(
-        self, kind: str, title: int, hierarchy: Hierarchy, date: dt.date
+        self,
+        kind: str,
+        title: int,
+        hierarchy: Hierarchy,
+        date: dt.date,
+        host: str = OFFICIAL_HOST,
     ) -> list[Entry]:
         """Entries that may hold this text: one for the exact date, and the latest."""
         if self.directory is None:
             return []
-        keys = [_key(kind, title, hierarchy, date), _key(kind, title, hierarchy, None)]
+        keys = [
+            _key(kind, title, hierarchy, date, host),
+            _key(kind, title, hierarchy, None, host),
+        ]
         return [entry for key in keys if (entry := self._read(key)) is not None]
 
     def put(
@@ -67,13 +81,14 @@ class Store:
         latest: bool,
         url: str,
         retrieved: dt.datetime,
+        host: str = OFFICIAL_HOST,
     ) -> Entry | None:
         """Copy a downloaded file into the store; ``latest`` also files it as such."""
         if self.directory is None:
             return None
-        keys = [_key(kind, title, hierarchy, date)]
+        keys = [_key(kind, title, hierarchy, date, host)]
         if latest:
-            keys.append(_key(kind, title, hierarchy, None))
+            keys.append(_key(kind, title, hierarchy, None, host))
         entry = None
         for key in keys:
             path = self.directory / key
@@ -128,11 +143,16 @@ class Store:
         )
 
 
-def _key(kind: str, title: int, hierarchy: Hierarchy, date: dt.date | None) -> str:
-    """A file name for a piece of text: title-45/<hash of hierarchy and date>."""
+def _key(
+    kind: str, title: int, hierarchy: Hierarchy, date: dt.date | None, host: str
+) -> str:
+    """A file name for a piece of text: title-45/<hash of host, hierarchy and date>."""
     where = json.dumps(sorted(hierarchy.items()))
     when = date.isoformat() if date else "latest"
-    digest = hashlib.sha256(f"{kind}|{where}|{when}".encode()).hexdigest()[:32]
+    what = f"{kind}|{where}|{when}"
+    if host != OFFICIAL_HOST:
+        what = f"{host}|{what}"
+    digest = hashlib.sha256(what.encode()).hexdigest()[:32]
     return f"title-{title}/{digest}"
 
 

@@ -21,14 +21,21 @@ from __future__ import annotations
 import datetime as dt
 import difflib
 import re
+import shutil
+import tempfile
+import threading
+import weakref
 import xml.etree.ElementTree as ET
 from abc import ABC, abstractmethod
+from collections import OrderedDict
 from collections.abc import Iterator, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from functools import cached_property
 from pathlib import Path, PurePosixPath
-from typing import Any, ClassVar, Literal, overload
+from typing import Any, BinaryIO, ClassVar, Literal, overload
+from xml.parsers import expat
+from xml.sax.saxutils import quoteattr
 
 from ecfr_md import markdown
 from ecfr_md.address import POSITIONS, Address, marker_at, relative, walk
@@ -129,6 +136,12 @@ EXAMPLE_START = re.compile(r"[*\s]*(?:Example|Illustration)s?(?:\s+\d+)?\s*[.:*\
 
 ITALIC_LEVELS = (5, 6)
 LOOKAHEAD = 200  # Markers read ahead to tell (i) the letter from (i) the numeral.
+# A part of a large division read from disk when needed: its file's name.
+PART_FILE = "ecfr-md-part"
+DIV = re.compile(r"DIV\d+$")
+# Bytes of part XML a large division keeps parsed in memory (several times
+# as much once parsed); a larger part is kept alone.
+PARTS_KEPT = 8_000_000
 # Jupyter shows a node's Markdown; whole parts would swamp the notebook.
 REPR_MAX_CHARS = 20_000
 REPR_HINT = " — use .to_markdown()"
@@ -472,24 +485,27 @@ class Node(ABC):
         return matches[0] if matches else None
 
     def _nearest(self, identifier: str | None, wanted: Level | None) -> list[Node]:
-        """All matches at the shallowest depth that has any.
+        """All matches at the shallowest depth that has any, in document order.
 
         Identifiers match exactly; failing that, ignoring case ("subpart e").
+        The search goes depth first, so a large division's parts are read
+        one at a time.
         """
         for same in (str.__eq__, lambda a, b: a.casefold() == b.casefold()):
-            layer = list(self.children)
-            while layer:
-                matches = [
-                    n
-                    for n in layer
-                    if (identifier is None or same(n.identifier, identifier))
-                    and (wanted is None or n.level is wanted)
-                ]
-                if matches:
-                    return matches
-                layer = [c for n in layer if _descend(n, wanted) for c in n.children]
-            if identifier is None:
-                break
+            found: list[Node] = []
+            depth = 0  # Of the matches found; 0 while there are none.
+            pending = [(child, 1) for child in reversed(self.children)]
+            while pending:
+                node, at = pending.pop()  # Never deeper than a match so far.
+                if (identifier is None or same(node.identifier, identifier)) and (
+                    wanted is None or node.level is wanted
+                ):
+                    found = [*found, node] if at == depth else [node]
+                    depth = at
+                elif _descend(node, wanted) and not (depth and at >= depth):
+                    pending += [(child, at + 1) for child in reversed(node.children)]
+            if found or identifier is None:
+                return found
         return []
 
     def _walk(self, cited: Citation) -> Node:
@@ -544,24 +560,41 @@ class Node(ABC):
 
 
 class Division(Node):
-    """A level above paragraphs (title to section), backed by an XML ``DIV``."""
+    """A level above paragraphs (title to section), backed by an XML ``DIV``.
+
+    In a division above the part from a large download, each part's XML is
+    read from disk when it's needed, and only the most recent are kept.
+    """
 
     def __init__(
         self, element: ET.Element, parent: Node | None, source: Source
     ) -> None:
         super().__init__(element.get("N", ""), parent, source)
-        self.element = element
+        self._element = element
+        self._parts: _Parts | None = getattr(parent, "_parts", None)
+
+    @property
+    def element(self) -> ET.Element:
+        """The XML ``DIV`` of this division."""
+        if self._parts is not None and PART_FILE in self._element.attrib:
+            return self._parts.load(self._element)
+        return self._element
 
     @property
     def heading(self) -> str:
-        return markdown.plain_text(self.element.find("HEAD"))
+        return markdown.plain_text(self._element.find("HEAD"))
 
     @property
     def children(self) -> tuple[Node, ...]:
+        if self._parts is not None and PART_FILE in self._element.attrib:
+            return self._child_nodes()  # Not kept: they hold the part's XML.
         return self._divisions
 
     @cached_property
     def _divisions(self) -> tuple[Node, ...]:
+        return self._child_nodes()
+
+    def _child_nodes(self) -> tuple[Node, ...]:
         return tuple(
             _division(child, self, self.source)
             for child in self.element
@@ -570,25 +603,33 @@ class Division(Node):
 
     @property
     def slug(self) -> str:
-        return markdown.segment(self.element)
+        return markdown.segment(self._element)
 
     @property
     def _page(self) -> str | None:
-        return page_path(self.element)
+        return page_path(self._element)
 
     @property
     def _raw(self) -> str:
         return ET.tostring(self.element, encoding="unicode")
 
+    def _events(self) -> Iterator[tuple[str, ET.Element]]:
+        """XML events for the whole division, parts read from disk included."""
+        if self._parts is None:
+            return markdown.element_events(self.element)
+        return self._parts.events(self.element)
+
     def _markdown(self) -> str:
-        return markdown.render(self.element)
+        blocks: list[str] = []
+        markdown.write_document(self._events(), blocks.append)
+        return markdown.join(blocks)
 
     def to_markdown_tree(self) -> dict[PurePosixPath, str]:
         files: dict[PurePosixPath, str] = {}
         markdown.write_tree(
-            markdown.element_events(self.element),
+            self._events(),
             lambda path, body, *_: files.__setitem__(path, body),
-            names=markdown.tree_names(markdown.element_events(self.element)),
+            names=markdown.tree_names(self._events()),
         )
         return files
 
@@ -613,13 +654,13 @@ class Division(Node):
             return super().save(path, front_matter=front_matter)
         base = self.parent.hierarchy if self.parent else self.source.hierarchy
         return save_events(
-            markdown.element_events(self.element),
+            self._events(),
             self.source,
             Path(path),
             tree=True,
             front_matter=front_matter,
             base=base,
-            names=markdown.tree_names(markdown.element_events(self.element)),
+            names=markdown.tree_names(self._events()),
         )
 
 
@@ -847,6 +888,209 @@ def load(
     hierarchy = hierarchy or as_hierarchy({})
     source = Source(title, date, hierarchy, url, retrieved, pinned)
     return _division(divisions[0], None, source)
+
+
+def load_file(
+    path: Path,
+    *,
+    title: int,
+    date: dt.date | None = None,
+    hierarchy: Hierarchy | None = None,
+    url: str | None = None,
+    retrieved: dt.datetime | None = None,
+    pinned: bool = False,
+    lazy: bool = False,
+    images: str | None = None,
+    site: str | None = None,
+) -> Division:
+    """Like :func:`load`, for XML in a file, read without a copy in memory.
+
+    With ``lazy``, each part is written to a file of its own and parsed only
+    when needed, so a large title takes little memory to navigate. Image
+    links are made absolute on ``images``; page links go to ``site``.
+    """
+    hierarchy = hierarchy or as_hierarchy({})
+    source = Source(title, date, hierarchy, url, retrieved, pinned)
+    if site:
+        source = replace(source, site=site)
+    if not lazy:
+        root = _outer(_parse(path))
+        if images:
+            markdown.absolute_images(root, images)
+        return _division(root, None, source)
+    directory = Path(tempfile.mkdtemp(prefix="ecfr-md-parts-"))
+    try:
+        skeleton = _split(path, directory)
+    except BaseException:
+        shutil.rmtree(directory, ignore_errors=True)
+        raise
+    parts = _Parts(directory, images)
+    weakref.finalize(parts, shutil.rmtree, directory, ignore_errors=True)
+    if images:
+        markdown.absolute_images(skeleton, images)
+    node = _division(skeleton, None, source)
+    node._parts = parts
+    return node
+
+
+def _parse(path: Path) -> ET.Element:
+    try:
+        return ET.parse(path).getroot()
+    except ET.ParseError as exc:
+        raise ResponseFormatError(f"Invalid eCFR XML: {exc}") from exc
+
+
+def _outer(root: ET.Element) -> ET.Element:
+    divisions = markdown.outer_divisions(root)
+    if not divisions:
+        raise ResponseFormatError("The eCFR XML contains no CFR content")
+    return divisions[0]
+
+
+def _split(path: Path, directory: Path) -> ET.Element:
+    """Copy each part in an XML file to a file of its own, and return the
+    rest: the divisions above the part, with only each part's heading.
+
+    Parts are found by their place in the file, without parsing them into
+    elements, so even the largest part takes no memory to split off.
+    """
+    spans = _part_spans(path)
+    skeleton = directory / "skeleton.xml"
+    with path.open("rb") as source, skeleton.open("wb") as rest:
+        position = 0
+        for count, span in enumerate(spans):
+            _copy_span(source, rest, position, span.start)
+            end = _end_of_tag(source, span.close, span.tag)
+            with (directory / f"{count}.xml").open("wb") as part:
+                _copy_span(source, part, span.start, end)
+            head = b""
+            if span.head[1]:
+                head_end = _end_of_tag(source, span.head[1], "HEAD")
+                source.seek(span.head[0])
+                head = source.read(head_end - span.head[0])
+            attrs = " ".join(f"{k}={quoteattr(v)}" for k, v in span.attrs.items())
+            stub = f'<{span.tag} {attrs} {PART_FILE}="{count}.xml">'
+            rest.write(stub.encode() + head + f"</{span.tag}>".encode())
+            position = end
+        source.seek(position)
+        shutil.copyfileobj(source, rest)
+    return _outer(_parse(skeleton))
+
+
+@dataclass
+class _Span:
+    """Where a part is in a file: its start and end tags, and its HEAD's."""
+
+    tag: str
+    attrs: dict[str, str]
+    start: int
+    depth: int  # Elements around it.
+    close: int = 0
+    head: tuple[int, int] = (0, 0)
+
+
+def _part_spans(path: Path) -> list[_Span]:
+    """Where each part is in an XML file, by byte offsets."""
+    parser = expat.ParserCreate()
+    spans: list[_Span] = []
+    open_tags: list[tuple[str, int]] = []
+    part: _Span | None = None
+
+    def start(name: str, attrs: dict[str, str]) -> None:
+        nonlocal part
+        at = parser.CurrentByteIndex
+        if part is None and attrs.get("TYPE") == "PART" and DIV.match(name):
+            part = _Span(name, attrs, at, depth=len(open_tags))
+        open_tags.append((name, at))
+
+    def end(name: str) -> None:
+        nonlocal part
+        _, at = open_tags.pop()
+        if part is None:
+            return
+        if name == "HEAD" and len(open_tags) == part.depth + 1 and not part.head[1]:
+            part.head = (at, parser.CurrentByteIndex)
+        elif len(open_tags) == part.depth:
+            part.close = parser.CurrentByteIndex
+            spans.append(part)
+            part = None
+
+    parser.StartElementHandler = start
+    parser.EndElementHandler = end
+    try:
+        with path.open("rb") as f:
+            parser.ParseFile(f)
+    except expat.ExpatError as exc:
+        raise ResponseFormatError(f"Invalid eCFR XML: {exc}") from exc
+    return spans
+
+
+def _copy_span(source: BinaryIO, out: BinaryIO, start: int, end: int) -> None:
+    source.seek(start)
+    left = end - start
+    while left > 0:
+        chunk = source.read(min(left, 1 << 20))
+        out.write(chunk)
+        left -= len(chunk)
+
+
+def _end_of_tag(source: BinaryIO, at: int, name: str) -> int:
+    """Where an element's end tag, at ``at``, ends (after its ">"). An empty
+    element (``<HEAD/>``) has none: expat puts its end just after it."""
+    source.seek(at)
+    tag = source.read(len(name) + 256)
+    closing = f"</{name}".encode()
+    if tag.startswith(closing) and tag[len(closing) : len(closing) + 1] in b"> \t\r\n":
+        return at + tag.index(b">") + 1
+    return at
+
+
+class _Parts:
+    """The parts of a large division, each in a file in ``directory``.
+
+    Parsed parts are kept, most recent first, up to ``PARTS_KEPT`` bytes of
+    their XML; the one in use is always kept.
+    """
+
+    def __init__(self, directory: Path, images: str | None) -> None:
+        self.directory = directory
+        self.images = images
+        self._kept: OrderedDict[str, tuple[ET.Element, int]] = OrderedDict()
+        self._lock = threading.Lock()
+
+    def load(self, stub: ET.Element) -> ET.Element:
+        name = stub.get(PART_FILE, "")
+        with self._lock:
+            if name in self._kept:
+                self._kept.move_to_end(name)
+                return self._kept[name][0]
+        path = self.directory / name
+        size = path.stat().st_size
+        with self._lock:  # Make room first: parsing takes memory too.
+            while self._kept and size + sum(n for _, n in self._kept.values()) > (
+                PARTS_KEPT
+            ):
+                self._kept.popitem(last=False)
+        part = _parse(path)
+        if self.images:
+            markdown.absolute_images(part, self.images)
+        with self._lock:
+            self._kept[name] = (part, size)
+        return part
+
+    def events(self, root: ET.Element) -> Iterator[tuple[str, ET.Element]]:
+        """Events for ``root``, with each part's own XML in its place."""
+        skipping: ET.Element | None = None
+        for event, el in markdown.element_events(root):
+            if skipping is not None:
+                if event == "end" and el is skipping:
+                    skipping = None
+                continue
+            if event == "start" and PART_FILE in el.attrib:
+                yield from markdown.element_events(self.load(el))
+                skipping = el
+                continue
+            yield event, el
 
 
 def _division(element: ET.Element, parent: Node | None, source: Source) -> Division:

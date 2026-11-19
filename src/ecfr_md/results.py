@@ -1,5 +1,5 @@
 """What ``outline``, ``changes`` and ``search`` return: plain objects with
-citations and clean headings. The API's response is kept in ``.raw``.
+citations and clean headings. The API's response is in ``.raw``.
 
 ``to_dict()`` turns each into a dict for ``json.dumps``, with the same keys as
 :meth:`Node.to_dict <ecfr_md.document.Node.to_dict>`. Use it rather than
@@ -18,6 +18,7 @@ from typing import Any, Literal
 from ecfr_md import models
 from ecfr_md.address import Address, relative, walk
 from ecfr_md.citation import KEYWORDS, Citation
+from ecfr_md.config import SITE_URL
 from ecfr_md.document import (
     REPR_MAX_CHARS,
     Level,
@@ -57,7 +58,7 @@ class Outline:
     reserved: bool
     size: int | None
     """Size of the full text in bytes, where the eCFR gives it (parts)."""
-    raw: models.Node = field(repr=False)
+    _structure: models.Structure = field(repr=False)
     children: tuple[Outline, ...] = field(default=(), repr=False)
     date: dt.date | None = None
     """The point-in-time date of the outline, if known."""
@@ -75,26 +76,34 @@ class Outline:
         """The entry this one is in, or None at the top of the outline."""
         return self._parent
 
+    @property
+    def raw(self) -> models.Node:
+        """The API's structure node for this entry, with everything below it."""
+        return self._structure.raw()
+
     @classmethod
     def build(
         cls,
-        node: models.Node,
+        node: models.Structure | models.Node,
         title: int,
         hierarchy: Mapping[str, object] | None = None,
         parent: Outline | None = None,
         *,
         date: dt.date | None = None,
+        site: str = SITE_URL,
     ) -> Outline:
         """An outline from the API's structure, with citations and links."""
+        if isinstance(node, models.Node):
+            node = models.Structure.of(node)
         levels: dict[str, object] = dict(hierarchy or {})
         if node.type in KEYWORDS.values() and node.identifier:
             levels[node.type] = node.identifier
         located = as_hierarchy(levels)
         group = node.identifier if node.type == "subject_group" else None
         if group:
-            url = subject_group_url(Source(title, date), located, group)
+            url = subject_group_url(Source(title, date, site=site), located, group)
         else:
-            url = web_url(title, date, located)
+            url = web_url(title, date, located, site=site)
         entry = cls(
             level=Level(node.type) if node.type in Level else node.type,
             identifier=node.identifier,
@@ -102,14 +111,15 @@ class Outline:
             citation=str(Citation(title, located)),
             reserved=node.reserved,
             size=node.size,
-            raw=node,
+            _structure=node,
             date=date,
             url=url,
             address=str(Address(title, located, group=group)),
         )
         entry._parent = parent
         entry.children = tuple(
-            cls.build(child, title, levels, entry, date=date) for child in node.children
+            cls.build(child, title, levels, entry, date=date, site=site)
+            for child in node.children
         )
         return entry
 
@@ -314,8 +324,8 @@ def _level_or_type(kind: str) -> Level | str:
     return Level(name) if name in Level else kind
 
 
-def _page(title: str | None, date: dt.date, located: Hierarchy) -> str:
-    return web_url(int(title or 0), date, located)
+def _page(title: str | None, date: dt.date, located: Hierarchy, site: str) -> str:
+    return web_url(int(title or 0), date, located, site=site)
 
 
 def _address(title: str | None, located: Mapping[str, str | None]) -> str:
@@ -342,9 +352,11 @@ class TitleInfo:
     processing: bool
     """The eCFR is applying updates, so the latest text may still change."""
     raw: models.Title = field(repr=False)
+    site: str = field(default=SITE_URL, repr=False)
+    """The eCFR web site ``url`` links to."""
 
     @classmethod
-    def from_model(cls, title: models.Title) -> TitleInfo:
+    def from_model(cls, title: models.Title, site: str = SITE_URL) -> TitleInfo:
         return cls(
             number=title.number,
             name=title.name,
@@ -353,6 +365,7 @@ class TitleInfo:
             reserved=title.reserved,
             processing=title.processing_in_progress,
             raw=title,
+            site=site,
         )
 
     @property
@@ -373,7 +386,7 @@ class TitleInfo:
     @property
     def url(self) -> str:
         """The title's eCFR page."""
-        return web_url(self.number, self.latest, as_hierarchy({}))
+        return web_url(self.number, self.latest, as_hierarchy({}), site=self.site)
 
     def to_dict(self, *, include_raw: bool = False) -> dict[str, Any]:
         """This title as a dict ready for ``json.dumps``.
@@ -416,9 +429,13 @@ class Change:
     """When the change took effect."""
     kind: Literal["substantive", "editorial", "removed"]
     raw: models.ContentVersion = field(repr=False)
+    site: str = field(default=SITE_URL, repr=False)
+    """The eCFR web site ``url`` links to."""
 
     @classmethod
-    def from_version(cls, version: models.ContentVersion) -> Change:
+    def from_version(
+        cls, version: models.ContentVersion, site: str = SITE_URL
+    ) -> Change:
         name = " ".join(version.name.split())
         if version.removed:
             kind = "removed"
@@ -434,6 +451,7 @@ class Change:
             effective=version.date,
             kind=kind,
             raw=version,
+            site=site,
         )
 
     @property
@@ -458,7 +476,7 @@ class Change:
         """The eCFR page showing the text as of this change."""
         key = "appendix" if self.level == Level.APPENDIX else "section"
         located = as_hierarchy({"part": self.raw.part, key: self.identifier})
-        return _page(self.raw.title, self.effective, located)
+        return _page(self.raw.title, self.effective, located, self.site)
 
     def to_dict(self, *, include_raw: bool = False) -> dict[str, Any]:
         """This change as a dict ready for ``json.dumps``.
@@ -499,9 +517,11 @@ class Match:
     ends_on: dt.date | None
     """When this text was replaced, or None if it is current."""
     raw: models.SearchResult = field(repr=False)
+    site: str = field(default=SITE_URL, repr=False)
+    """The eCFR web site ``url`` links to."""
 
     @classmethod
-    def from_result(cls, result: models.SearchResult) -> Match:
+    def from_result(cls, result: models.SearchResult, site: str = SITE_URL) -> Match:
         h = result.hierarchy
         return cls(
             citation=f"{h.title} CFR {h.section or h.appendix}",
@@ -510,6 +530,7 @@ class Match:
             starts_on=result.starts_on,
             ends_on=result.ends_on,
             raw=result,
+            site=site,
         )
 
     @property
@@ -540,7 +561,7 @@ class Match:
         h = self.raw.hierarchy
         located = {"part": h.part, self.level.value: self.identifier}
         hierarchy = as_hierarchy({k: v for k, v in located.items() if v})
-        return _page(h.title, self.starts_on, hierarchy)
+        return _page(h.title, self.starts_on, hierarchy, self.site)
 
     def to_dict(self, *, include_raw: bool = False) -> dict[str, Any]:
         """This match as a dict ready for ``json.dumps``.

@@ -7,8 +7,9 @@ The public API is what this module exports, plus the response models in
 >>> section = ecfr_md.get("45 CFR 164.502")
 >>> ecfr_md.save("45 CFR Part 164", "hipaa.md")
 
-The module-level functions share one client with default settings. For other
-settings, or to close connections when done, use :class:`ECFR`:
+The module-level functions share one client, with settings from the config
+file and ``ECFR_MD_*`` variables; ``ecfr_md.configure(...)`` changes them. For
+a client of your own, or to close connections when done, use :class:`ECFR`:
 
 >>> from ecfr_md import ECFR, Settings
 >>> with ECFR(Settings(user_agent="my-app/1.0")) as ecfr:
@@ -61,6 +62,7 @@ from ecfr_md.results import Change, Match, Matches, Outline, TitleInfo
 from ecfr_md.shortcuts import (
     changes,
     compare,
+    configure,
     get,
     get_many,
     outline,
@@ -122,6 +124,7 @@ __all__ = [
     "__version__",
     "changes",
     "compare",
+    "configure",
     "get",
     "get_many",
     "load",

@@ -5,6 +5,7 @@ the common tasks. The three API services map onto ``ECFR.api.admin``,
 ``ECFR.api.search`` and ``ECFR.api.versioner``; each method calls one endpoint.
 """
 
+import contextlib
 import datetime as dt
 import difflib
 import functools
@@ -12,18 +13,22 @@ import inspect
 import logging
 import os
 import re
+import shutil
 import tempfile
 import threading
 import time
 import warnings
 import xml.etree.ElementTree as ET
+from collections import OrderedDict
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
-from contextlib import ExitStack, contextmanager
+from contextlib import AbstractContextManager, ExitStack, contextmanager
 from dataclasses import dataclass, replace
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import (
     Annotated,
+    BinaryIO,
     Literal,
     Self,
     Unpack,
@@ -43,7 +48,7 @@ from tenacity import (
     wait_exponential_jitter,
 )
 
-from ecfr_md import models
+from ecfr_md import models, sources
 from ecfr_md.address import (
     APPENDIX_KEY,
     Address,
@@ -51,12 +56,13 @@ from ecfr_md.address import (
     same_identifier,
     walk,
 )
+from ecfr_md.bulk import normalize
 from ecfr_md.cache import Store, default_directory
 from ecfr_md.citation import Citation
 from ecfr_md.compare import Comparison
 from ecfr_md.compare import compare as compare_texts
 from ecfr_md.config import RETRY_STATUS_CODES, SPLIT_ABOVE, Settings
-from ecfr_md.document import Node, Source, load, save_events
+from ecfr_md.document import Node, Source, load_file, save_events
 from ecfr_md.errors import (
     AmbiguousNodeError,
     APIError,
@@ -74,7 +80,7 @@ from ecfr_md.errors import (
     TitleNotFoundError,
     api_error,
 )
-from ecfr_md.markdown import DIV_TAG, LAYOUT, file_events, tree_names
+from ecfr_md.markdown import DIV_TAG, LAYOUT, file_events, images_on, tree_names
 from ecfr_md.network import Limiter, Throttle
 from ecfr_md.params import (
     DateLike,
@@ -121,6 +127,8 @@ INCOMPLETE = frozenset({"subtitle", "chapter", "subchapter", "subpart", "appendi
 # A subpart is never added, since an appendix "to Subpart C" isn't inside it.
 ABOVE_PART = ("subtitle", "chapter", "subchapter", "part")
 MAX_PER_PAGE = 1000  # Search results per request.
+OUTLINES = 8  # Title outlines kept in memory; a large one takes about 10 MB.
+CHANGE_LISTS = 64  # Lists of changes since a date, kept to check the cache.
 MAX_SLOW_DOWNS = 10  # 429s waited out for one request before giving up.
 
 # Structure node types above the part level, as XML division tags.
@@ -131,10 +139,23 @@ DIVISIONS = {
     "subchapter": ("DIV4", "SUBCHAP"),
 }
 XML_DECLARATION = re.compile(rb"^\s*<\?xml[^>]*\?>")
+COPY_CHUNK = 1 << 20
+# Structure node types, as XML division types.
+XML_TYPES = {
+    "subtitle": "SUBTITLE",
+    "chapter": "CHAPTER",
+    "subchapter": "SUBCHAP",
+    "part": "PART",
+    "subpart": "SUBPART",
+    "subject_group": "SUBJGRP",
+    "section": "SECTION",
+    "appendix": "APPENDIX",
+}
+LEVEL_TYPES = frozenset(XML_TYPES.values())
 TAG = re.compile(r"<[^>]+>")  # Some structure labels contain raw markup.
 
 
-def _reserved(node: models.Node) -> bool:
+def _reserved(node: models.Structure) -> bool:
     """Reserved, including placeholders like "Parts 55-58 [Reserved]" (id "S 55")."""
     return node.reserved or "[Reserved]" in node.label
 
@@ -158,12 +179,12 @@ def _above_part(cited: Citation) -> bool:
     return not {"part", "subpart", "section", "appendix"} & cited.hierarchy.keys()
 
 
-def _locate(structure: models.Node, cited: Citation) -> models.Node:
+def _locate(structure: models.Structure, cited: Citation) -> models.Structure:
     """The structure node a citation points to, at any level."""
     return _path(structure, cited)[-1]
 
 
-def _path(structure: models.Node, cited: Citation) -> list[models.Node]:
+def _path(structure: models.Structure, cited: Citation) -> list[models.Structure]:
     """Structure nodes from the title down to what a citation names.
 
     Each level the citation gives must match exactly one node below the level
@@ -201,13 +222,13 @@ def _path(structure: models.Node, cited: Citation) -> list[models.Node]:
 
 
 def _appendices(
-    node: models.Node, wanted: str, subpart: str | None
-) -> list[list[models.Node]]:
+    node: models.Structure, wanted: str, subpart: str | None
+) -> list[list[models.Structure]]:
     """Chains down to an appendix, telling "Appendix A to Part 164" from
     "Appendix A to Subpart C of Part 164", which can sit in subpart C or
     beside it."""
 
-    def belongs(chain: list[models.Node]) -> str | None:
+    def belongs(chain: list[models.Structure]) -> str | None:
         inside = next((n.identifier for n in chain if n.type == "subpart"), None)
         return appendix_subpart(chain[-1].identifier or "", inside)
 
@@ -217,7 +238,9 @@ def _appendices(
     return [c for c in found if (belongs(c) or "").casefold() == subpart.casefold()]
 
 
-def _find(node: models.Node, level: str, wanted: str) -> list[list[models.Node]]:
+def _find(
+    node: models.Structure, level: str, wanted: str
+) -> list[list[models.Structure]]:
     """Chains down to the nodes at a level that a citation or address names:
     exactly, else as addresses write identifiers ("appendix-A",
     "50-1..50-200"), else ignoring case ("subpart-e" in old file names)."""
@@ -245,7 +268,7 @@ def _find(node: models.Node, level: str, wanted: str) -> list[list[models.Node]]
     ]
 
 
-def _part_of(chain: list[models.Node]) -> str | None:
+def _part_of(chain: list[models.Structure]) -> str | None:
     return next((n.identifier for n in reversed(chain) if n.type == "part"), None)
 
 
@@ -277,7 +300,7 @@ def _normalised(cited: Citation) -> bool:
     return False
 
 
-def _chains(node: models.Node) -> Iterator[list[models.Node]]:
+def _chains(node: models.Structure) -> Iterator[list[models.Structure]]:
     """Every descendant, with the nodes between ``node`` and it."""
     for child in node.children:
         yield [child]
@@ -285,14 +308,14 @@ def _chains(node: models.Node) -> Iterator[list[models.Node]]:
             yield [child, *chain]
 
 
-def _levels(path: list[models.Node]) -> dict[str, str]:
+def _levels(path: list[models.Structure]) -> dict[str, str]:
     """API hierarchy parameters for a path of structure nodes."""
     return {n.type: n.identifier for n in path if n.type in LEVEL_KEYS and n.identifier}
 
 
 def _not_there(
-    structure: models.Node,
-    path: list[models.Node],
+    structure: models.Structure,
+    path: list[models.Structure],
     level: str,
     wanted: str,
     cited: Citation,
@@ -335,17 +358,37 @@ def _not_there(
     return message
 
 
-def _find_part(outline: models.Node, part: str) -> models.Node | None:
+def _find_part(outline: models.Structure, part: str) -> models.Structure | None:
     return next(
         (n for n in _descendants(outline) if n.type == "part" and n.identifier == part),
         None,
     )
 
 
-def _descendants(node: models.Node) -> Iterator[models.Node]:
+def _descendants(node: models.Structure) -> Iterator[models.Structure]:
     for child in node.children:
         yield child
         yield from _descendants(child)
+
+
+class Memo[K, V]:
+    """A small cache that forgets what was used least recently."""
+
+    def __init__(self, size: int) -> None:
+        self.size = size
+        self._items: OrderedDict[K, V] = OrderedDict()
+
+    def get(self, key: K) -> V | None:
+        if key in self._items:
+            self._items.move_to_end(key)
+        return self._items.get(key)
+
+    def put(self, key: K, value: V) -> V:
+        self._items[key] = value
+        self._items.move_to_end(key)
+        while len(self._items) > self.size:
+            self._items.popitem(last=False)
+        return value
 
 
 @dataclass(frozen=True)
@@ -449,7 +492,9 @@ class ECFR:
         transport: httpx2.BaseTransport | None = None,
         progress: Progress | None = None,
     ) -> None:
-        self.settings = settings = settings or Settings()
+        # Without settings, the config file and ECFR_MD_* variables apply, as
+        # on the command line.
+        self.settings = settings = settings or Settings.load()
         self.progress = progress or Progress()
         self._http = httpx2.Client(
             base_url=str(settings.base_url),
@@ -466,10 +511,19 @@ class ECFR:
         self._store = Store(
             directory if settings.cache else None, settings.cache_max_age
         )
-        # Kept for the session: the title list (briefly), outlines, change lists.
+        self.sources = {
+            "api": sources.ECFRApi(settings.base_url),
+            "bulk": sources.GovInfoBulk(settings.bulk_url),
+        }
+        self._costs = sources.Costs(settings, self._store.directory)
+        # Kept for the session: the title list (briefly), the newest outlines
+        # and change lists, and when bulk files were last modified (briefly).
         self._titles: tuple[float, models.Titles] | None = None
-        self._outlines: dict[tuple[int, dt.date], models.Node] = {}
-        self._changes: dict[tuple[int, dt.date], list[models.ContentVersion]] = {}
+        self._outlines: Memo[tuple[int, dt.date], models.Structure] = Memo(OUTLINES)
+        self._changes: Memo[tuple[int, dt.date], list[models.ContentVersion]] = Memo(
+            CHANGE_LISTS
+        )
+        self._modified: dict[int, tuple[float, dt.date | None]] = {}
         self._memo_lock = threading.Lock()
         self._retrying = Retrying(
             stop=self._stop,
@@ -487,6 +541,7 @@ class ECFR:
         self.close()
 
     def close(self) -> None:
+        self._costs.save()
         self._http.close()
 
     def _check_open(self) -> None:
@@ -531,14 +586,18 @@ class ECFR:
         date = self._when(cited.title, date)
         cited = self._complete(cited, date)
         with self._full_text(cited, date) as download:
-            node = load(
-                download.path.read_bytes(),
+            node = load_file(
+                download.path,
                 title=cited.title,
                 date=date,
                 hierarchy=cited.hierarchy,
                 url=download.url,
                 retrieved=download.retrieved,
                 pinned=pinned,
+                # Above the part, each part is read when needed.
+                lazy=_above_part(cited),
+                images=self.settings.images,
+                site=self.settings.site_url,
             )
         if not cited.paragraph and address.group is None:
             return node
@@ -561,7 +620,8 @@ class ECFR:
             memo = self._titles
             if memo is None or time.monotonic() - memo[0] >= TITLES_TTL:
                 memo = self._titles = (time.monotonic(), self.api.versioner.titles())
-        return [TitleInfo.from_model(t) for t in memo[1].titles]
+        site = self.settings.site_url
+        return [TitleInfo.from_model(t, site) for t in memo[1].titles]
 
     @validated
     def outline(
@@ -598,7 +658,9 @@ class ECFR:
                 raise DateOutOfRangeError(reason) from exc
             raise
         path = _path(structure, cited)
-        entry = Outline.build(path[-1], cited.title, _levels(path), date=date)
+        entry = Outline.build(
+            path[-1], cited.title, _levels(path), date=date, site=self.settings.site_url
+        )
         if address.group is None:
             return entry
         return walk(entry, replace(address, hierarchy={}, paragraph=()), {})
@@ -692,7 +754,7 @@ class ECFR:
             page += 1
         by_section = sorted(versions, key=lambda v: v.identifier)
         newest = sorted(by_section, key=lambda v: (v.issue_date, v.date), reverse=True)
-        return [Change.from_version(v) for v in newest]
+        return [Change.from_version(v, self.settings.site_url) for v in newest]
 
     @validated
     def search(
@@ -741,7 +803,7 @@ class ECFR:
                 query, per_page=per_page, page=page, **filters
             )
             for result in found.results:
-                match = Match.from_result(result)
+                match = Match.from_result(result, self.settings.site_url)
                 current = result.ends_on is None or all_versions
                 if current and not result.removed and match.citation not in seen:
                     seen.add(match.citation)
@@ -871,15 +933,24 @@ class ECFR:
             for i in members:
                 if (found := node.get(addresses[i])) is not None:
                     results[i] = found
-        for i in range(len(cited)):
-            if i in results:
-                continue
+
+        # The rest are fetched in parallel, as many at once as requests may be.
+        def fetch(i: int) -> Node | ECFRError:
             try:
-                results[i] = self.get(citations[i], date=date)
+                return self.get(citations[i], date=date)
             except ECFRError as exc:
-                if errors == "raise":
-                    raise
-                results[i] = exc
+                return exc
+
+        rest = [i for i in range(len(cited)) if i not in results]
+        pool = ThreadPoolExecutor(self.settings.concurrency)
+        try:
+            futures = {i: pool.submit(fetch, i) for i in rest}
+            for i in rest:
+                results[i] = found = futures[i].result()
+                if isinstance(found, ECFRError) and errors == "raise":
+                    raise found
+        finally:
+            pool.shutdown(cancel_futures=True)
         return [results[i] for i in range(len(cited))]  # type: ignore[return-value]
 
     @overload
@@ -990,9 +1061,10 @@ class ECFR:
                 download.url,
                 download.retrieved,
                 pinned,
+                site=self.settings.site_url,
             )
             files = save_events(
-                file_events(f),
+                images_on(file_events(f), self.settings.images),
                 source,
                 Path(path),
                 tree=tree,
@@ -1006,19 +1078,22 @@ class ECFR:
 
     @contextmanager
     def _download(
-        self, path: str, params: Mapping[str, object] | None = None
+        self,
+        path: str,
+        params: Mapping[str, object] | None = None,
+        *,
+        paced: bool = True,
     ) -> Iterator[Download]:
         """Stream a response body to a temporary file, with throttling and retries.
 
-        The file is deleted on exit.
+        The file is deleted on exit. ``paced=False`` is for hosts other than
+        the eCFR's, which its throttle and limit on requests don't apply to.
         """
         query = _query(params or {})
         url = str(self._http.build_request("GET", path, params=query).url)
-        fd, name = tempfile.mkstemp(prefix="ecfr-md-", suffix=".part")
-        os.close(fd)
-        partial = Path(name)
+        partial = _temporary()
         try:
-            retrieved = self._retrying(self._stream, path, query, partial)
+            retrieved = self._retrying(self._stream, path, query, partial, paced)
             yield Download(partial, url, retrieved)
         finally:
             partial.unlink(missing_ok=True)
@@ -1040,6 +1115,7 @@ class ECFR:
         hierarchy: Mapping[str, object],
         date: dt.date,
         path: str,
+        fetch: Callable[[], AbstractContextManager[Download]] | None = None,
     ) -> Iterator[Download]:
         """A dated response, from the store when the eCFR hasn't changed it since.
 
@@ -1047,14 +1123,17 @@ class ECFR:
         when downloaded, for any later date; either way only if no version of
         it was issued since. That needs at most one request per title (the
         versions issued since the copy), and none if the title is unchanged.
+        ``fetch`` downloads it from elsewhere than the API ``path``.
         """
+        download = fetch or functools.partial(self._download, path, hierarchy)
+        host = self._host(kind)
         if self._store.directory is None:
-            with self._download(path, hierarchy) as download:
-                yield download
+            with download() as fresh:
+                yield fresh
             return
         state = self._title(title)
         token = state.latest_issue_date
-        for entry in self._store.find(kind, title, as_hierarchy(hierarchy), date):
+        for entry in self._store.find(kind, title, as_hierarchy(hierarchy), date, host):
             reusable = entry.date == date or entry.token <= entry.date <= date
             if not reusable or token is None or entry.token > token:
                 continue  # A newer token than the eCFR's means it rolled back.
@@ -1062,23 +1141,42 @@ class ECFR:
                 if self._changed(title, entry.token, hierarchy):
                     continue
                 entry = self._store.refresh(entry, token)
+            logger.debug("%s from the cache", entry.url)
             self.progress.finished(entry.url, entry.path.stat().st_size, cached=True)
             yield Download(entry.path, entry.url, entry.retrieved)
             return
-        with self._download(path, hierarchy) as download:
+        with download() as fresh:
             if token is not None and not state.processing_in_progress:
                 self._store.put(
                     kind,
                     title,
                     as_hierarchy(hierarchy),
-                    download.path,
+                    fresh.path,
                     date=date,
                     token=token,
                     latest=date == state.up_to_date_as_of,
-                    url=download.url,
-                    retrieved=download.retrieved,
+                    url=fresh.url,
+                    retrieved=fresh.retrieved,
+                    host=host,
                 )
-            yield download
+            yield fresh
+
+    def _host(self, kind: str) -> str:
+        return self.sources["bulk" if kind == "bulk" else "api"].host
+
+    def _in_store(
+        self, kind: str, title: int, hierarchy: Mapping[str, object], date: dt.date
+    ) -> bool:
+        """Whether the store has this text as of the eCFR's latest issue,
+        without asking the eCFR what changed since."""
+        token = self._title(title).latest_issue_date
+        return any(
+            (entry.date == date or entry.token <= entry.date <= date)
+            and entry.token == token
+            for entry in self._store.find(
+                kind, title, as_hierarchy(hierarchy), date, self._host(kind)
+            )
+        )
 
     def _when(self, title: int, date: DateLike | None) -> dt.date:
         """The date to fetch: the one given, or the latest, but never later.
@@ -1117,6 +1215,18 @@ class ECFR:
         named = {k: found[k] for k in cited.hierarchy if k in found}
         return Citation(cited.title, as_hierarchy({**levels, **named}), cited.paragraph)
 
+    def _unchanged_since(self, citation: str, date: dt.date) -> bool:
+        """Whether the eCFR has surely issued no change to a citation since
+        its text as of ``date`` (the latest then) was downloaded."""
+        try:
+            cited = Address.parse(citation).to_citation()
+            issued = self._title(cited.title).latest_issue_date
+            if issued is not None and issued < date:
+                return True  # Nothing issued since: no request needed.
+            return not self._changed(cited.title, date, cited.hierarchy)
+        except ECFRError:
+            return False  # Can't tell; the text is compared instead.
+
     def _title(self, title: int) -> models.Title:
         """A title's dates, from a title list kept for a few minutes."""
         for entry in self.titles():
@@ -1131,20 +1241,22 @@ class ECFR:
         latest = self._title(title).up_to_date_as_of
         return latest is not None and day < latest
 
-    def _outline(self, title: int, date: dt.date) -> models.Node:
-        """A title's structure, kept for the session."""
+    def _outline(self, title: int, date: dt.date) -> models.Structure:
+        """A title's structure, kept while it's among the most recently used."""
         key = (title, date)
-        if key not in self._outlines:
-            path = f"{VERSIONER}/structure/{date}/title-{title}.json"
-            with self._stored("structure", title, {}, date, path) as download:
-                body = download.path.read_bytes()
-            try:
-                self._outlines[key] = models.Node.model_validate_json(body)
-            except ValidationError as exc:
-                raise ResponseFormatError(
-                    f"Unexpected outline of title {title}"
-                ) from exc
-        return self._outlines[key]
+        with self._memo_lock:
+            found = self._outlines.get(key)
+        if found is not None:
+            return found
+        path = f"{VERSIONER}/structure/{date}/title-{title}.json"
+        with self._stored("structure", title, {}, date, path) as download:
+            body = download.path.read_bytes()
+        try:
+            structure = models.Structure.parse(body)
+        except ValueError as exc:
+            raise ResponseFormatError(f"Unexpected outline of title {title}") from exc
+        with self._memo_lock:
+            return self._outlines.put(key, structure)
 
     def _changed(
         self, title: int, since: dt.date, hierarchy: Mapping[str, object]
@@ -1152,18 +1264,18 @@ class ECFR:
         """Whether any version touching ``hierarchy`` was issued after ``since``."""
         key = (title, since)
         with self._memo_lock:
-            if key not in self._changes:
+            versions = self._changes.get(key)
+            if versions is None:
                 after = since + dt.timedelta(days=1)
-                versions, page, pages = [], 1, 1
+                found, page, pages = [], 1, 1
                 while page <= pages:
                     result = self.api.versioner.versions(
                         title, issue_date_gte=after, page=page
                     )
-                    versions += result.content_versions
+                    found += result.content_versions
                     pages = _pages(result)
                     page += 1
-                self._changes[key] = versions
-            versions = self._changes[key]
+                versions = self._changes.put(key, found)
         if section := hierarchy.get("section"):
             return any(v.identifier == section for v in versions)
         if part := hierarchy.get("part"):
@@ -1174,37 +1286,16 @@ class ECFR:
     def _full_text(self, cited: Citation, date: dt.date) -> Iterator[Download]:
         """Download full text, explaining dates the eCFR has no text for.
 
-        The API can't serve the largest titles in one response (it times out),
-        so text above the part level is fetched part by part when it's large
-        or when the single request fails, then joined into one XML file.
+        It comes from the source :mod:`ecfr_md.sources` chooses: the eCFR
+        API, or a title's bulk file from GovInfo, falling back to the API
+        if anything goes wrong with bulk.
         """
         self.progress.fetching(str(cited), date)
-        # The API ignores subtitle, chapter and subchapter: asked for one, it
-        # returns the whole title. So such a division comes from the whole
-        # title (one request, cached for any other division in it), or part
-        # by part when the title is too large to ask for at once.
-        division = _above_part(cited) and bool(cited.hierarchy)
         with ExitStack() as stack:
             try:
-                too_large = _above_part(cited) and (
-                    self._text_size(cited, date) > SPLIT_ABOVE
-                    or self._text_size(Citation(cited.title), date) > SPLIT_ABOVE
-                )
-                if too_large:
-                    download = self._by_part(cited, date, stack)
-                else:
-                    try:
-                        scope = {} if division else dict(cited.hierarchy)
-                        download = stack.enter_context(
-                            self._text(cited.title, scope, date)
-                        )
-                        if division:
-                            download = self._extract(download, cited, date, stack)
-                    except ServerError as exc:
-                        if not _above_part(cited) or exc.status_code != 504:
-                            raise
-                        logger.info("%s timed out; fetching it part by part", cited)
-                        download = self._by_part(cited, date, stack)
+                download = self._from_bulk(cited, date, stack)
+                if download is None:
+                    download = self._from_api(cited, date, stack)
             except NotFoundError as exc:
                 if reason := self._explain_missing(cited, date):
                     raise DateOutOfRangeError(reason) from exc
@@ -1214,34 +1305,183 @@ class ECFR:
                 raise
             yield download
 
+    def _from_api(self, cited: Citation, date: dt.date, stack: ExitStack) -> Download:
+        """Text from the API.
+
+        The API can't serve the largest titles in one response (it times
+        out), so text above the part level is fetched part by part when it's
+        large or when the single request fails, then joined into one file.
+        """
+        # The API ignores subtitle, chapter and subchapter: asked for one, it
+        # returns the whole title. So such a division comes from the whole
+        # title (one request, cached for any other division in it), or part
+        # by part when the title is too large to ask for at once.
+        if self._too_large(cited, date):
+            return self._by_part(cited, date, stack)
+        division = _above_part(cited) and bool(cited.hierarchy)
+        try:
+            scope = {} if division else dict(cited.hierarchy)
+            download = stack.enter_context(self._text(cited.title, scope, date))
+        except ServerError as exc:
+            if not _above_part(cited) or exc.status_code != 504:
+                raise
+            logger.info("%s timed out; fetching it part by part", cited)
+            return self._by_part(cited, date, stack)
+        if division:
+            return self._extract(download, cited, date, stack)
+        return download
+
+    def _too_large(self, cited: Citation, date: dt.date) -> bool:
+        """Whether the API would time out on this text: above the part
+        level, and large or in a large title."""
+        return _above_part(cited) and (
+            self._text_size(cited, date) > SPLIT_ABOVE
+            or self._text_size(Citation(cited.title), date) > SPLIT_ABOVE
+        )
+
+    def _from_bulk(
+        self, cited: Citation, date: dt.date, stack: ExitStack
+    ) -> Download | None:
+        """Text cut from the title's bulk file, if that's the better source."""
+        choice = self._choose(cited, date)
+        host = self.sources[choice.source].host
+        logger.info("%s from %s: %s", cited, host, choice.reason)
+        if choice.source != "bulk":
+            return None
+        try:
+            whole = stack.enter_context(self._bulk_title(cited.title, date))
+            if not cited.hierarchy:
+                return whole
+            return self._extract(whole, cited, date, stack)
+        except (ECFRError, OSError) as exc:
+            logger.warning(
+                "Couldn't use GovInfo's bulk file of title %s (%s); using the "
+                "eCFR API instead",
+                cited.title,
+                exc,
+            )
+            return None
+
+    def _choose(self, cited: Citation, date: dt.date) -> sources.Choice:
+        """The source for some text; see :func:`ecfr_md.sources.choose`."""
+        title = cited.title
+        latest = self._title(title).up_to_date_as_of
+        past = latest is not None and date < latest
+        cached = (
+            not past
+            and self.settings.source != "api"
+            and self._in_store("bulk", title, {}, date)
+        )
+
+        def estimate() -> tuple[int, int, int]:
+            structure = self._outline(title, date)
+            size = _locate(structure, cited).size or 0
+            if self._too_large(cited, date):
+                jobs = [
+                    p for p in _plan(_locate(structure, cited)) if isinstance(p, tuple)
+                ]
+                needed = [
+                    p for p, _ in jobs if not self._in_store("full", title, p, date)
+                ]
+                return len(needed), size, structure.size or 0
+            division = _above_part(cited) and bool(cited.hierarchy)
+            scope = {} if division else cited.hierarchy
+            requests = 0 if self._in_store("full", title, scope, date) else 1
+            return requests, size, structure.size or 0
+
+        return sources.choose(
+            self.settings,
+            self._costs,
+            past=past,
+            cached=cached,
+            single=not _above_part(cited),
+            estimate=estimate,
+            current=lambda: self._bulk_current(title),
+        )
+
+    @contextmanager
+    def _bulk_title(self, title: int, date: dt.date) -> Iterator[Download]:
+        """A title's bulk file in the API's dialect, from the store when current."""
+        url = self.sources["bulk"].title_url(title)
+        fetch = functools.partial(self._bulk_download, title, date, url)
+        with self._stored("bulk", title, {}, date, url, fetch) as download:
+            yield download
+
+    @contextmanager
+    def _bulk_download(self, title: int, date: dt.date, url: str) -> Iterator[Download]:
+        """Download a title's bulk file and normalize it (:mod:`ecfr_md.bulk`)."""
+        structure = self._outline(title, date)
+        target = _temporary()
+        try:
+            with (
+                self._download(url, paced=False) as raw,
+                raw.path.open("rb") as source,
+                target.open("wb") as out,
+            ):
+                normalize(source, out, structure)
+            self._costs.save()
+            yield Download(target, raw.url, raw.retrieved)
+        finally:
+            target.unlink(missing_ok=True)
+
+    def _bulk_current(self, title: int) -> bool:
+        """Whether GovInfo's file of a title has the eCFR's latest changes:
+        it was modified on or after the title's latest issue date. Asked
+        with a HEAD request, whose answer is kept a few minutes."""
+        latest = self._title(title).latest_issue_date
+        with self._memo_lock:
+            memo = self._modified.get(title)
+        if memo is None or time.monotonic() - memo[0] >= TITLES_TTL:
+            memo = (time.monotonic(), self._last_modified(title))
+            with self._memo_lock:
+                self._modified[title] = memo
+        return memo[1] is not None and latest is not None and memo[1] >= latest
+
+    def _last_modified(self, title: int) -> dt.date | None:
+        url = self.sources["bulk"].title_url(title)
+        self._check_open()
+        request = self._http.build_request("HEAD", url)
+        try:
+            with self._translate_errors(request):
+                response = self._http.send(request)
+            self._check(response)
+            return parsedate_to_datetime(response.headers["Last-Modified"]).date()
+        except (ECFRError, KeyError, ValueError, TypeError) as exc:
+            logger.info("Can't tell how current %s is: %s", url, exc)
+            return None
+
     def _extract(
         self, whole: Download, cited: Citation, date: dt.date, stack: ExitStack
     ) -> Download:
-        """Copy one division (a subtitle, chapter, ...) out of a title's XML.
+        """Copy what a citation names (a chapter, a part, a section, ...) out
+        of a title's XML.
 
-        The title is read as a stream; everything outside the division is
-        discarded as soon as it has been read.
+        The title is read as a stream; everything outside it is discarded as
+        soon as it has been read.
         """
         nodes = _path(self._outline(cited.title, date), cited)[1:]
-        wanted = [(DIVISIONS[n.type][1], n.identifier) for n in nodes]
-        fd, name = tempfile.mkstemp(prefix="ecfr-md-", suffix=".part")
-        os.close(fd)
-        target = Path(name)
+        wanted = [
+            (XML_TYPES[n.type], n.identifier) for n in nodes if n.type in XML_TYPES
+        ]
+        target = _temporary()
         stack.callback(target.unlink, missing_ok=True)
         chain: list[tuple[str | None, str | None]] = []
         found: ET.Element | None = None
         with whole.path.open("rb") as f:
             for event, element in file_events(f):
-                if not DIV_TAG.match(element.tag):
+                if not DIV_TAG.match(element.tag) or element.tag == "DIV1":
                     if event == "end" and found is None:
                         element.clear()
                     continue
+                kind = element.get("TYPE")
                 if event == "start":
-                    chain.append((element.get("TYPE"), element.get("N")))
-                    if found is None and chain[1:] == wanted:
-                        found = element
+                    if kind in LEVEL_TYPES:
+                        chain.append((kind, element.get("N")))
+                        if found is None and chain == wanted:
+                            found = element
                     continue
-                chain.pop()
+                if kind in LEVEL_TYPES:
+                    chain.pop()
                 if element is found:
                     target.write_bytes(ET.tostring(element, encoding="utf-8"))
                     break
@@ -1259,64 +1499,57 @@ class ECFR:
     def _by_part(self, cited: Citation, date: dt.date, stack: ExitStack) -> Download:
         """Join the parts under a title, chapter, etc. into one XML file.
 
-        Parts are fetched ``settings.concurrency`` at a time and written in
-        document order; at most twice that many are held in memory.
+        Parts are fetched ``settings.concurrency`` at a time, largest first
+        (so the slowest aren't left until last), each to a file of its own;
+        then the files are joined in document order.
         """
         root = _locate(self._outline(cited.title, date), cited)
         path = f"{VERSIONER}/full/{date}/title-{cited.title}.xml"
-        pieces: list[bytes | dict[str, str]] = []  # XML, or a part to fetch
-
-        def plan(node: models.Node, above: dict[str, str]) -> None:
-            label = escape(TAG.sub("", node.label).strip())
-            if node.type in DIVISIONS:
-                tag, kind = DIVISIONS[node.type]
-                pieces.append(_open_tag(tag, node.identifier, kind, label))
-                inner = dict(above)
-                if node.type != "title":  # The title is in the path, not a parameter.
-                    inner[node.type] = node.identifier or ""
-                for child in node.children:
-                    plan(child, inner)
-                pieces.append(f"</{tag}>".encode())
-            elif node.type in ("part", "appendix") and not _reserved(node):
-                params = {node.type: node.identifier or ""}
-                pieces.append(params | above if node.type == "appendix" else params)
-            elif node.type == "part":
-                pieces.append(_open_tag("DIV5", node.identifier, "PART", label))
-                pieces.append(b"</DIV5>")
-            else:  # Heading-only nodes.
-                pieces.append(f"<HD1>{label}</HD1>".encode())
-
-        plan(root, {})
-        jobs = [i for i, piece in enumerate(pieces) if isinstance(piece, dict)]
+        pieces = _plan(root)
+        jobs = sorted(
+            (i for i, piece in enumerate(pieces) if isinstance(piece, tuple)),
+            key=lambda i: -pieces[i][1],  # type: ignore[index]
+        )
         self.progress.parts_started(len(jobs))
 
-        def fetch(params: dict[str, str]) -> bytes:
-            with self._text(cited.title, params, date) as part:
-                data = part.path.read_bytes()
+        def fetch(params: dict[str, str]) -> Path:
+            part = _temporary()
+            try:
+                with (
+                    self._text(cited.title, params, date) as download,
+                    download.path.open("rb") as source,
+                    part.open("wb") as out,
+                ):
+                    _copy_body(source, out)
+            except BaseException:
+                part.unlink(missing_ok=True)
+                raise
             self.progress.part_finished(params.get("part") or params["appendix"])
-            return XML_DECLARATION.sub(b"", data)
+            return part
 
-        fd, name = tempfile.mkstemp(prefix="ecfr-md-", suffix=".part")
-        target = Path(name)
+        target = _temporary()
         stack.callback(target.unlink, missing_ok=True)
         retrieved = dt.datetime.now(dt.UTC)
-        ahead = 2 * self.settings.concurrency
         pool = ThreadPoolExecutor(self.settings.concurrency)
-        futures: dict[int, Future[bytes]] = {}
+        futures: dict[int, Future[Path]] = {
+            i: pool.submit(fetch, pieces[i][0])  # type: ignore[index]
+            for i in jobs
+        }
         try:
-            with os.fdopen(fd, "wb") as out:
-                for done, i in enumerate([*jobs, None]):
-                    for j in jobs[done : done + ahead]:
-                        if j not in futures and isinstance(job := pieces[j], dict):
-                            futures[j] = pool.submit(fetch, job)
-                    start = jobs[done - 1] + 1 if done else 0
-                    for piece in pieces[start : len(pieces) if i is None else i]:
-                        if isinstance(piece, bytes):
-                            out.write(piece)
-                    if i is not None:
-                        out.write(futures.pop(i).result())
+            with target.open("wb") as out:
+                for i, piece in enumerate(pieces):
+                    if isinstance(piece, bytes):
+                        out.write(piece)
+                        continue
+                    part = futures.pop(i).result()
+                    with part.open("rb") as source:
+                        shutil.copyfileobj(source, out)
+                    part.unlink()
         finally:
             pool.shutdown(cancel_futures=True)
+            for future in futures.values():
+                if not future.cancelled() and future.exception() is None:
+                    future.result().unlink(missing_ok=True)
         joined = f"joined from {len(jobs)} part requests"
         url = f"{self._url(path, cited.hierarchy)} ({joined})"
         return Download(target, url, retrieved)
@@ -1378,17 +1611,24 @@ class ECFR:
         return response
 
     def _stream(
-        self, path: str, params: dict[str, str | list[str]], target: Path
+        self,
+        path: str,
+        params: dict[str, str | list[str]],
+        target: Path,
+        paced: bool = True,
     ) -> dt.datetime:
         """Download a body into ``target``; return when it was retrieved."""
         self._check_open()
         request = self._http.build_request("GET", path, params=params)
         url = str(request.url)
-        self._throttle.wait()
+        if paced:
+            self._throttle.wait()
         logger.debug("GET %s (streaming)", url)
         self.progress.started(url)
         retrieved = dt.datetime.now(dt.UTC)
-        with self._limiter, self._translate_errors(request):
+        started = time.monotonic()
+        limit = self._limiter if paced else contextlib.nullcontext()
+        with limit, self._translate_errors(request):
             response = self._http.send(request, stream=True)
             try:
                 if response.is_error:
@@ -1403,11 +1643,20 @@ class ECFR:
                         self.progress.received(url, done, total)
             finally:
                 response.close()
+        took = time.monotonic() - started
+        if paced:
+            self._costs.api_request(took)
+        else:
+            self._costs.bulk_download(response.num_bytes_downloaded, took)
         self.progress.finished(url, response.num_bytes_downloaded, cached=False)
         return retrieved
 
     def _check(self, response: httpx2.Response) -> None:
         """Raise for error statuses, and adjust the request rate."""
+        if response.request.url.host != self._http.base_url.host:
+            if response.is_error:  # Another host: no pacing to adjust.
+                raise api_error(response)
+            return
         if response.status_code == 429:
             error = api_error(response)
             # Every thread pauses, so cap the pause like a single retry's wait.
@@ -1843,6 +2092,50 @@ class API:
         self.admin = Admin(client)
         self.search = Search(client)
         self.versioner = Versioner(client)
+
+
+def _plan(root: models.Structure) -> list[bytes | tuple[dict[str, str], int]]:
+    """The XML above the parts under ``root``, and between them the parts to
+    fetch: their API parameters and size."""
+    pieces: list[bytes | tuple[dict[str, str], int]] = []
+
+    def plan(node: models.Structure, above: dict[str, str]) -> None:
+        label = escape(TAG.sub("", node.label).strip())
+        if node.type in DIVISIONS:
+            tag, kind = DIVISIONS[node.type]
+            pieces.append(_open_tag(tag, node.identifier, kind, label))
+            inner = dict(above)
+            if node.type != "title":  # The title is in the path, not a parameter.
+                inner[node.type] = node.identifier or ""
+            for child in node.children:
+                plan(child, inner)
+            pieces.append(f"</{tag}>".encode())
+        elif node.type in ("part", "appendix") and not _reserved(node):
+            params = {node.type: node.identifier or ""}
+            job = params | above if node.type == "appendix" else params
+            pieces.append((job, node.size or 0))
+        elif node.type == "part":
+            pieces.append(_open_tag("DIV5", node.identifier, "PART", label))
+            pieces.append(b"</DIV5>")
+        else:  # Heading-only nodes.
+            pieces.append(f"<HD1>{label}</HD1>".encode())
+
+    plan(root, {})
+    return pieces
+
+
+def _copy_body(source: BinaryIO, out: BinaryIO) -> None:
+    """Copy an XML file without its XML declaration."""
+    start = source.read(COPY_CHUNK)
+    out.write(XML_DECLARATION.sub(b"", start, count=1))
+    shutil.copyfileobj(source, out, COPY_CHUNK)
+
+
+def _temporary() -> Path:
+    """A new empty temporary file, for the caller to delete."""
+    fd, name = tempfile.mkstemp(prefix="ecfr-md-", suffix=".part")
+    os.close(fd)
+    return Path(name)
 
 
 def _missing_paragraph(section: Node, cited: Citation, date: dt.date) -> str:

@@ -1,11 +1,13 @@
 """Bring saved Markdown up to date with the eCFR.
 
-``sync`` reads the citation from a saved file's front matter (or from the top
-``index.md`` of a saved tree), saves it again into a temporary directory and
-compares. Text that hasn't changed comes from the cache, so an unchanged
-title costs one small request. Only files whose text changed are rewritten;
-files ecfr-md wrote for sections that no longer exist are deleted. Other
-files are never touched.
+``sync`` reads the citation and date from a saved file's front matter (or
+from the top ``index.md`` of a saved tree). If the eCFR has issued no change
+to it since that date, and the files were saved by this version of ecfr-md
+and are all there, nothing more is done: an unchanged title costs at most one
+small request. Otherwise it saves the text again into a temporary directory
+and compares; text that hasn't changed comes from the cache. Only files
+whose text changed are rewritten; files ecfr-md wrote for sections that no
+longer exist are deleted. Other files are never touched.
 
 Two kinds of saved file are kept as they are unless asked otherwise:
 snapshots saved with a past date (front matter ``pinned``), and files edited
@@ -32,6 +34,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ecfr_md.address import Address
+from ecfr_md.config import __version__
 from ecfr_md.errors import InvalidParameterError
 from ecfr_md.markdown import LAYOUT
 from ecfr_md.output import (
@@ -46,6 +49,7 @@ from ecfr_md.output import (
 if TYPE_CHECKING:
     from ecfr_md.client import ECFR
 
+LINK = re.compile(r"^- \[.*\]\(([^)\s]+)\)$", re.MULTILINE)  # In index.md.
 # Front matter that changes on every download, even when the text doesn't.
 VOLATILE = frozenset({"date", "retrieved", "api", "source"})
 
@@ -105,6 +109,8 @@ def sync(
             else:
                 result.kept.append(root)
             continue
+        if not (migrate and old) and _unchanged(ecfr, meta, root, tree, result, force):
+            continue
         layout = LAYOUT if migrate or not old else 1
         with tempfile.TemporaryDirectory(prefix="ecfr-md-sync-") as tmp:
             target = Path(tmp) / root.name
@@ -123,6 +129,53 @@ def sync(
             else:
                 _merge(fresh, root, result, options)
     return result
+
+
+def _unchanged(
+    ecfr: ECFR,
+    meta: dict,
+    root: Path,
+    tree: bool,
+    result: SyncResult,
+    force: bool,
+) -> bool:
+    """Record a saved file or tree as up to date, without saving it again, if
+    it can't have changed: saved by this version of ecfr-md, complete, and
+    with no change issued since its date."""
+    saved = meta.get("date")
+    if meta.get("generator") != f"ecfr-md {__version__}" or not saved:
+        return False
+    files = _tree_files(root) if tree else [root]
+    if files is None:
+        return False
+    edits = [f for f in files if edited(f)]
+    if edits and force:
+        return False  # They're to be overwritten.
+    citation = str(meta.get("address") or meta.get("citation"))
+    if not ecfr._unchanged_since(citation, dt.date.fromisoformat(saved)):
+        return False
+    result.modified += edits
+    result.unchanged += [f for f in files if f not in edits]
+    return True
+
+
+def _tree_files(root: Path) -> list[Path] | None:
+    """The files of a saved tree, by following its index files' links; None
+    if any is missing."""
+    files: list[Path] = []
+    pending = [root / "index.md"]
+    while pending:
+        page = pending.pop()
+        files.append(page)
+        for link in LINK.findall(page.read_text(encoding="utf-8")):
+            target = page.parent / link
+            if not target.is_file():
+                return None
+            if target.name == "index.md":
+                pending.append(target)
+            else:
+                files.append(target)
+    return sorted(files)
 
 
 def _new_name(path: Path, citation: str, pinned: str | None) -> Path | None:
