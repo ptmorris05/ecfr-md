@@ -21,6 +21,7 @@ from ecfr_md.citation import Citation
 from ecfr_md.client import ECFR
 from ecfr_md.compare import Comparison, Difference
 from ecfr_md.config import Settings, __version__
+from ecfr_md.definitions import Definition, Definitions
 from ecfr_md.document import (
     Appendix,
     Chapter,
@@ -58,6 +59,7 @@ from ecfr_md.errors import (
     TitleNotFoundError,
 )
 from ecfr_md.params import Hierarchy, PaginateBy, SearchFilters, SearchOrder
+from ecfr_md.passages import Passage, QuoteCheck
 from ecfr_md.progress import Progress
 from ecfr_md.references import Reference, find_references
 from ecfr_md.render import Format
@@ -67,6 +69,7 @@ from ecfr_md.shortcuts import (
     cited_by,
     compare,
     configure,
+    define,
     get,
     get_many,
     outline,
@@ -74,6 +77,7 @@ from ecfr_md.shortcuts import (
     search,
     sync,
     titles,
+    verify_quote,
 )
 from ecfr_md.syncing import SyncResult
 
@@ -89,6 +93,8 @@ __all__ = [
     "Citation",
     "Comparison",
     "DateOutOfRangeError",
+    "Definition",
+    "Definitions",
     "Difference",
     "Division",
     "ECFRConnectionError",
@@ -111,7 +117,9 @@ __all__ = [
     "PaginateBy",
     "Paragraph",
     "Part",
+    "Passage",
     "Progress",
+    "QuoteCheck",
     "RateLimitError",
     "Reference",
     "ResponseFormatError",
@@ -133,6 +141,7 @@ __all__ = [
     "cited_by",
     "compare",
     "configure",
+    "define",
     "find_references",
     "get",
     "get_many",
@@ -142,4 +151,5 @@ __all__ = [
     "search",
     "sync",
     "titles",
+    "verify_quote",
 ]

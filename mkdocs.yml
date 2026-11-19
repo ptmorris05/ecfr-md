@@ -23,6 +23,7 @@ theme:
 
 nav:
   - Guide: index.md
+  - AI agents: agents.md
   - API reference: reference.md
   - Changelog: changelog.md
 
