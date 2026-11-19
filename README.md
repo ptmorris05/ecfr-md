@@ -136,22 +136,40 @@ ecfr-md browse 45/164.502/a/1 --date 2020-01-01   # at a paragraph, as of a date
 ecfr-md browse                                    # the list of titles
 ```
 
+It all works with the arrow keys, Enter and Esc; the footer shows the keys for where you are, and letters are shortcuts. The outline and the text each have a cursor, brighter in the one with the keys; `tab` moves between them.
+
+| In the text | Does |
+| --- | --- |
+| `↓` `↑` | Next and previous paragraph (or `j` `k`). A paragraph taller than the screen scrolls first. |
+| `→` `←` | Next and previous cross-reference. |
+| `enter` | Follow the cross-reference (or click it); in a paragraph with several, the first Enter picks the first. In contents (titles, chapters, huge parts), open the entry. References to the U.S. Code, the Federal Register and public laws open in the web browser. |
+| `esc` | Back; from the first place, up a level. Lets go of a picked cross-reference first. It never quits. |
+| `pgup` `pgdn` `home` `end` | Scroll; the next arrow or Enter starts from what's on screen. |
+| `tab` | To the outline (showing it if it's hidden). |
+
+| In the outline | Does |
+| --- | --- |
+| `↓` `↑` | Move. |
+| `→` | Open a branch; in an open one, go into it. |
+| `←` | Close a branch; in a closed one, go to the one above. |
+| `enter` | Read it (or click it). |
+| `esc` `tab` | Back to the text (in a narrow terminal, the outline closes). |
+
+In a dialog, `↓` and `↑` move between its box and its list and through the list (`↑` from the top of the list goes back to the box), Enter chooses, and Esc closes it. Anywhere:
+
 | Key | Does |
 | --- | --- |
 | `g` | Go to a citation, address or eCFR link, in any form `get` takes. Matching entries of the outline are listed as you type; `↓` picks one. A citation without a title (`164.502`) is read in the open title. |
 | `/` | Search the eCFR; tick "Only in" to search just the open part. Enter opens a match. |
 | `[` `]` | Previous and next section, across parts and titles. |
-| `j` `k` | Next and previous paragraph. |
-| `tab` `shift+tab` | Next and previous cross-reference. |
-| `enter` | Follow the cross-reference (or click it). References to the U.S. Code, the Federal Register and public laws open in the web browser. |
-| `u` | Up a level: section to subpart to part, up to the list of titles. |
+| `u` | Up a level: section to subpart to part, up to the list of titles, with the cursor on where you came from. |
 | `b` `f` | Back and forward, each place as you left it. |
 | `d` | Text as of a date (`2020-01-01`, `Jan 1 2020`, `last year`; empty for the latest). The date shows in the header, highlighted. |
 | `h` | History: the changes the eCFR issued to what's open. Enter on one shows its redline, words struck out and inserted. |
 | `e` | Export what's open as Markdown, text, HTML, JSON, EPUB, Word or PDF, to a file you choose (by default in the current directory). |
 | `y` | Copy the citation of the paragraph under the cursor, e.g. `45 CFR 164.502(a)(1)` (through the terminal, with OSC 52). |
 | `o` | Show or hide the outline. Below 100 columns it's hidden until asked for, and then fills the screen. |
-| `?` `q` | The keys; quit. `escape` closes a dialog. |
+| `?` `q` | The keys; quit. |
 
 Sections, appendices, subparts and parts show their text (parts over 2 MB show their contents); titles, chapters and subchapters show their contents. Text and outlines come from the same client as the command line and Python, with the same cache and options (`ecfr-md --cache-dir DIR --rate-limit 1 browse ...`). Requests run in the background, the header shows what's being fetched, and errors appear as notifications.
 

@@ -74,8 +74,12 @@ LEVEL_NAMES = {"§": "section", "s": "section", "p": "part", "a": "appendix"}
 READER_ACTIONS = frozenset(
     {"next_piece", "previous_piece", "next_section", "previous_section", "up"}
     | {"go_back", "go_forward", "copy", "go", "search", "date", "history", "export"}
-    | {"help", "outline", "close_outline"}
+    | {"help", "outline", "back_out", "switch_pane", "leave_outline"}
 )
+PARAGRAPH = Binding.Group("Paragraph", compact=True)
+REFERENCE = Binding.Group("Reference", compact=True)
+MOVE = Binding.Group("Move", compact=True)
+FOLD = Binding.Group("Fold", compact=True)
 
 
 @dataclass
@@ -86,6 +90,8 @@ class Place:
     address: str | None
     cursor: int = 0
     anchor: str | None = None
+    within: str | None = None
+    """An address below this one, to put the cursor on (coming up from it)."""
 
 
 @dataclass
@@ -180,13 +186,22 @@ class PieceView(Static):
 
 
 class Reader(VerticalScroll):
-    """The text, a piece at a time, with a cursor on one of them."""
+    """The text, a piece at a time, with a cursor on one of them.
+
+    Up and down move the cursor a paragraph at a time, left and right
+    between references, enter follows one (or opens an entry of contents),
+    escape goes back; page up and down, home and end scroll.
+    """
 
     can_focus = True
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("enter", "follow_cursor", "Follow", show=False),
-        Binding("tab", "next_link", "Next reference", show=False),
-        Binding("shift+tab", "previous_link", "Previous reference", show=False),
+        Binding("up", "app.previous_piece", "Previous paragraph", group=PARAGRAPH),
+        Binding("down", "app.next_piece", "Next paragraph", group=PARAGRAPH),
+        Binding("left", "previous_link", "Previous reference", group=REFERENCE),
+        Binding("right", "next_link", "Next reference", group=REFERENCE),
+        Binding("enter", "follow_cursor", "Open"),
+        Binding("escape", "app.back_out", "Back"),
+        Binding("tab,shift+tab", "app.switch_pane", "Outline"),
     ]
 
     def __init__(self) -> None:
@@ -248,17 +263,31 @@ class Reader(VerticalScroll):
         return next((i for i, v in enumerate(views) if seen(v)), self.cursor)
 
     def step(self, delta: int) -> None:
+        """To the next (or previous) piece; through a piece taller than
+        the screen, half a screen at a time first."""
         if not self.pieces:
             return
         start = self._start()
         moved = start != self.cursor
+        if not moved and self._beyond(delta):
+            height = self.scrollable_content_region.height
+            self.scroll_relative(y=delta * max(1, height // 2), animate=False)
+            return
         index = start if moved else start + delta
         index = max(0, min(index, len(self.pieces) - 1))
         self.mark(index)
         self.scroll_cursor()
 
+    def _beyond(self, delta: int) -> bool:
+        """Whether the cursor's piece goes on past the screen, that way."""
+        region = self.views[self.cursor].virtual_region
+        if delta > 0:
+            return region.bottom > self.scroll_y + self.scrollable_content_region.height
+        return region.y < self.scroll_y
+
     def move_link(self, delta: int) -> None:
-        """To the next (or previous) reference, across pieces."""
+        """To the next (or previous) reference, across pieces, from the
+        cursor (or what's in view, if the text was scrolled away from it)."""
         links = [
             (i, n)
             for i, piece in enumerate(self.pieces)
@@ -266,6 +295,9 @@ class Reader(VerticalScroll):
         ]
         if not links:
             return
+        start = self._start()
+        if start != self.cursor:
+            self.mark(start)
         here = (self.cursor, self.link if self.link is not None else -1)
         later = [pos for pos in links if (pos > here if delta > 0 else pos < here)]
         if not later:
@@ -279,10 +311,18 @@ class Reader(VerticalScroll):
         return self.pieces[self.cursor] if self.pieces else None
 
     def action_follow_cursor(self) -> None:
-        """Follow the reference chosen with tab; in a paragraph with one
-        reference, that one; with several, choose the first."""
+        """Follow the reference chosen with left and right; in a paragraph
+        with one reference (or an entry of contents), that one; with
+        several, choose the first. If the text was scrolled away from the
+        cursor, the cursor comes to what's in view first."""
         piece = self.current
-        if piece is None or not piece.links:
+        if piece is None:
+            return
+        start = self._start()
+        if start != self.cursor:
+            self.mark(start)
+            return
+        if not piece.links:
             return
         if self.link is None and len(piece.links) > 1:
             self.mark(self.cursor, 0)
@@ -296,6 +336,39 @@ class Reader(VerticalScroll):
 
     def action_previous_link(self) -> None:
         self.move_link(-1)
+
+
+class OutlineTree(Tree[Outline]):
+    """The outline: up and down move, right opens a branch (then goes into
+    it), left closes it (or goes to the one above), enter reads the entry."""
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("up", "cursor_up", "Up", group=MOVE),
+        Binding("down", "cursor_down", "Down", group=MOVE),
+        Binding("left", "fold", "Close", group=FOLD),
+        Binding("right", "unfold", "Open", group=FOLD),
+        Binding("enter", "select_cursor", "Read"),
+        Binding("escape", "app.leave_outline", "Text"),
+        Binding("tab,shift+tab", "app.switch_pane", "Text", show=False),
+    ]
+
+    def action_unfold(self) -> None:
+        node = self.cursor_node
+        if node is None or not node.allow_expand:
+            return
+        if not node.is_expanded:
+            node.expand()
+        elif node.children:
+            self.move_cursor(node.children[0], animate=False)
+
+    def action_fold(self) -> None:
+        node = self.cursor_node
+        if node is None:
+            return
+        if node.allow_expand and node.is_expanded:
+            node.collapse()
+        elif node.parent is not None and node.parent is not self.root:
+            self.move_cursor(node.parent, animate=False)
 
 
 class Browser(App[None]):
@@ -341,6 +414,9 @@ class Browser(App[None]):
         background: $boost;
         text-style: bold;
     }
+    #outline:focus > .tree--cursor {
+        background: $accent 40%;
+    }
     #reader {
         width: 1fr;
         height: 1fr;
@@ -364,7 +440,7 @@ class Browser(App[None]):
         margin-top: 1;
     }
     .piece.-cursor {
-        border-left: outer $accent;
+        border-left: outer $panel-lighten-2;
         background: $boost;
     }
     #reader:focus .piece.-cursor {
@@ -388,6 +464,9 @@ class Browser(App[None]):
     Footer {
         background: $background;
     }
+    Footer FooterLabel {
+        margin-right: 1;
+    }
     """
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("g", "go", "Go to"),
@@ -397,7 +476,7 @@ class Browser(App[None]):
         Binding("j", "next_piece", "Next paragraph", show=False),
         Binding("k", "previous_piece", "Previous paragraph", show=False),
         Binding("u", "up", "Up", show=False),
-        Binding("b", "go_back", "Back"),
+        Binding("b", "go_back", "Back", show=False),
         Binding("f", "go_forward", "Forward", show=False),
         Binding("d", "date", "Date"),
         Binding("h", "history", "History"),
@@ -406,7 +485,6 @@ class Browser(App[None]):
         Binding("o", "outline", "Outline", show=False),
         Binding("question_mark", "help", "Keys", key_display="?"),
         Binding("q", "quit", "Quit"),
-        Binding("escape", "close_outline", "Close the outline", show=False),
     ]
 
     def __init__(
@@ -439,7 +517,7 @@ class Browser(App[None]):
             yield Static("ecfr-md", id="crumbs")
             yield Static("", id="status")
         with Horizontal(id="body"):
-            tree: Tree[Outline] = Tree("Code of Federal Regulations", id="outline")
+            tree = OutlineTree("Code of Federal Regulations", id="outline")
             tree.show_root = False
             tree.auto_expand = False
             tree.guide_depth = 2
@@ -475,18 +553,29 @@ class Browser(App[None]):
         self.screen.set_class(narrow and bool(opened), "-outline")
         self.screen.set_class(not narrow and opened is False, "-hide-outline")
 
-    def action_close_outline(self) -> None:
+    def _outline_shown(self) -> bool:
+        if self.screen.has_class("-narrow"):
+            return self.screen.has_class("-outline")
+        return not self.screen.has_class("-hide-outline")
+
+    def action_leave_outline(self) -> None:
+        """Back to the text; in a narrow terminal, the outline closes."""
         if self.screen.has_class("-outline"):
+            self.action_outline()
+        else:
+            self.query_one(Reader).focus()
+
+    def action_switch_pane(self) -> None:
+        """Between the outline and the text, showing the outline if hidden."""
+        if self.focused is not self.query_one(Reader):
+            self.action_leave_outline()
+        elif self._outline_shown():
+            self.query_one(Tree).focus()
+        else:
             self.action_outline()
 
     def action_outline(self) -> None:
-        narrow = self.screen.has_class("-narrow")
-        shown = (
-            self.screen.has_class("-outline")
-            if narrow
-            else not (self.screen.has_class("-hide-outline"))
-        )
-        self._outline_open = not shown
+        self._outline_open = not self._outline_shown()
         self._layout(self.size.width)
         if self._outline_open:
             self.query_one(Tree).focus()
@@ -600,9 +689,18 @@ class Browser(App[None]):
         self.load(address)
 
     def load(
-        self, address: str | None, *, record: bool = True, cursor: int = 0
+        self,
+        address: str | None,
+        *,
+        record: bool = True,
+        cursor: int = 0,
+        within: str | None = None,
+        first: bool = False,
     ) -> None:
-        """Show an address (None: the whole CFR), in the background."""
+        """Show an address (None: the whole CFR), in the background, with
+        the cursor on what's ``within`` it if given. Unless ``record`` is
+        False, it's added to the history; ``first`` puts it before the first
+        place instead."""
         anchor = None
         if address is not None:
             place = Address.parse(address)
@@ -613,12 +711,13 @@ class Browser(App[None]):
                 anchor = f"p-{section}" + "".join(f"({m})" for m in place.markers)
             address = str(dataclasses.replace(place, paragraph=(), date=None))
         view = self.view
+        place = Place(address, cursor, anchor, within)
         if view is not None and anchor is not None and view.entry.address == address:
-            self._show(view, Place(address, cursor, anchor), record)  # Here already.
+            self._show(view, place, record)  # Here already.
             return
         self.background(
             lambda: self._fetch(address),
-            lambda view: self._show(view, Place(address, cursor, anchor), record),
+            lambda view: self._show(view, place, record, first=first),
         )
 
     def _set_date(self, day: dt.date) -> None:
@@ -653,21 +752,21 @@ class Browser(App[None]):
         part = next((e for e in (entry, *entry.ancestors) if e.level == "part"), None)
         return part is None or part.size is None or part.size <= TEXT_BELOW
 
-    def _show(self, view: View, place: Place, record: bool) -> None:
+    def _show(
+        self, view: View, place: Place, record: bool, *, first: bool = False
+    ) -> None:
         reader = self.query_one(Reader)
         if self.index >= 0 and self.view is not None:
             self.history[self.index].cursor = reader.cursor  # Come back to it.
-        cursor = place.cursor
-        if place.anchor is not None:
-            cursor = next(
-                (i for i, p in enumerate(view.pieces) if place.anchor in p.anchors),
-                cursor,
-            )
-        place = dataclasses.replace(place, cursor=cursor, anchor=None)
+        cursor = self._landing(view, place)
+        place = dataclasses.replace(place, cursor=cursor, anchor=None, within=None)
         if record:
             del self.history[self.index + 1 :]
             self.history.append(place)
             self.index = len(self.history) - 1
+        elif first:
+            self.history.insert(0, place)
+            self.index = 0
         if view is self.view:
             reader.mark(cursor, None)
             reader.call_after_refresh(reader.scroll_cursor, True)
@@ -680,6 +779,29 @@ class Browser(App[None]):
             self._outline_open = False
             self._layout(self.size.width)
             reader.focus()
+
+    @staticmethod
+    def _landing(view: View, place: Place) -> int:
+        """Where the cursor goes: on the paragraph asked for; on the entry
+        or heading of what's ``within``; else where it was, or on the first
+        entry of contents."""
+        pieces = view.pieces
+        if place.anchor is not None:
+            return next(
+                (i for i, p in enumerate(pieces) if place.anchor in p.anchors),
+                place.cursor,
+            )
+        children = view.entry.children if place.within is not None else ()
+        below = next((c for c in children if c.address == place.within), None)
+        if below is not None:
+            for i, piece in enumerate(pieces):
+                if piece.kind == "entry" and piece.links[0].address == below.address:
+                    return i
+                if piece.kind == "heading" and piece.citation == below.citation:
+                    return i
+        if not place.cursor and len(pieces) > 1 and pieces[1].kind == "entry":
+            return 1
+        return place.cursor
 
     def _crumbs(self, view: View) -> None:
         names = [crumb(e) for e in view.path if e.level != CFR_LEVEL] or ["CFR"]
@@ -807,12 +929,29 @@ class Browser(App[None]):
     def action_previous_section(self) -> None:
         self._neighbour(forward=False)
 
-    def action_up(self) -> None:
+    def action_up(self, first: bool = False) -> None:
+        """Up a level, the cursor on where it came from."""
         view = self.view
         if view is None or view.entry.level == CFR_LEVEL:
             return
-        above = view.path[-2] if len(view.path) > 1 else None
-        self.load(above.address or None if above is not None else None)
+        above = view.path[-2]
+        self.load(
+            above.address or None,
+            record=not first,
+            within=view.entry.address,
+            first=first,
+        )
+
+    def action_back_out(self) -> None:
+        """Escape in the text: let go of the chosen reference; else back;
+        at the first place, up a level (which becomes the first place)."""
+        reader = self.query_one(Reader)
+        if reader.link is not None:
+            reader.mark(reader.cursor, None)
+        elif self.index > 0:
+            self.action_go_back()
+        else:
+            self.action_up(first=True)
 
     def action_go_back(self) -> None:
         if self.index > 0:

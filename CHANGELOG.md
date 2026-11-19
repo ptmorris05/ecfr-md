@@ -12,13 +12,19 @@ On PyPI: `uv tool install ecfr-md` or `pip install ecfr-md`, with the extras `we
 
 - `ecfr-md browse [CITATION] [--date DATE]`: a full-screen terminal browser
   (the `tui` extra, Textual). The outline of the whole CFR beside the text,
-  with a breadcrumb and the date of the text. Keys: `g` go to any citation
+  with a breadcrumb and the date of the text. Everything works with the
+  arrow keys, Enter and Esc, shown in the footer: in the text, `↑`/`↓`
+  paragraphs, `←`/`→` cross-references, Enter follows one or opens an
+  entry of contents, Esc goes back (from the first place, up a level; it
+  never quits); in the outline, `↑`/`↓` move, `→`/`←` open and close
+  branches or go in and out, Enter reads; `tab` moves between the two; in
+  dialogs, `↓`/`↑` go from the box to the list and back, Enter chooses,
+  Esc closes. Letter keys are shortcuts: `g` go to any citation
   (completed from the outline), `/` search, `[`/`]` previous and next
-  section, `j`/`k` paragraphs, `tab` and `enter` (or a click) to follow
-  cross-references, `u` up, `b`/`f` back and forward, `d` text as of a
-  date, `h` changes with a redline of each, `e` export in every format, `y`
-  copy the paragraph's citation, `o` the outline, `?` keys. The `all`
-  extra includes `tui`.
+  section, `j`/`k` paragraphs, `u` up, `b`/`f` back and forward, `d` text
+  as of a date, `h` changes with a redline of each, `e` export in every
+  format, `y` copy the paragraph's citation, `o` the outline, `?` keys.
+  The mouse works too. The `all` extra includes `tui`.
 - An MCP server for AI agents: `ecfr-md mcp` (stdio, or streamable HTTP
   with `--http`), and `ecfr_md.mcp.server(ecfr)` for apps that serve it
   themselves. Needs the new `mcp` extra (FastMCP 4.2), which `all` now
