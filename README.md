@@ -586,13 +586,14 @@ ECFR_MD_SOURCE=api ecfr-md get 45
 import ecfr_md
 from ecfr_md import ECFR, Settings
 
-ECFR()                                      # The config file and ECFR_MD_* variables
-ECFR(Settings.load(source="api"))           # The same, with source set here
-ECFR(Settings(user_agent="my-app/1.0"))     # Only what's given here, and defaults
-ecfr_md.configure(site_url="https://mirror.example")  # For ecfr_md.get(...) and the rest
+ECFR()  # The config file and ECFR_MD_* variables
+ECFR(Settings.load(source="api"))  # The same, with source set here
+ECFR(Settings(user_agent="my-app/1.0"))  # Only what's given here, and defaults
+# For ecfr_md.get(...) and the rest:
+ecfr_md.configure(site_url="https://mirror.example")
 
 for name, (value, origin) in Settings.load().explain().items():
-    print(name, value, origin)              # e.g. source auto default
+    print(name, value, origin)  # e.g. source auto default
 ```
 
 - Retries: connection errors, timeouts, 429 and 5xx, with exponential backoff and jitter. `Retry-After` is used when present.
