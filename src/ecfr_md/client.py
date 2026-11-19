@@ -43,6 +43,7 @@ from tenacity import (
     wait_exponential_jitter,
 )
 
+from ecfr_md import definitions as defined
 from ecfr_md import models
 from ecfr_md.address import (
     APPENDIX_KEY,
@@ -56,6 +57,7 @@ from ecfr_md.citation import Citation
 from ecfr_md.compare import Comparison
 from ecfr_md.compare import compare as compare_texts
 from ecfr_md.config import RETRY_STATUS_CODES, SPLIT_ABOVE, Settings
+from ecfr_md.definitions import Definition
 from ecfr_md.document import Node, Source, load, save_events
 from ecfr_md.errors import (
     AmbiguousNodeError,
@@ -876,6 +878,72 @@ class ECFR:
             and (m.raw.hierarchy.title == str(place.title) or named in m.excerpt)
         ]
         return Matches(matches[:limit], found.total, complete=found.complete)
+
+    @validated
+    def definitions(
+        self, citation: str | int, /, *, date: DateLike | None = None
+    ) -> list[Definition]:
+        """The defined terms that apply to a place, nearest scope first.
+
+        Reads the definitions sections that govern the place (in its part,
+        and in the first part of its subchapter or chapter) and keeps the
+        terms whose scope ("this subpart", "this subchapter") covers it; a
+        term defined in several keeps the nearest definition. See
+        :mod:`ecfr_md.definitions`; it reads terms by pattern, so it can
+        miss unusual wording.
+
+        Parameters
+        ----------
+        citation: str | int
+            Where the terms are used: a section, paragraph or division, as
+            for :meth:`get`.
+        date: DateLike | None
+            Point-in-time date. Defaults to the date in the citation, else the
+            most recent available.
+        """
+        address = Address.parse(citation)
+        place = replace(address, paragraph=(), date=None)
+        day = self._when(place.title, date if date is not None else address.date)
+        entry = self._place(str(place), day)
+        found: dict[str, Definition] = {}
+        for section in defined.sections(entry):
+            terms = defined.read(self.get(section.address, date=day))
+            if terms and defined.governs(section, terms[0].scope, entry):
+                for term in terms:
+                    found.setdefault(defined.key(term.term), term)
+        return list(found.values())
+
+    @validated
+    def define(
+        self, term: str, citation: str | int, /, *, date: DateLike | None = None
+    ) -> Definition:
+        """What a term means where it is used, from the governing definitions
+        section, e.g. ``define("covered entity", "45 CFR 164.502")``.
+
+        Raises NodeNotFoundError, naming similar terms, when no definition
+        of it applies there. See :meth:`definitions`.
+
+        Parameters
+        ----------
+        term: str
+            The term, in any case; a plural ("covered entities") finds the
+            singular.
+        citation: str | int
+            Where the term is used, as for :meth:`get`.
+        date: DateLike | None
+            Point-in-time date. Defaults to the most recent available.
+        """
+        found = {defined.key(d.term): d for d in self.definitions(citation, date=date)}
+        wanted = defined.key(term)
+        for form in defined.singulars(wanted):
+            if form in found:
+                return found[form]
+        close = difflib.get_close_matches(wanted, found, n=3, cutoff=0.6)
+        hint = f"; did you mean {' or '.join(repr(found[c].term) for c in close)}?"
+        raise NodeNotFoundError(
+            f"No definition of {term!r} applies to {Address.parse(citation)}"
+            + (hint if close else f" ({len(found)} terms do)")
+        )
 
     def _check_agencies(self, slugs: list[str]) -> None:
         """Say which agency slugs don't exist; the API just finds nothing."""

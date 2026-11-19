@@ -15,6 +15,7 @@ from typing import Literal, Unpack, overload
 
 from ecfr_md.client import ECFR
 from ecfr_md.compare import Comparison
+from ecfr_md.definitions import Definition
 from ecfr_md.document import Node
 from ecfr_md.params import DateLike, Hierarchy, SearchFilters
 from ecfr_md.render.formats import Format
@@ -175,6 +176,13 @@ def cited_by(
     citation: str | int, /, *, limit: int = 20, date: DateLike | None = None
 ) -> Matches:
     return client().cited_by(citation, limit=limit, date=date)
+
+
+@_documented_by(ECFR.define)
+def define(
+    term: str, citation: str | int, /, *, date: DateLike | None = None
+) -> Definition:
+    return client().define(term, citation, date=date)
 
 
 @_documented_by(ECFR.search)

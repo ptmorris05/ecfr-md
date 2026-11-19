@@ -20,6 +20,7 @@ from ecfr_md.citation import Citation
 from ecfr_md.client import ECFR
 from ecfr_md.compare import Comparison, Difference
 from ecfr_md.config import Settings, __version__
+from ecfr_md.definitions import Definition
 from ecfr_md.document import (
     Appendix,
     Chapter,
@@ -65,6 +66,7 @@ from ecfr_md.shortcuts import (
     changes,
     cited_by,
     compare,
+    define,
     get,
     get_many,
     outline,
@@ -87,6 +89,7 @@ __all__ = [
     "Citation",
     "Comparison",
     "DateOutOfRangeError",
+    "Definition",
     "Difference",
     "Division",
     "ECFRConnectionError",
@@ -130,6 +133,7 @@ __all__ = [
     "changes",
     "cited_by",
     "compare",
+    "define",
     "find_references",
     "get",
     "get_many",
