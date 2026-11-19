@@ -6,6 +6,7 @@ Common commands:
     ecfr-md get "45 CFR 164.502(a)(1)"         a paragraph (quote parentheses)
     ecfr-md get 45 CFR Part 164 -o hipaa.md    save to a file
     ecfr-md get 45 CFR 164 --tree -o hipaa/    one file per section
+    ecfr-md get --all --tree -o cfr/           every title
     ecfr-md search "minimum necessary"         find sections
     ecfr-md outline 45 CFR Part 164            table of contents
 
@@ -83,6 +84,7 @@ def get(
     front_matter: bool = True,
     date: DateLike | None = None,
     from_file: Annotated[Path | None, Parameter(name="--from")] = None,
+    all_titles: Annotated[bool, Parameter(name="--all")] = False,
     ecfr: Client,
     **hierarchy: Unpack[Hierarchy],
 ) -> None:
@@ -108,12 +110,24 @@ def get(
     from_file: Path | None
         File with one citation per line ("-" for stdin); each is saved to the
         --output directory. Sections in the same part share a request.
+    all_titles: bool
+        Every title of the CFR, each saved to the --output directory. Large
+        titles are fetched part by part, so this takes a while.
     """
     if from_file is not None:
         _get_many(ecfr, from_file, output, front_matter, date)
         return
+    if all_titles:
+        if citation:
+            raise InvalidParameterError(
+                "--all gets every title; leave out the citation"
+            )
+        _get_all(ecfr, output, tree, front_matter, date)
+        return
     if not citation:
-        raise InvalidParameterError("Say what to get, e.g. ecfr-md get 45 CFR 164")
+        raise InvalidParameterError(
+            "Say what to get, e.g. ecfr-md get 45 CFR 164, or --all for every title"
+        )
     if tree and output is None:
         raise InvalidParameterError("--tree requires --output DIRECTORY")
     cited = _citation(citation)
@@ -190,6 +204,37 @@ def _get_many(
         "Saved",
         {
             "Citations": f"{len(citations):,}",
+            "Output": str(output),
+            "Files": f"{len(files):,}",
+            "Size": _total_size(files),
+        },
+    )
+
+
+def _get_all(
+    ecfr: ECFR,
+    output: Path | None,
+    tree: bool,
+    front_matter: bool,
+    date: DateLike | None,
+) -> None:
+    if output is None:
+        raise InvalidParameterError("--all requires --output DIRECTORY")
+    titles = [t.number for t in ecfr.api.versioner.titles().titles if not t.reserved]
+    terminal = _terminal(ecfr)
+    output.mkdir(parents=True, exist_ok=True)
+    files: list[Path] = []
+    with terminal.live():
+        for title in titles:
+            saved = ecfr.save(
+                title, output, tree=tree, front_matter=front_matter, date=date
+            )
+            files += saved if isinstance(saved, list) else [saved]
+    terminal.summary(
+        "Saved",
+        {
+            "Titles": f"{len(titles):,}",
+            "Text as of": str(terminal.date) if date else "latest for each title",
             "Output": str(output),
             "Files": f"{len(files):,}",
             "Size": _total_size(files),

@@ -51,6 +51,7 @@ ecfr-md get 45 CFR Part 164 -o hipaa.md          # save to one file
 ecfr-md get 45 CFR Part 164 --tree -o hipaa/     # one file per section
 ecfr-md get 45 CFR 164.502 --date 2020-01-01     # as of a date
 ecfr-md get --from list.txt -o out/              # one citation per line
+ecfr-md get --all --tree -o cfr/                 # the whole CFR, every title
 
 ecfr-md search "minimum necessary"               # sections that use the phrase
 ecfr-md search "minimum necessary" --save out/   # and save their text
@@ -64,7 +65,7 @@ ecfr-md cache clear
 
 | Command | Does |
 | --- | --- |
-| `get CITATION` | Prints Markdown, or saves it with `-o FILE`. `--tree -o DIR` writes one file per section. `--from FILE -o DIR` takes one citation per line (`-` for stdin). `--date` for text as of a date. `--no-front-matter` leaves out the metadata header. |
+| `get CITATION` | Prints Markdown, or saves it with `-o FILE`. `--tree -o DIR` writes one file per section. `--from FILE -o DIR` takes one citation per line (`-` for stdin). `--all -o DIR` saves every title (with `--tree`, a folder per title). `--date` for text as of a date. `--no-front-matter` leaves out the metadata header. |
 | `outline CITATION` | Prints the table of contents. `--depth N` limits levels and counts what's below. Part sizes are shown. |
 | `changes CITATION` | Lists changes to sections: when issued, when effective, and whether substantive, editorial or a removal. `--since` and `--until` take dates. |
 | `search QUERY` | Lists current sections that contain the words as a phrase (`--no-phrase`: anywhere in the section). `--limit N` (default 20), `--all-versions`, `--save DIR`, `--json`, plus the API's filters (`--agency SLUG`, `--date`, `--last-modified-after`, …). |

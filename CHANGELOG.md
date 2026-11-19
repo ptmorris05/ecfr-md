@@ -10,6 +10,9 @@ Install from GitHub; ecfr-md is not on PyPI.
 
 ### Added
 
+- `ecfr-md get --all -o DIR`: every title, one file each, or with `--tree` one
+  folder per title (`DIR/title-N/`). Reserved titles are skipped; `sync DIR`
+  updates them all.
 - Module-level functions sharing one default client: `ecfr_md.get`, `save`,
   `get_many`, `outline`, `changes`, `search` and `sync`.
 - `ECFR.search(query)`: matching sections as `Match` objects (citation,
