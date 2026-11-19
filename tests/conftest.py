@@ -1,4 +1,5 @@
 import functools
+import os
 import xml.etree.ElementTree as ET
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -14,7 +15,7 @@ TITLES = {
             "number": 45,
             "name": "Public Welfare",
             "latest_amended_on": "2026-01-01",
-            "latest_issue_date": "2026-01-01",
+            "latest_issue_date": "2026-10-07",
             "up_to_date_as_of": "2026-10-07",
             "reserved": False,
         },
@@ -178,6 +179,17 @@ def isolated_cache(tmp_path_factory, monkeypatch):
     directory = tmp_path_factory.mktemp("cache")
     monkeypatch.setattr("ecfr_md.client.default_directory", lambda: directory)
     return directory
+
+
+@pytest.fixture(autouse=True)
+def isolated_config(tmp_path_factory, monkeypatch):
+    """Never read the user's settings: no config file, no ECFR_MD_* variables."""
+    for name in list(os.environ):
+        if name.startswith("ECFR_MD_"):
+            monkeypatch.delenv(name)
+    path = tmp_path_factory.mktemp("config") / "config.toml"
+    monkeypatch.setenv("ECFR_MD_CONFIG", str(path))
+    return path
 
 
 @pytest.fixture

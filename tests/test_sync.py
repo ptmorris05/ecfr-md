@@ -1,6 +1,7 @@
 """sync keeps what it shouldn't touch; dated saves don't collide or mix."""
 
 import datetime as dt
+import json
 
 import pytest
 
@@ -259,3 +260,61 @@ def test_sync_command_reports_only_kept_files(run, api, capsys, tmp_path):
     assert run("sync", str(tmp_path)) == 0
     err = capsys.readouterr().err
     assert "Kept at saved date" in err and "is up to date" not in err
+
+
+# Checking first whether anything changed
+
+
+VERSIONS = "/api/versioner/v1/versions/title-45.json"
+
+
+def no_versions(api):
+    api.json(VERSIONS, {"content_versions": [], "meta": {}})
+
+
+def test_sync_asks_whether_anything_changed_before_saving_again(ecfr, api, tmp_path):
+    files = ecfr.save("45 CFR Part 164", tmp_path, tree=True)
+    no_versions(api)
+    before = api.paths().count(FULL)
+    result = ecfr.sync(tmp_path)
+    assert sorted(result.unchanged) == sorted(files)
+    assert api.paths().count(FULL) == before  # Nothing saved again.
+    assert api.paths()[-1] == VERSIONS
+
+
+def test_sync_needs_no_request_when_nothing_was_issued(ecfr, api, tmp_path):
+    ecfr.save("45 CFR Part 164", tmp_path / "a.md")
+    titles = json.loads(api.routes["/api/versioner/v1/titles.json"](None).text)
+    titles["titles"][0]["latest_issue_date"] = "2026-01-01"
+    api.json("/api/versioner/v1/titles.json", titles)
+    ecfr._titles = None
+    requests = len(api.requests)
+    assert ecfr.sync(tmp_path / "a.md").unchanged == [tmp_path / "a.md"]
+    assert api.paths()[requests:] == ["/api/versioner/v1/titles.json"]
+
+
+def test_edited_files_stay_edited_without_saving_again(ecfr, api, tmp_path):
+    ecfr.save("45 CFR Part 164", tmp_path, tree=True)
+    section = tmp_path / SECTION
+    section.write_text(read(section) + "My note.\n", encoding="utf-8")
+    no_versions(api)
+    before = api.paths().count(FULL)
+    assert ecfr.sync(tmp_path).modified == [section]
+    assert api.paths().count(FULL) == before
+    assert ecfr.sync(tmp_path, force=True).changed == [section]  # Saved again.
+
+
+def test_missing_files_are_saved_again(ecfr, api, tmp_path):
+    ecfr.save("45 CFR Part 164", tmp_path, tree=True)
+    (tmp_path / SECTION).unlink()
+    no_versions(api)
+    assert ecfr.sync(tmp_path).added == [tmp_path / SECTION]
+
+
+def test_files_from_another_version_are_saved_again(ecfr, api, tmp_path, monkeypatch):
+    ecfr.save("45 CFR Part 164", tmp_path / "a.md")
+    no_versions(api)
+    monkeypatch.setattr("ecfr_md.syncing.__version__", "9.9")
+    before = api.paths().count(FULL)
+    assert ecfr.sync(tmp_path / "a.md").unchanged == [tmp_path / "a.md"]
+    assert api.paths().count(FULL) == before + 1

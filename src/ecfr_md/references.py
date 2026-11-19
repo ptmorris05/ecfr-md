@@ -6,7 +6,8 @@ this section", "45 CFR part 160", "42 U.S.C. 1320d", "78 FR 5692", ...
 ``context``) for relative ones such as "subpart E of this part". Citations of
 the U.S. Code, the Federal Register and public laws link to their official
 sites; the link templates are the module constants ``USC_URL``, ``FR_URL``
-and ``PUBLIC_LAW_URL``, and each call can override them with ``urls``.
+and ``PUBLIC_LAW_URL``, and each call can override them with ``urls``. CFR
+references link to the eCFR's site, or another given as ``site``.
 
 :func:`link_markdown` turns the references in Markdown into links.
 
@@ -23,14 +24,8 @@ from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 from ecfr_md.address import POSITIONS, Address
+from ecfr_md.config import FR_URL, PUBLIC_LAW_URL, SITE_URL, USC_URL
 from ecfr_md.params import as_hierarchy
-
-USC_URL = (
-    "https://uscode.house.gov/view.xhtml"
-    "?req=granuleid:USC-prelim-title{title}-section{section}&num=0&edition=prelim"
-)
-FR_URL = "https://www.federalregister.gov/citation/{volume}-FR-{page}"
-PUBLIC_LAW_URL = "https://www.congress.gov/public-law/{congress}{suffix}-congress/public-law/{number}"
 
 Kind = Literal["cfr", "usc", "fr", "public_law"]
 
@@ -145,6 +140,7 @@ def find_references(
     *,
     urls: Mapping[str, str] | None = None,
     markdown: bool = False,
+    site: str = SITE_URL,
 ) -> list[Reference]:
     """Cross-references in ``text``, in order.
 
@@ -154,21 +150,23 @@ def find_references(
     that name their title ("45 CFR 160.103") and other codes are found.
     ``urls`` overrides the link templates: keys ``"usc"``, ``"fr"`` and
     ``"public_law"``. With ``markdown``, headings, links, HTML tags and code
-    are skipped.
+    are skipped. CFR references link to pages on ``site``.
     """
     where = _where(context)
     templates = {"usc": USC_URL, "fr": FR_URL, "public_law": PUBLIC_LAW_URL}
     templates |= dict(urls or {})
     found: list[Reference] = []
-    taken = [m.span() for m in PROTECTED.finditer(text)] if markdown else []
+    taken = bytearray(len(text))  # 1 where text is already a reference.
+    for m in PROTECTED.finditer(text) if markdown else ():
+        _take(taken, *m.span())
     for finder in (_paragraphs, _sections, _titled, _appendices, _subparts, _parts):
         for start, end, target in finder(text, where):
-            _add(found, taken, text, start, end, target)
+            _add(found, taken, text, start, end, target, site)
     for start, end, target in _this(text, where):
-        _add(found, taken, text, start, end, target)
+        _add(found, taken, text, start, end, target, site)
     for kind, start, end, url in _external(text, templates):
         if not _overlaps(taken, start, end):
-            taken.append((start, end))
+            _take(taken, start, end)
             found.append(Reference(start, end, text[start:end], None, url, kind))
     return sorted(found, key=lambda r: r.start)
 
@@ -179,6 +177,7 @@ def link_markdown(
     href: Callable[[Reference], str | None] | None = None,
     *,
     urls: Mapping[str, str] | None = None,
+    site: str = SITE_URL,
 ) -> str:
     """Markdown with each reference made a link.
 
@@ -187,7 +186,7 @@ def link_markdown(
     links, HTML tags and code are left alone.
     """
     pieces, last = [], 0
-    for ref in find_references(text, context, urls=urls, markdown=True):
+    for ref in find_references(text, context, urls=urls, markdown=True, site=site):
         link = (href(ref) if href else None) or ref.url
         pieces += [text[last : ref.start], f"[{ref.text}]({_destination(link)})"]
         last = ref.end
@@ -211,20 +210,25 @@ def _where(context: Address | str | int | None) -> _Where:
 
 def _add(
     found: list[Reference],
-    taken: list[tuple[int, int]],
+    taken: bytearray,
     text: str,
     start: int,
     end: int,
     target: Address | None,
+    site: str,
 ) -> None:
     if target is None or _overlaps(taken, start, end):
         return
-    taken.append((start, end))
-    found.append(Reference(start, end, text[start:end], target, target.url()))
+    _take(taken, start, end)
+    found.append(Reference(start, end, text[start:end], target, target.url(site)))
 
 
-def _overlaps(spans: list[tuple[int, int]], start: int, end: int) -> bool:
-    return any(start < b and a < end for a, b in spans)
+def _overlaps(taken: bytearray, start: int, end: int) -> bool:
+    return taken.find(1, start, end) != -1
+
+
+def _take(taken: bytearray, start: int, end: int) -> None:
+    taken[start:end] = b"\x01" * (end - start)
 
 
 Found = Iterator[tuple[int, int, Address | None]]

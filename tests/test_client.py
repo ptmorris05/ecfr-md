@@ -143,7 +143,7 @@ def test_store_reuses_text_until_the_eCFR_changes_it(api, part_xml, tmp_path):
     api.json(VERSIONS, {"content_versions": [version("160")], "meta": {}})
     assert session().date == dt.date(2026, 10, 8)
     assert api.paths().count(PART) == 0
-    assert api.requests[-1].url.params["issue_date[gte]"] == "2026-01-02"
+    assert api.requests[-1].url.params["issue_date[gte]"] == "2026-10-08"
 
     # Part 164 changed: downloaded again.
     api.json("/api/versioner/v1/titles.json", titles("2026-10-09", "2026-10-09"))
@@ -473,5 +473,5 @@ def test_get_many_shares_one_request_per_small_part(ecfr, api):
 def test_get_many_fetches_separately_when_the_part_is_large(ecfr, api, monkeypatch):
     monkeypatch.setattr("ecfr_md.client.GROUP_BELOW", 0)
     ecfr.get_many(["45 CFR 164.104", "45 CFR 164.106"])
-    full = [dict(r.url.params) for r in api.requests if r.url.path == FULL]
-    assert full == [{"section": "164.104"}, {"section": "164.106"}]
+    full = [r.url.params["section"] for r in api.requests if r.url.path == FULL]
+    assert sorted(full) == ["164.104", "164.106"]  # In parallel: in any order.

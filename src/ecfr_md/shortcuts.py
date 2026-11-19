@@ -1,7 +1,8 @@
 """Module-level functions for scripts: ``ecfr_md.get("45 CFR 164.502")``.
 
-They share one :class:`~ecfr_md.client.ECFR` with default settings, created on
-first use and closed at exit. For other settings, use ``ECFR(Settings(...))``.
+They share one :class:`~ecfr_md.client.ECFR`, created on first use with the
+settings from the config file and ``ECFR_MD_*`` variables, and closed at exit.
+:func:`configure` changes its settings; or use ``ECFR(Settings(...))``.
 
 Each function has its method's docstring, copied at import so the two can't
 drift; signatures are written out so type checkers see them.
@@ -11,10 +12,11 @@ import atexit
 import threading
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Literal, Unpack, overload
+from typing import Any, Literal, Unpack, overload
 
 from ecfr_md.client import ECFR
 from ecfr_md.compare import Comparison
+from ecfr_md.config import Settings
 from ecfr_md.document import Node
 from ecfr_md.params import DateLike, Hierarchy, SearchFilters
 from ecfr_md.render.formats import Format
@@ -43,8 +45,35 @@ def client() -> ECFR:
     with _lock:
         if _shared is None:
             _shared = ECFR()
-            atexit.register(_shared.close)
+            atexit.register(_close)
         return _shared
+
+
+def configure(settings: Settings | None = None, /, **fields: Any) -> ECFR:
+    """Change the settings of the client the module-level functions share.
+
+    Give a :class:`~ecfr_md.config.Settings`, or settings by name, which win
+    over ``ECFR_MD_*`` variables and the config file, as with
+    ``Settings.load(**fields)``::
+
+        ecfr_md.configure(site_url="https://mirror.example", source="api")
+
+    The client in use before is closed. Returns the new one.
+    """
+    global _shared
+    new = ECFR(settings if settings is not None else Settings.load(**fields))
+    with _lock:
+        old, _shared = _shared, new
+    if old is None:
+        atexit.register(_close)
+    else:
+        old.close()
+    return new
+
+
+def _close() -> None:
+    if _shared is not None:
+        _shared.close()
 
 
 @_documented_by(ECFR.titles)

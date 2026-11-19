@@ -13,12 +13,14 @@ Common commands:
     ecfr-md cited-by 45 CFR 164.502            what cites it
     ecfr-md compare 45 CFR 164.502 --since 2024-01-01   what changed
     ecfr-md titles                             what titles exist
+    ecfr-md config show                        settings, and where each is from
 
 Run ecfr-md COMMAND --help for a command's options. The options below go
 before the command. Every eCFR API endpoint is under ecfr-md api.
 """
 
 import datetime as dt
+import difflib
 import functools
 import inspect
 import io
@@ -27,13 +29,14 @@ import logging
 import os
 import re
 import shlex
+import subprocess
 import sys
 import warnings
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Annotated, Unpack
 
-from cyclopts import App, CycloptsError, Group, Parameter, config
+from cyclopts import App, CycloptsError, Group, Parameter
 from cyclopts.panel import CycloptsPanel
 from pydantic import BaseModel
 from pydantic import ValidationError as PydanticValidationError
@@ -41,9 +44,16 @@ from rich.console import Console, RenderableType
 from rich.logging import RichHandler
 from rich.text import Text
 
+from ecfr_md import sources
 from ecfr_md.address import Address
 from ecfr_md.client import ECFR, Admin, Search, Versioner
-from ecfr_md.config import Settings, __version__
+from ecfr_md.config import (
+    ENV_PREFIX,
+    Settings,
+    __version__,
+    read_config,
+    write_config,
+)
 from ecfr_md.errors import ECFRError, InvalidCitationError, InvalidParameterError
 from ecfr_md.params import DateLike, Hierarchy, SearchFilters, to_date
 from ecfr_md.render.export import render
@@ -61,7 +71,6 @@ from ecfr_md.ui import (
     titles_table,
 )
 
-ENV_PREFIX = "ECFR_MD_"
 EXIT_ERROR = 1
 EXIT_USAGE = 2
 FORMAT_BELOW = 2_000_000  # Larger text is printed as plain Markdown.
@@ -92,7 +101,6 @@ class TopLevelGroup(Group):
 CONNECTION = TopLevelGroup("Connection")
 
 app = App(name="ecfr-md", version=__version__, help=__doc__)
-app.meta.config = config.Env(ENV_PREFIX, command=False)
 
 
 @app.command
@@ -883,6 +891,144 @@ def clear(*, ecfr: Client) -> None:
     )
 
 
+config_app = App(
+    name="config",
+    help=(
+        "Settings: hosts, sources, cache and connection. Values come from "
+        "options before the command, ECFR_MD_* variables, the config file and "
+        "the defaults, in that order."
+    ),
+)
+app.command(config_app)
+
+
+@config_app.command
+def show(
+    *, as_json: Annotated[bool, Parameter(name="--json")] = False, ecfr: Client
+) -> None:
+    """Show each setting, where its value came from, and how text sources are
+    chosen.
+
+    Parameters
+    ----------
+    as_json: bool
+        Print JSON instead of lines.
+    """
+    settings = ecfr.settings
+    explained = settings.explain()
+    choice = sources.explain(settings, ecfr._costs)
+    if as_json:
+        data = {
+            "settings": {
+                name: {"value": _plain(value), "from": origin}
+                for name, (value, origin) in explained.items()
+            },
+            "config_file": str(settings.config_file),
+            "sources": choice,
+        }
+        console.print_json(json.dumps(data))
+        return
+    width = max(len(name) for name in explained)
+    lines = [
+        f"{name.ljust(width)}  {_shown(value)}  ({origin})"
+        for name, (value, origin) in explained.items()
+    ]
+    console.print(
+        "\n".join([*lines, "", f"Config file: {settings.config_file}", choice]),
+        soft_wrap=True,
+        markup=False,
+        highlight=False,
+    )
+
+
+@config_app.command
+def path(*, ecfr: Client) -> None:
+    """Print where the config file is (it may not exist yet)."""
+    console.print(str(ecfr.settings.config_file), soft_wrap=True, highlight=False)
+
+
+@config_app.command(name="set")
+def set_setting(key: str, value: str, /, *, ecfr: Client) -> None:
+    """Save a setting in the config file, e.g. ecfr-md config set source bulk.
+
+    Parameters
+    ----------
+    key: str
+        A setting's name, as ecfr-md config show lists them; headers.NAME
+        for a request header.
+    value: str
+        Its new value.
+    """
+    file = ecfr.settings.config_file
+    values = read_config(file)
+    name, _, header = key.replace("-", "_").partition(".")
+    if name == "headers" and header:
+        values["headers"] = {**values.get("headers", {}), header: value}
+    elif name in Settings.model_fields and name != "headers":
+        values[name] = value
+    else:
+        raise InvalidParameterError(_unknown_setting(key))
+    _write_settings(file, values)
+    _terminal(ecfr).done("Saved", f"{key} in {file}", network=False)
+
+
+@config_app.command
+def unset(key: str, /, *, ecfr: Client) -> None:
+    """Remove a setting from the config file, so its default applies.
+
+    Parameters
+    ----------
+    key: str
+        A setting's name; headers.NAME for a request header.
+    """
+    file = ecfr.settings.config_file
+    values = read_config(file)
+    name, _, header = key.replace("-", "_").partition(".")
+    if name == "headers" and header:
+        found = header in values.get("headers", {})
+        values.get("headers", {}).pop(header, None)
+    else:
+        found = values.pop(name, None) is not None
+    if not found:
+        raise InvalidParameterError(f"{key} isn't set in {file}")
+    _write_settings(file, values)
+    _terminal(ecfr).done("Removed", f"{key} from {file}", network=False)
+
+
+@config_app.command
+def edit(*, ecfr: Client) -> None:
+    """Open the config file in $VISUAL or $EDITOR, then check it."""
+    file = ecfr.settings.config_file
+    if not file.exists():
+        write_config(file, {})
+    editor = os.environ.get("VISUAL") or os.environ.get("EDITOR")
+    editor = editor or ("notepad" if sys.platform == "win32" else "vi")
+    subprocess.run([*shlex.split(editor), str(file)], check=False)
+    Settings.load(file, env={})  # Says what's wrong, if anything.
+    _terminal(ecfr).done("Checked", str(file), network=False)
+
+
+def _write_settings(file: Path, values: dict) -> None:
+    """Check settings, then write them with their proper types."""
+    checked = Settings.load(file, env={}, origin=f"file {file}", **values)
+    write_config(file, {name: getattr(checked, name) for name in values})
+
+
+def _unknown_setting(key: str) -> str:
+    close = difflib.get_close_matches(key, Settings.model_fields, n=1)
+    hint = f"; did you mean {close[0]}?" if close else ""
+    return f"No setting {key!r}{hint} (ecfr-md config show lists them)"
+
+
+def _plain(value: object) -> object:
+    """A setting's value as JSON can hold it."""
+    return str(value) if isinstance(value, Path) else value
+
+
+def _shown(value: object) -> str:
+    return "(none)" if value is None else str(value)
+
+
 def _print_markdown(text: str) -> None:
     """Write Markdown to stdout as UTF-8, whatever the console's encoding."""
     sys.stdout.flush()
@@ -960,6 +1106,9 @@ def launcher(
     settings: Annotated[Settings, Parameter(name="*", group=CONNECTION)] = (
         DEFAULT_SETTINGS
     ),
+    config_file: Annotated[
+        Path | None, Parameter(name="--config", group=CONNECTION)
+    ] = None,
     quiet: Annotated[bool, Parameter(alias="-q", group="Output")] = False,
     verbose: Annotated[bool, Parameter(alias="-v", group="Output")] = False,
 ) -> int:
@@ -967,11 +1116,15 @@ def launcher(
 
     Parameters
     ----------
+    config_file: Path | None
+        Settings file (TOML); default: $ECFR_MD_CONFIG, else ecfr-md config path.
     quiet: bool
         No progress or summary; only warnings and errors.
     verbose: bool
-        Log every request.
+        Log every request, and which host served the text and why.
     """
+    quiet = quiet or _env_flag("QUIET")
+    verbose = verbose or _env_flag("VERBOSE")
     # Only ecfr-md's own records: HTTP/2 libraries log every header at DEBUG.
     logging.basicConfig(
         level=logging.WARNING,
@@ -988,6 +1141,15 @@ def launcher(
         return 0
     terminal = Terminal(err_console, quiet=quiet)
     try:
+        # Options given here win over ECFR_MD_* variables and the config file.
+        given = {name: getattr(settings, name) for name in settings.model_fields_set}
+        try:
+            settings = Settings.load(config_file, origin="CLI", **given)
+        except InvalidParameterError:
+            if command not in (edit, path, set_setting, unset):
+                raise
+            # Bad settings mustn't stop the commands that fix them.
+            settings = Settings.load(config_file, origin="CLI", read=False, **given)
         with ECFR(settings, progress=terminal) as ecfr:
             command(*bound.args, **bound.kwargs, ecfr=ecfr)
     except BrokenPipeError:
@@ -1004,6 +1166,12 @@ def launcher(
         terminal.error(exc)
         return EXIT_ERROR
     return 0
+
+
+def _env_flag(name: str) -> bool:
+    """Whether an ECFR_MD_<NAME> variable is set to something true."""
+    value = os.environ.get(f"{ENV_PREFIX}{name}", "")
+    return value.strip().lower() in ("1", "true", "yes", "on")
 
 
 def _file_error(exc: OSError) -> OSError:

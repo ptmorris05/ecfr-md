@@ -24,7 +24,7 @@ from ecfr_md.address import (
     encode_id,
     encode_section,
 )
-from ecfr_md.config import BASE_URL
+from ecfr_md.config import SITE_URL
 from ecfr_md.errors import ResponseFormatError
 
 Events = Iterable[tuple[str, ET.Element]]
@@ -602,9 +602,27 @@ def _table_line(cells: list[str], width: int) -> str:
     return "| " + " | ".join((cells + [""] * width)[:width]) + " |"
 
 
+def absolute_images(root: ET.Element, host: str) -> None:
+    """Make the eCFR's site-relative image links ("/graphics/x.gif") absolute."""
+    for img in root.iter("img"):
+        src = img.get("src", "")
+        if src.startswith("/"):
+            img.set("src", host.rstrip("/") + src)
+
+
+def images_on(events: Events, host: str) -> Iterator[tuple[str, ET.Element]]:
+    """Events with image links made absolute on ``host``, as they arrive."""
+    for event, el in events:
+        if event == "start" and el.tag == "img":
+            absolute_images(el, host)
+        yield event, el
+
+
 def _image(el: ET.Element) -> str:
     src = el.get("src", "")
-    return f"![]({BASE_URL}{src})" if src.startswith("/") else f"![]({src})"
+    # The client makes image links absolute on its image host; this default
+    # is for XML loaded some other way.
+    return f"![]({SITE_URL}{src})" if src.startswith("/") else f"![]({src})"
 
 
 def _inline(el: ET.Element) -> str:

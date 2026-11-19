@@ -35,7 +35,7 @@ from typing import Any, Literal, Self
 from urllib.parse import SplitResult, parse_qs, quote, unquote, urlsplit
 
 from ecfr_md.citation import UPPER_LEVELS, Citation
-from ecfr_md.config import BASE_URL
+from ecfr_md.config import BASE_URL, SITE_URL
 from ecfr_md.errors import AmbiguousNodeError, InvalidCitationError, NodeNotFoundError
 from ecfr_md.params import Hierarchy, as_hierarchy
 
@@ -475,8 +475,8 @@ class Address:
         """The citation's levels and markers, without occurrences or date."""
         return Citation(self.title, as_hierarchy(self.hierarchy), self.markers)
 
-    def url(self) -> str:
-        """The eCFR web page, as the eCFR links it: sections by number
+    def url(self, site: str = SITE_URL) -> str:
+        """The eCFR web page (on ``site``), as the eCFR links it: sections by number
         (``/current/title-45/section-164.502#p-164.502(a)(1)``), everything
         else under its part (``.../part-1026/appendix-Supplement%20I%20to...``)."""
         h = self.hierarchy
@@ -497,7 +497,12 @@ class Address:
             if self.group is not None:
                 path.append(f"subject-group-{self.group}")
         url = "/".join(
-            [BASE_URL, when, f"title-{self.title}", *(quote(p, safe="") for p in path)]
+            [
+                site.rstrip("/"),
+                when,
+                f"title-{self.title}",
+                *(quote(p, safe="") for p in path),
+            ]
         )
         if self.paragraph and "section" in h:
             url += f"#p-{h['section']}" + "".join(f"({m})" for m in self.markers)

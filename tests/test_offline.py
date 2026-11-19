@@ -41,7 +41,7 @@ def test_offline_freshness_check_serves_the_cached_copy(api, tmp_path):
     with _client(api, tmp_path) as ecfr:
         ecfr.get("45 CFR Part 164")
     newer = copy.deepcopy(TITLES)
-    newer["titles"][0]["latest_issue_date"] = "2026-02-01"
+    newer["titles"][0]["latest_issue_date"] = "2026-10-08"
     api.json("/api/versioner/v1/titles.json", newer)
     api.routes[VERSIONS] = _offline
     with _client(api, tmp_path) as ecfr, pytest.warns(ECFRWarning, match="cached on"):
