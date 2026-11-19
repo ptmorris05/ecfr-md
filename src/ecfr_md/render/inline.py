@@ -16,7 +16,8 @@ from markdown_it.token import Token
 
 HTML_TAG = re.compile(r"<(/?)([A-Za-z]+)\s*/?>")
 STYLES = {"strong": "bold", "b": "bold", "em": "italic", "i": "italic"}
-STYLES |= {"sup": "sup", "sub": "sub"}
+STYLES |= {"sup": "sup", "sub": "sub", "ins": "inserted", "del": "deleted"}
+STYLE_NAMES = ("bold", "italic", "sup", "sub", "inserted", "deleted")
 MARKERS = {"strong_open": "bold", "em_open": "italic"}
 CLOSERS = {"strong_close": "bold", "em_close": "italic"}
 
@@ -33,6 +34,10 @@ class Span:
     sub: bool = False
     href: str | None = None
     kind: Literal["text", "break", "image"] = "text"
+    inserted: bool = False
+    """Inside ``<ins>``, as in a redline."""
+    deleted: bool = False
+    """Inside ``<del>``."""
 
 
 @cache
@@ -49,12 +54,20 @@ def spans(markdown: str) -> list[Span]:
 
 def _spans(tokens: list[Token]) -> list[Span]:
     out: list[Span] = []
-    depth = {"bold": 0, "italic": 0, "sup": 0, "sub": 0}
+    depth: dict[str, int] = dict.fromkeys(STYLE_NAMES, 0)
     links: list[str] = []
 
     def style() -> Span:
-        on = [depth[name] > 0 for name in ("bold", "italic", "sup", "sub")]
-        return Span("", *on, href=links[-1] if links else None)
+        return Span(
+            "",
+            bold=depth["bold"] > 0,
+            italic=depth["italic"] > 0,
+            sup=depth["sup"] > 0,
+            sub=depth["sub"] > 0,
+            href=links[-1] if links else None,
+            inserted=depth["inserted"] > 0,
+            deleted=depth["deleted"] > 0,
+        )
 
     for token in tokens:
         kind = token.type

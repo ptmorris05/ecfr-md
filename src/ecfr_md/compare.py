@@ -21,7 +21,8 @@ ALIKE = 0.5  # How alike two blocks must be to count as one changed block.
 class Difference:
     """One block added, removed or changed."""
 
-    kind: Literal["added", "removed", "changed"]
+    kind: Literal["added", "removed", "changed", "unchanged"]
+    """What happened to the block; "unchanged" only from :func:`aligned`."""
     before: str
     """The block's Markdown before; empty if added."""
     after: str
@@ -101,16 +102,24 @@ def compare(
     citation: str, before: str, after: str, since: dt.date, until: dt.date
 ) -> Comparison:
     """Compare two Markdown texts of the same citation."""
+    blocks = aligned(before, after)
+    differences = [b for b in blocks if b.kind != "unchanged"]
+    unchanged = len(blocks) - len(differences)
+    return Comparison(citation, since, until, differences, unchanged)
+
+
+def aligned(before: str, after: str) -> list[Difference]:
+    """Every block of two Markdown texts in order, the unchanged ones too:
+    the whole text as a redline, as a reader sees it."""
     old, new = _blocks(before), _blocks(after)
-    differences: list[Difference] = []
-    unchanged = 0
+    blocks: list[Difference] = []
     matcher = difflib.SequenceMatcher(None, old, new, autojunk=False)
     for op, i1, i2, j1, j2 in matcher.get_opcodes():
         if op == "equal":
-            unchanged += i2 - i1
+            blocks += [Difference("unchanged", b, b) for b in old[i1:i2]]
             continue
-        differences += _pair(old[i1:i2], new[j1:j2])
-    return Comparison(citation, since, until, differences, unchanged)
+        blocks += _pair(old[i1:i2], new[j1:j2])
+    return blocks
 
 
 def _pair(removed: list[str], added: list[str]) -> list[Difference]:
