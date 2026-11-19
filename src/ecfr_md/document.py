@@ -8,6 +8,7 @@ on first access.
 >>> part = ecfr.get("45 CFR Part 164")
 >>> part["E"]                      # a subpart
 >>> part["164.502(a)(1)"]          # any descendant, down to paragraphs
+>>> part["164.502/a/1"]            # the same, as a relative address
 >>> [s.citation for s in part.iter("section")]
 >>> part.save("hipaa.md")
 
@@ -18,21 +19,24 @@ An identifier that matches several nodes raises
 from __future__ import annotations
 
 import datetime as dt
+import difflib
 import re
-import string
 import xml.etree.ElementTree as ET
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Iterator, Sequence
+from dataclasses import replace
 from enum import StrEnum
 from functools import cached_property
 from pathlib import Path, PurePosixPath
-from typing import ClassVar, Literal, overload
+from typing import Any, ClassVar, Literal, overload
 
 from ecfr_md import markdown
+from ecfr_md.address import POSITIONS, Address, marker_at, relative, walk
 from ecfr_md.citation import KEYWORDS, PARAGRAPH, Citation
 from ecfr_md.errors import (
     AmbiguousNodeError,
     InvalidCitationError,
+    InvalidParameterError,
     NodeNotFoundError,
     ResponseFormatError,
 )
@@ -41,16 +45,22 @@ from ecfr_md.output import (
     file_name,
     page_path,
     provenance,
-    render_front_matter,
     save_events,
     subject_group_citation,
     subject_group_url,
+    with_front_matter,
     write_text,
 )
 from ecfr_md.params import Hierarchy, as_hierarchy
 
 
 class Level(StrEnum):
+    """A level of the CFR hierarchy, from title down to paragraph.
+
+    Members are strings, so ``node.level == "section"`` works. Methods that
+    take a level accept its name in any case: ``"section"``, ``"Section"``.
+    """
+
     TITLE = "title"
     SUBTITLE = "subtitle"
     CHAPTER = "chapter"
@@ -61,6 +71,39 @@ class Level(StrEnum):
     SECTION = "section"
     APPENDIX = "appendix"
     PARAGRAPH = "paragraph"
+
+
+LevelName = Literal[
+    "title",
+    "subtitle",
+    "chapter",
+    "subchapter",
+    "part",
+    "subpart",
+    "subject_group",
+    "section",
+    "appendix",
+    "paragraph",
+]
+"""The name of a :class:`Level`, for type checkers."""
+
+
+def as_level(value: Level | str) -> Level:
+    """A level from its name in any case, e.g. "Section" -> ``Level.SECTION``.
+
+    Raises InvalidParameterError, listing the levels, for anything else.
+    """
+    if isinstance(value, Level):
+        return value
+    name = str(value).strip().casefold().replace(" ", "_").replace("-", "_")
+    if name in Level._value2member_map_:
+        return Level(name)
+    names = [level.value for level in Level]
+    close = difflib.get_close_matches(name, names, n=1)
+    hint = f" Did you mean {close[0]!r}?" if close else ""
+    raise InvalidParameterError(
+        f"{value!r} is not a level.{hint} Use one of: {', '.join(names)}."
+    )
 
 
 # Levels that are also API hierarchy parameters, broadest first.
@@ -84,55 +127,19 @@ ITALIC_HEADING = re.compile(r"\*(?!\*)(.+?)\*(?!\*)")
 EXAMPLE_START = re.compile(r"[*\s]*(?:Example|Illustration)s?(?:\s+\d+)?\s*[.:*\u2014]")
 
 
-ROMAN_VALUES = {"m": 1000, "d": 500, "c": 100, "l": 50, "x": 10, "v": 5, "i": 1}
-ROMAN_SYMBOLS = (
-    ("m", 1000), ("cm", 900), ("d", 500), ("cd", 400), ("c", 100), ("xc", 90),
-    ("l", 50), ("xl", 40), ("x", 10), ("ix", 9), ("v", 5), ("iv", 4), ("i", 1),
-)  # fmt: skip
 ITALIC_LEVELS = (5, 6)
 LOOKAHEAD = 200  # Markers read ahead to tell (i) the letter from (i) the numeral.
-
-
-def _letters(marker: str, alphabet: str) -> int | None:
-    """Position in a, ..., z, aa, ..., zz, aaa, ... (no upper limit)."""
-    if marker and set(marker) <= set(alphabet) and len(set(marker)) == 1:
-        return (len(marker) - 1) * len(alphabet) + alphabet.index(marker[0]) + 1
-    return None
-
-
-def _number(marker: str) -> int | None:
-    return int(marker) if marker.isdigit() and int(marker) > 0 else None
-
-
-def _roman(marker: str) -> int | None:
-    """Value of any canonical lowercase roman numeral, e.g. 'xliv' -> 44."""
-    if not marker or not set(marker) <= ROMAN_VALUES.keys():
-        return None
-    values = [ROMAN_VALUES[c] for c in marker]
-    total = sum(
-        -v if v < nxt else v for v, nxt in zip(values, [*values[1:], 0], strict=True)
-    )
-    canonical, rest = "", total
-    for symbol, value in ROMAN_SYMBOLS:
-        count, rest = divmod(rest, value)
-        canonical += symbol * count
-    return total if canonical == marker else None  # Rejects e.g. "iiii", "vx".
-
-
-# Position of a marker within each OFR paragraph level: (a), (1), (i), (A),
-# then italic (1) and (i). None means the marker can't be at that level.
-POSITIONS: dict[int, Callable[[str], int | None]] = {
-    1: lambda m: _letters(m, string.ascii_lowercase),
-    2: _number,
-    3: _roman,
-    4: lambda m: _letters(m, string.ascii_uppercase),
-    5: _number,
-    6: _roman,
-}
+# Jupyter shows a node's Markdown; whole parts would swamp the notebook.
+REPR_MAX_CHARS = 20_000
+REPR_HINT = " — use .to_markdown()"
 
 
 class Node(ABC):
-    """A piece of the CFR: iterable over its children, indexable by identifier."""
+    """A piece of the CFR: iterable over its children, indexable by identifier.
+
+    ``text`` and ``to_markdown()`` are everything inside the node; ``toc()``
+    lists what's inside without the text; ``to_dict()`` is a JSON-ready dict.
+    """
 
     level: ClassVar[Level]
 
@@ -151,13 +158,85 @@ class Node(ABC):
     def children(self) -> tuple[Node, ...]:
         """Child nodes in document order."""
 
+    def to_markdown(self, max_chars: int | None = None) -> str:
+        """This node and everything inside it as one Markdown document.
+
+        With ``max_chars``, the text is cut at a paragraph boundary to fit,
+        and ends with a note of how many characters were left out.
+        """
+        return truncate(self._markdown(), max_chars)
+
     @abstractmethod
-    def to_markdown(self) -> str:
-        """This node and everything inside it as one Markdown document."""
+    def _markdown(self) -> str:
+        """The full Markdown of this node."""
+
+    def toc(self, depth: int | None = None) -> str:
+        """A table of contents: this node and those inside it, without text.
+
+        One line per node, its citation and heading, indented by depth, down
+        to paragraphs. ``depth`` limits how many levels below this node are
+        listed; ``depth=0`` is this node alone.
+        """
+        check_depth(depth)
+        return "\n".join(_toc_lines(self, depth, 0))
+
+    def to_dict(
+        self, *, depth: int | None = None, text: bool = True, include_raw: bool = False
+    ) -> dict[str, Any]:
+        """This node as a dict ready for ``json.dumps``.
+
+        Keys: ``citation``, ``address``, ``uri``, ``level``, ``identifier``,
+        ``heading``, ``date`` (ISO format, or None), ``url`` (the eCFR page),
+        ``text`` (the full Markdown, as :attr:`text`) and ``children`` (dicts
+        like this one).
+
+        Parameters
+        ----------
+        depth: int | None
+            Levels of children to include; ``0`` leaves out ``children``.
+            Defaults to all of them, down to paragraphs.
+        text: bool
+            Include ``text``. A node's text includes its children's, so for
+            a deep tree consider ``text=False`` or a small ``depth``.
+        include_raw: bool
+            Include ``raw``: the node's XML from the API (None for paragraphs,
+            which the XML doesn't delimit).
+        """
+        check_depth(depth)
+        data: dict[str, Any] = {
+            "citation": self.citation,
+            "address": self.address,
+            "uri": self.uri,
+            "level": self.level.value,
+            "identifier": self.identifier,
+            "heading": self.heading,
+            "date": self.date.isoformat() if self.date else None,
+            "url": self.url,
+        }
+        if text:
+            data["text"] = self.text
+        if include_raw:
+            data["raw"] = self._raw
+        if depth is None or depth > 0:
+            below = None if depth is None else depth - 1
+            data["children"] = [
+                c.to_dict(depth=below, text=text, include_raw=include_raw)
+                for c in self.children
+            ]
+        return data
+
+    @property
+    @abstractmethod
+    def _raw(self) -> str | None:
+        """The API's XML for this node, if it has its own element."""
+
+    def _repr_markdown_(self) -> str:
+        """Jupyter shows nodes as Markdown, cut short if long."""
+        return truncate(self._markdown(), REPR_MAX_CHARS, REPR_HINT)
 
     def to_markdown_tree(self) -> dict[PurePosixPath, str]:
         """Markdown files keyed by relative path, one per section or appendix."""
-        return {PurePosixPath(f"{self.slug}.md"): self.to_markdown()}
+        return {PurePosixPath(file_name(self._address())): self.to_markdown()}
 
     @overload
     def save(
@@ -180,7 +259,7 @@ class Node(ABC):
 
         Returns the file written, or with ``tree=True`` the list of files.
         By default this writes one file; an existing directory receives a file
-        named after the citation, e.g. ``45-cfr-164.502.md``. With
+        named after the address, e.g. ``45_164.502.md``. With
         ``tree=True``, ``path`` is a directory that gets one folder per
         hierarchy level and one file per section or appendix. Each
         file starts with YAML front matter (see :attr:`provenance`) unless
@@ -188,16 +267,25 @@ class Node(ABC):
         """
         target = Path(path)
         if target.is_dir() or str(path).endswith(("/", "\\")):
-            target = target / file_name(self.citation)
-        header = render_front_matter(self.provenance) if front_matter else ""
-        written = write_text(target, header + self.to_markdown())
+            target = target / file_name(self._address(), self.source)
+        body = self.to_markdown()
+        text = with_front_matter(self.provenance, body) if front_matter else body
+        written = write_text(target, text)
         return [written] if tree else written
 
     @property
     def text(self) -> str:
-        """This node's Markdown: a paragraph's own text without its
-        subparagraphs; for other nodes, everything inside them."""
+        """Everything inside this node as Markdown, the same as ``to_markdown()``.
+
+        A paragraph's text includes its subparagraphs; its own lead text is
+        :attr:`Paragraph.own_text`.
+        """
         return self.to_markdown()
+
+    @property
+    def url(self) -> str:
+        """The eCFR web page showing this node, at its date."""
+        return self.provenance["source"]
 
     @property
     def section(self) -> Node | None:
@@ -206,10 +294,15 @@ class Node(ABC):
         return next((n for n in chain if n.level is Level.SECTION), None)
 
     @property
-    def provenance(self) -> dict[str, str]:
-        """Citation, date, eCFR page, API request, retrieval time and generator."""
+    def provenance(self) -> dict[str, Any]:
+        """Citation, address, date, eCFR page, API request, retrieval time and
+        generator: the front matter of saved files."""
         return provenance(
-            self.source, self.hierarchy, heading=self.heading, page=self._page
+            self.source,
+            self.hierarchy,
+            heading=self.heading,
+            page=self._page,
+            address=self.address,
         )
 
     @property
@@ -220,7 +313,8 @@ class Node(ABC):
     @property
     @abstractmethod
     def slug(self) -> str:
-        """A file or folder name for the node, e.g. "section-164.502"."""
+        """The node's name in a saved tree: "part-164", "164.502" (its file
+        is "164.502.md"), "supplement-I"; a paragraph's marker, "a"."""
 
     @property
     def date(self) -> dt.date | None:
@@ -229,6 +323,7 @@ class Node(ABC):
 
     @property
     def cfr_title(self) -> int:
+        """The CFR title number, e.g. 45."""
         return self.source.title
 
     @property
@@ -254,6 +349,30 @@ class Node(ABC):
         """Standard citation, e.g. ``45 CFR 164.502(a)(1)``."""
         return str(Citation(self.cfr_title, self.hierarchy))
 
+    def _address(self) -> Address:
+        return Address(self.cfr_title, self.hierarchy)
+
+    @property
+    def address(self) -> str:
+        """The node's address, without a date: ``45/164.502/a/1``,
+        ``45/part-164/subpart-E``. See :class:`~ecfr_md.address.Address`."""
+        return str(self._address())
+
+    @property
+    def uri(self) -> str:
+        """The address at the node's date: ``cfr:45/164.502/a/1@2024-01-01``."""
+        return replace(self._address(), date=self.date).uri()
+
+    def cite(
+        self, style: Literal["ofr", "bluebook"] = "ofr", year: int | None = None
+    ) -> str:
+        """A citation: ``"ofr"`` (:attr:`citation`, ``45 CFR 164.502(a)(1)``)
+        or ``"bluebook"`` (``45 C.F.R. § 164.502(a)(1) (2024)``), with
+        ``year`` or else the year of the node's date."""
+        if style == "ofr":
+            return self.citation
+        return replace(self._address(), date=self.date).citation(style, year)
+
     def __iter__(self) -> Iterator[Node]:
         return iter(self.children)
 
@@ -264,7 +383,7 @@ class Node(ABC):
         return True  # A node without children is still truthy.
 
     def __contains__(self, key: object) -> bool:
-        if not isinstance(key, str | int):
+        if not isinstance(key, str | int | Address):
             return False
         try:
             self[key]
@@ -274,17 +393,27 @@ class Node(ABC):
             pass
         return True
 
-    def __getitem__(self, key: str | int) -> Node:
+    def __getitem__(self, key: str | int | Address) -> Node:
         """A child by index, or the nearest descendant by identifier.
 
         Keys can be identifiers ("E", "164.502"), name their level
         ("Subpart E", "§ 164.502"), be full citations ("45 CFR Part 164
-        Subpart E", "164.502(a)(1)") or paragraph markers (``section["(a)(1)"]``).
+        Subpart E", "164.502(a)(1)") or paragraph markers (``section["(a)(1)"]``),
+        or be addresses, relative to the node or not: ``part["subpart-E"]``,
+        ``part["164.512/k/1"]``, ``section["a/1"]``, ``section["1~2"]`` (the
+        second (1)), ``node["45/164.502"]`` or an :class:`Address`.
         Raises NodeNotFoundError if nothing matches and AmbiguousNodeError if
         several nodes match at the nearest depth.
         """
         if isinstance(key, int):
             return self.children[key]
+        if isinstance(key, str):
+            in_section = self.level in (Level.SECTION, Level.PARAGRAPH)
+            key = relative(key, self.cfr_title, in_section) or key
+        if isinstance(key, Address):
+            if key.title != self.cfr_title:
+                raise NodeNotFoundError(f"{key} is not in title {self.cfr_title}")
+            return walk(self, key, self.source.hierarchy)
         if (cited := self._as_citation(key)) is not None:
             try:
                 return self._walk(cited)
@@ -303,7 +432,7 @@ class Node(ABC):
             node = _single(matches, f"({marker})", node)
         return node
 
-    def get(self, key: str | int, default: Node | None = None) -> Node | None:
+    def get(self, key: str | int | Address, default: Node | None = None) -> Node | None:
         """Like ``node[key]``, but return ``default`` when nothing matches.
 
         Ambiguous keys still raise AmbiguousNodeError.
@@ -313,26 +442,33 @@ class Node(ABC):
         except (NodeNotFoundError, IndexError):
             return default
 
-    def iter(self, level: Level | str | None = None) -> Iterator[Node]:
+    def iter(self, level: Level | LevelName | None = None) -> Iterator[Node]:
         """Every descendant in document order, optionally only one level.
 
-        ``part.iter("section")`` yields all sections at any depth.
+        ``part.iter("section")`` yields all sections at any depth. Level names
+        are case-insensitive; an unknown one raises InvalidParameterError.
         """
-        wanted = Level(level) if level else None
+        # Checked now, not when iteration starts.
+        wanted = as_level(level) if level is not None else None
+        return self._iter(wanted)
+
+    def _iter(self, wanted: Level | None) -> Iterator[Node]:
         for child in self.children:
             if wanted is None or child.level is wanted:
                 yield child
             if _descend(child, wanted):
-                yield from child.iter(wanted)
+                yield from child._iter(wanted)
 
     def find(
-        self, identifier: str | None = None, *, level: Level | str | None = None
+        self, identifier: str | None = None, *, level: Level | LevelName | None = None
     ) -> Node | None:
         """The first descendant (nearest, then in document order) that matches.
 
         Unlike ``node[...]``, this doesn't check that the match is unique.
+        Returns None if nothing matches.
         """
-        matches = self._nearest(identifier, Level(level) if level else None)
+        wanted = as_level(level) if level is not None else None
+        matches = self._nearest(identifier, wanted)
         return matches[0] if matches else None
 
     def _nearest(self, identifier: str | None, wanted: Level | None) -> list[Node]:
@@ -408,7 +544,7 @@ class Node(ABC):
 
 
 class Division(Node):
-    """A structural level backed by an XML ``DIV`` element."""
+    """A level above paragraphs (title to section), backed by an XML ``DIV``."""
 
     def __init__(
         self, element: ET.Element, parent: Node | None, source: Source
@@ -434,13 +570,17 @@ class Division(Node):
 
     @property
     def slug(self) -> str:
-        return markdown.slug(self.element)
+        return markdown.segment(self.element)
 
     @property
     def _page(self) -> str | None:
         return page_path(self.element)
 
-    def to_markdown(self) -> str:
+    @property
+    def _raw(self) -> str:
+        return ET.tostring(self.element, encoding="unicode")
+
+    def _markdown(self) -> str:
         return markdown.render(self.element)
 
     def to_markdown_tree(self) -> dict[PurePosixPath, str]:
@@ -448,6 +588,7 @@ class Division(Node):
         markdown.write_tree(
             markdown.element_events(self.element),
             lambda path, body, *_: files.__setitem__(path, body),
+            names=markdown.tree_names(markdown.element_events(self.element)),
         )
         return files
 
@@ -478,30 +619,43 @@ class Division(Node):
             tree=True,
             front_matter=front_matter,
             base=base,
+            names=markdown.tree_names(markdown.element_events(self.element)),
         )
 
 
 class Title(Division):
+    """A CFR title, e.g. Title 45—Public Welfare."""
+
     level = Level.TITLE
 
 
 class Subtitle(Division):
+    """A subtitle of a title, e.g. 45 CFR Subtitle A."""
+
     level = Level.SUBTITLE
 
 
 class Chapter(Division):
+    """A chapter, usually one agency's rules, e.g. 45 CFR Chapter I."""
+
     level = Level.CHAPTER
 
 
 class Subchapter(Division):
+    """A subchapter of a chapter, e.g. 45 CFR Subchapter C."""
+
     level = Level.SUBCHAPTER
 
 
 class Part(Division):
+    """A part: the rules on one subject, e.g. 45 CFR Part 164."""
+
     level = Level.PART
 
 
 class Subpart(Division):
+    """A subpart of a part, e.g. 45 CFR Part 164 Subpart E."""
+
     level = Level.SUBPART
 
 
@@ -514,8 +668,11 @@ class SubjectGroup(Division):
     def citation(self) -> str:
         return subject_group_citation(super().citation, self.heading)
 
+    def _address(self) -> Address:
+        return replace(super()._address(), group=self.identifier)
+
     @property
-    def provenance(self) -> dict[str, str]:
+    def provenance(self) -> dict[str, Any]:
         fields = super().provenance
         fields["citation"] = self.citation
         if self._page is None:
@@ -526,10 +683,14 @@ class SubjectGroup(Division):
 
 
 class Appendix(Division):
+    """An appendix to a part or subpart; its identifier is its full name."""
+
     level = Level.APPENDIX
 
 
 class Section(Division):
+    """A section, e.g. 45 CFR 164.502; its children are its top paragraphs."""
+
     level = Level.SECTION
 
     @cached_property
@@ -554,7 +715,11 @@ class Section(Division):
 
 
 class Paragraph(Node):
-    """A numbered paragraph: (a), (1), (i), (A), then italic (1) and (i)."""
+    """A numbered paragraph of a section, e.g. 45 CFR 164.502(a)(1).
+
+    Levels nest as (a), (1), (i), (A), then italic (*1*) and (*i*); ``depth``
+    is 1 to 6. ``text`` includes subparagraphs; ``own_text`` doesn't.
+    """
 
     level = Level.PARAGRAPH
 
@@ -579,6 +744,25 @@ class Paragraph(Node):
         return tuple(n.identifier for n in chain if n.level is Level.PARAGRAPH)
 
     @property
+    def markers(self) -> tuple[str, ...]:
+        """The same as :attr:`path`: ``('a', '1', 'i')``."""
+        return self.path
+
+    @property
+    def occurrence(self) -> int | None:
+        """Which paragraph with this marker it is among its siblings, 1 for
+        the first, if the marker repeats (definitions sections repeat "(1)");
+        otherwise None."""
+        siblings = self.parent.children if self.parent else (self,)
+        same = [s for s in siblings if s.identifier == self.identifier]
+        return same.index(self) + 1 if len(same) > 1 else None
+
+    def _address(self) -> Address:
+        chain = (*reversed(self.ancestors), self)
+        markers = tuple(n.slug for n in chain if isinstance(n, Paragraph))
+        return Address(self.cfr_title, self.hierarchy, markers)
+
+    @property
     def heading(self) -> str:
         """The italic run-in heading, e.g. "Standard: Minimum necessary"."""
         if not self.blocks:
@@ -588,8 +772,11 @@ class Paragraph(Node):
         return match[1].rstrip(" .") if match else ""
 
     @property
-    def text(self) -> str:
-        """This paragraph's own Markdown, without its subparagraphs."""
+    def own_text(self) -> str:
+        """This paragraph's own Markdown, without its subparagraphs.
+
+        For (k) in ``(k) Standard—(1) ... (2) ...``, the text up to (1).
+        """
         return "\n\n".join(self.blocks)
 
     @property
@@ -597,13 +784,14 @@ class Paragraph(Node):
         return str(Citation(self.cfr_title, self.hierarchy, self.path))
 
     @property
-    def provenance(self) -> dict[str, str]:
+    def provenance(self) -> dict[str, Any]:
         return provenance(
             self.source,
             self.hierarchy,
             heading=self.heading,
             paragraph=self.path,
             page=self._page,
+            address=self.address,
         )
 
     @property
@@ -611,12 +799,16 @@ class Paragraph(Node):
         return self.section._page if self.section else None
 
     @property
-    def slug(self) -> str:
-        section = self.section.identifier if self.section else ""
-        return markdown.make_slug("paragraph", "-".join([section, *self.path]))
+    def _raw(self) -> None:
+        return None
 
-    def to_markdown(self) -> str:
-        parts = [*self.blocks, *(c.to_markdown().rstrip("\n") for c in self.children)]
+    @property
+    def slug(self) -> str:
+        n = self.occurrence
+        return f"{self.identifier}~{n}" if n else self.identifier
+
+    def _markdown(self) -> str:
+        parts = [*self.blocks, *(c._markdown().rstrip("\n") for c in self.children)]
         return "\n\n".join(p for p in parts if p) + "\n"
 
 
@@ -641,16 +833,19 @@ def load(
     hierarchy: Hierarchy | None = None,
     url: str | None = None,
     retrieved: dt.datetime | None = None,
+    pinned: bool = False,
 ) -> Division:
     """Build a navigable document from eCFR XML (e.g. ``versioner.full``).
 
     ``url`` and ``retrieved`` record where and when the XML was fetched; they
-    appear in saved files' front matter.
+    appear in saved files' front matter. ``pinned`` marks text as of a date
+    older than the latest, which ``sync`` keeps at that date.
     """
     divisions = markdown.outer_divisions(markdown.parse(xml))
     if not divisions:
         raise ResponseFormatError("The eCFR XML contains no CFR content")
-    source = Source(title, date, hierarchy or as_hierarchy({}), url, retrieved)
+    hierarchy = hierarchy or as_hierarchy({})
+    source = Source(title, date, hierarchy, url, retrieved, pinned)
     return _division(divisions[0], None, source)
 
 
@@ -666,6 +861,61 @@ def _descend(node: Node, wanted: Level | None) -> bool:
     Paragraphs are parsed on demand, so only search them when asked to.
     """
     return node.level is not Level.SECTION or wanted in (None, Level.PARAGRAPH)
+
+
+def check_depth(depth: int | None) -> None:
+    if depth is not None and depth < 0:
+        raise InvalidParameterError(f"depth must be 0 or more, or None; got {depth}")
+
+
+def truncate(text: str, max_chars: int | None, hint: str = "") -> str:
+    """Text cut to ``max_chars``, at a paragraph break if possible, with a note.
+
+    The note says how many characters were left out; the result, note
+    included, is at most ``max_chars`` long unless the note alone is longer.
+    """
+    if max_chars is None:
+        return text
+    if max_chars < 1:
+        raise InvalidParameterError(f"max_chars must be at least 1; got {max_chars}")
+    if len(text) <= max_chars:
+        return text
+
+    def note(omitted: int) -> str:
+        return f"… (truncated; {omitted:,} more characters{hint})\n"
+
+    budget = max_chars - len(note(len(text))) - 2  # 2 for the break before it.
+    cut = -1
+    for boundary in ("\n\n", "\n", " "):  # Blocks, then lines, then words.
+        if (cut := text.rfind(boundary, 0, max(budget, 0))) > 0:
+            break
+    kept = text[: max(cut, 0)].rstrip()
+    omitted = note(len(text) - len(kept))
+    return f"{kept}\n\n{omitted}" if kept else omitted
+
+
+def _toc_lines(node: Node, depth: int | None, indent: int) -> Iterator[str]:
+    heading = _short_heading(node)
+    shown = f"{node.citation} — {heading}" if heading else node.citation
+    yield "  " * indent + shown
+    if depth is None or indent < depth:
+        for child in node.children:
+            yield from _toc_lines(child, depth, indent + 1)
+
+
+def _short_heading(node: Node) -> str:
+    """A heading without what the citation says: "§ 164.502 Uses" -> "Uses"."""
+    heading = node.heading
+    if heading in node.citation:  # Subject groups are cited by their heading.
+        return ""
+    prefixes = [f"§ {node.identifier}", f"{node.level.value} {node.identifier}"]
+    if node.level is Level.APPENDIX:  # Appendices are named in full.
+        prefixes.append(node.identifier)
+    for prefix in prefixes:
+        rest = heading[len(prefix) :]
+        if heading.casefold().startswith(prefix.casefold()) and not rest[:1].isalnum():
+            return rest.lstrip(" \u2014\u2013-.:")
+    return heading
 
 
 def _single(matches: list[Node], key: str, scope: Node) -> Node:
@@ -871,28 +1121,13 @@ def _range_paths(start: list[str], end: list[str]) -> list[list[str]] | None:
     if first is None or last is None or last < first:
         return None
     paths = [start]  # Starts with any levels it shares with open paragraphs.
-    paths += [[_marker_at(level, n)] for n in range(first + 1, last + 1)]
+    paths += [[marker_at(level, n)] for n in range(first + 1, last + 1)]
     for depth, marker in enumerate(end[shared + 1 :], start=level + 1):
         final = POSITIONS[depth](marker) if depth in POSITIONS else None
         if final is None:
             return None
-        paths += [[_marker_at(depth, n)] for n in range(1, final + 1)]
+        paths += [[marker_at(depth, n)] for n in range(1, final + 1)]
     return paths
-
-
-def _marker_at(depth: int, position: int) -> str:
-    """The marker at a position of a level: (1, 3) -> "c", (3, 4) -> "iv"."""
-    if depth in (2, 5):
-        return str(position)
-    if depth in (3, 6):
-        numeral, rest = "", position
-        for symbol, value in ROMAN_SYMBOLS:
-            count, rest = divmod(rest, value)
-            numeral += symbol * count
-        return numeral
-    alphabet = string.ascii_lowercase if depth == 1 else string.ascii_uppercase
-    repeat, index = divmod(position - 1, len(alphabet))
-    return alphabet[index] * (repeat + 1)
 
 
 def _reentry(markers: list[tuple[str, str]], open_: list[Paragraph]) -> int:

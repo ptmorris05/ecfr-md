@@ -77,7 +77,10 @@ def test_ambiguous_lookups_raise_instead_of_guessing(part):
     section = part["164.108"]
     with pytest.raises(AmbiguousNodeError, match=r"2 nodes match '\(1\)'") as info:
         section["(1)"]
-    assert [p.text for p in info.value.candidates] == ["**(1)** One.", "**(1)** Uno."]
+    assert [p.own_text for p in info.value.candidates] == [
+        "**(1)** One.",
+        "**(1)** Uno.",
+    ]
     with pytest.raises(AmbiguousNodeError):
         part["164.108(1)"]
     with pytest.raises(AmbiguousNodeError):
@@ -149,10 +152,10 @@ def test_paragraph_text_and_headings(part):
     assert isinstance(first, Paragraph)
     assert first.citation == "45 CFR 164.104(a)(1)"
     assert first.heading == "First"
-    assert first.text == "**(1)** *First.* One."
+    assert first.own_text == "**(1)** *First.* One."
     assert part["164.104(a)"].heading == "Standard: Run in"
-    assert part["164.104(c)"].text == "**(c)** [Reserved]"
-    assert part["164.104(i)"].text == "**(i)** Letter i, not roman one."
+    assert part["164.104(c)"].own_text == "**(c)** [Reserved]"
+    assert part["164.104(i)"].own_text == "**(i)** Letter i, not roman one."
     assert part["164.104(a)(2)"].to_markdown() == (
         "**(2)** Two.\n\n**(i)** Roman one.\n\n**(ii)** Roman two.\n\n"
         "**(A)** Upper.\n\n**(1)** Italic one.\n"
@@ -171,12 +174,14 @@ def test_nodes_are_truthy_even_without_children(part):
 def test_provenance(part):
     assert part["164.104(a)(1)"].provenance == {
         "citation": "45 CFR 164.104(a)(1)",
+        "address": "45/164.104/a/1",
         "heading": "First",
         "date": "2026-10-07",
         "source": "https://www.ecfr.gov/on/2026-10-07/title-45/section-164.104#p-164.104(a)(1)",
         "api": "https://www.ecfr.gov/api/versioner/v1/full/2026-10-07/title-45.xml?part=164",
         "retrieved": "2026-10-09T12:00:00+00:00",
         "generator": part.provenance["generator"],
+        "layout": 2,
         "disclaimer": part.provenance["disclaimer"],
     }
     assert part.provenance["generator"].startswith("ecfr-md ")
@@ -216,33 +221,31 @@ def test_save_file_directory_and_tree(part, tmp_path: Path):
     assert front_matter(saved)["citation"] == "45 CFR Part 164"
     assert saved.endswith(part.to_markdown())
 
-    assert part.save(tmp_path) == tmp_path / "45-cfr-part-164.md"
+    assert part.save(tmp_path) == tmp_path / "45_part-164.md"
     plain = part["164.104"].save(tmp_path / "s.md", front_matter=False)
     assert plain.read_text(encoding="utf-8") == str(part["164.104"])
 
     written = part.save(tmp_path / "tree", tree=True)
     assert len(written) == 7
-    section = tmp_path / "tree/part-164/subpart-a/section-164.104.md"
+    section = tmp_path / "tree/part-164/subpart-A/164.104.md"
     meta = front_matter(section.read_text(encoding="utf-8"))
     assert meta["citation"] == "45 CFR 164.104"
     assert meta["heading"] == "§ 164.104 Paragraph nesting."
     index = front_matter(
-        (tmp_path / "tree/part-164/subpart-a/index.md").read_text(encoding="utf-8")
+        (tmp_path / "tree/part-164/subpart-A/index.md").read_text(encoding="utf-8")
     )
     assert index["citation"] == "45 CFR Part 164 Subpart A"
 
     paragraph = part["164.104(a)"]
-    assert paragraph.save(tmp_path) == tmp_path / "45-cfr-164.104-a.md"
+    assert paragraph.save(tmp_path) == tmp_path / "45_164.104_a.md"
     assert not list(tmp_path.rglob("*.part"))  # Atomic writes leave no debris.
 
 
 def test_subtree_save_keeps_ancestors_in_metadata(part, tmp_path: Path):
     part["A"].save(tmp_path, tree=True)
-    meta = front_matter(
-        (tmp_path / "subpart-a/section-164.102.md").read_text(encoding="utf-8")
-    )
+    meta = front_matter((tmp_path / "subpart-A/164.102.md").read_text(encoding="utf-8"))
     assert meta["citation"] == "45 CFR 164.102"
-    index = front_matter((tmp_path / "subpart-a/index.md").read_text(encoding="utf-8"))
+    index = front_matter((tmp_path / "subpart-A/index.md").read_text(encoding="utf-8"))
     assert index["citation"] == "45 CFR Part 164 Subpart A"
 
 

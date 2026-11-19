@@ -1,6 +1,12 @@
+import datetime as dt
+import io
 import json
+import logging
 
 import pytest
+
+from ecfr_md import cli
+from ecfr_md.errors import ECFRWarning
 
 
 def test_get_prints_markdown(run, capsys):
@@ -32,7 +38,7 @@ def test_get_file_and_tree(run, capsys, tmp_path):
 
 def test_get_all_titles(run, api, capsys, tmp_path):
     assert run("get", "--all", "-o", str(tmp_path / "flat")) == 0
-    assert [p.name for p in (tmp_path / "flat").iterdir()] == ["45-cfr.md"]
+    assert [p.name for p in (tmp_path / "flat").iterdir()] == ["45.md"]
     assert run("get", "--all", "--tree", "-o", str(tmp_path / "cfr")) == 0
     assert (tmp_path / "cfr" / "part-164" / "index.md").is_file()
     assert not any("title-35" in str(r.url) for r in api.requests)  # Reserved.
@@ -105,12 +111,15 @@ def test_invalid_arguments_exit_with_usage_code(run, capsys):
 def test_ambiguous_paragraph_exits_with_candidates(run, capsys):
     assert run("get", "45 CFR 164.108(1)") == 1
     err = capsys.readouterr().err
-    assert "More than one match" in err and "45 CFR 164.108(1)" in err
+    assert "More than one match" in err and "45/164.108/1~1, 45/164.108/1~2" in err
 
 
-def test_out_of_range_date_is_a_usage_error(run, capsys):
-    assert run("get", "45", "--date", "2030-01-01") == 2
-    assert "available up to 2026-10-07" in capsys.readouterr().err
+def test_future_date_gives_the_latest_text_with_a_warning(run, capsys, tmp_path):
+    with pytest.warns(ECFRWarning, match="no text after 2026-10-07"):
+        assert (
+            run("get", "45", "--date", "2030-01-01", "-o", str(tmp_path / "a.md")) == 0
+        )
+    assert 'date: "2026-10-07"' in (tmp_path / "a.md").read_text(encoding="utf-8")
 
 
 def test_quiet_prints_nothing_but_the_result(run, capsys, tmp_path):
@@ -133,7 +142,7 @@ def test_get_from_a_list_of_citations(run, capsys, tmp_path):
     )
     assert run("get", "--from", str(listing), "-o", str(tmp_path / "out")) == 0
     names = sorted(p.name for p in (tmp_path / "out").iterdir())
-    assert names == ["45-cfr-164.104-a.md", "45-cfr-164.106.md"]
+    assert names == ["45_164.104_a.md", "45_164.106.md"]
     assert "Saved" in capsys.readouterr().err
 
 
@@ -141,7 +150,231 @@ def test_cache_info_and_clear(run, capsys, isolated_cache):
     assert run("get", "45", "CFR", "164") == 0  # Fills the cache.
     capsys.readouterr()
     assert run("cache", "info") == 0
-    err = capsys.readouterr().err
-    assert str(isolated_cache) in err.replace("\n", "") or "Entries" in err
+    assert str(isolated_cache) in capsys.readouterr().out
     assert run("cache", "clear") == 0
     assert not isolated_cache.exists() or not any(isolated_cache.rglob("*"))
+
+
+@pytest.mark.parametrize("tokens", [(), ("api",), ("cache",), ("api", "admin")])
+def test_bare_command_groups_print_help(run, capsys, tokens):
+    assert run(*tokens) == 0
+    assert "Usage: ecfr-md" in capsys.readouterr().out
+
+
+def test_a_closed_pipe_is_not_an_error(run, monkeypatch):
+    def closed(text: str) -> None:
+        raise BrokenPipeError
+
+    monkeypatch.setattr(cli, "_print_markdown", closed)
+    monkeypatch.setattr(cli.os, "dup2", lambda *_: None)
+    assert run("get", "45", "CFR", "164") == 0
+
+
+def test_verbose_logs_only_our_requests(run):
+    assert run("-v", "api", "versioner", "titles") == 0
+    assert logging.getLogger("ecfr_md").level == logging.DEBUG
+    # HTTP/2 libraries would log every header; they keep the root's WARNING.
+    assert logging.getLogger("hpack").level == logging.NOTSET
+    assert run("api", "versioner", "titles") == 0
+    assert logging.getLogger("ecfr_md").level == logging.ERROR
+
+
+def test_from_lists_comments_repeats_and_stdin(run, tmp_path, monkeypatch):
+    text = (
+        '"45 CFR 164.104"  # quoted, with a comment\n'
+        "45 CFR 164.104\n"  # A repeat.
+        "45 CFR 164.106, 164.108\n"  # A list.
+    )
+    monkeypatch.setattr("sys.stdin", io.TextIOWrapper(io.BytesIO(text.encode())))
+    assert run("get", "--from", "-", "-o", str(tmp_path / "out")) == 0
+    names = sorted(p.name for p in (tmp_path / "out").iterdir())
+    assert names == ["45_164.104.md", "45_164.106.md", "45_164.108.md"]
+
+
+def test_from_reports_every_bad_line(run, capsys, tmp_path):
+    listing = tmp_path / "list.txt"
+    listing.write_text("45 CFR 164.104\nbogus\n" + "nope\n" * 11, encoding="utf-8")
+    assert run("get", "--from", str(listing), "-o", str(tmp_path / "out")) == 2
+    err = capsys.readouterr().err
+    assert "list.txt:2:" in err and "and 2 more" in err
+    assert not (tmp_path / "out").exists() or not any((tmp_path / "out").iterdir())
+
+
+def test_from_saves_what_it_can(run, capsys, tmp_path):
+    listing = tmp_path / "list.txt"
+    listing.write_text("45 CFR 164.104\n45 CFR 164.999\n", encoding="utf-8")
+    assert run("get", "--from", str(listing), "-o", str(tmp_path / "out")) == 1
+    assert [p.name for p in (tmp_path / "out").iterdir()] == ["45_164.104.md"]
+    assert "1 of 2 citations could not be saved" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("tokens", "message"),
+    [
+        (("get", "45", "--from", "x.txt", "-o", "d"), "leave out the citation"),
+        (("get", "--all", "--from", "x.txt", "-o", "d"), "leave out --all"),
+        (("get", "--from", "x.txt", "-o", "-"), "--from requires --output"),
+        (("get", "45", "-o", "s.docx"), "use a name ending in .md"),
+    ],
+)
+def test_output_usage_errors(run, capsys, tokens, message):
+    assert run(*tokens) == 2
+    assert message in capsys.readouterr().err
+
+
+def test_tree_onto_a_file_is_explained(run, capsys, tmp_path):
+    existing = tmp_path / "fut.md"
+    existing.write_text("x", encoding="utf-8")
+    assert run("get", "45", "--tree", "-o", str(existing)) == 2
+    assert "pick a directory such as" in capsys.readouterr().err
+
+
+def test_output_dash_and_new_directories(run, capsys, tmp_path):
+    assert run("get", "45", "CFR", "164.104", "-o", "-") == 0
+    assert capsys.readouterr().out.startswith("# §")
+    assert run("get", "45", "CFR", "164.104", "-o", f"{tmp_path}/new/") == 0
+    assert [p.name for p in (tmp_path / "new").iterdir()] == ["45_164.104.md"]
+
+
+def test_terminals_get_panels_and_pipes_get_lines():
+    from rich.console import Console
+
+    from ecfr_md.errors import NodeNotFoundError
+    from ecfr_md.ui import Terminal
+
+    screen = Console(file=io.StringIO(), force_terminal=True, width=60, no_color=True)
+    Terminal(screen).error(NodeNotFoundError("No part 9 in title 45"))
+    Terminal(screen).summary("Saved", {"Files": "3"}, network=False)
+    assert "✘ Not found" in screen.file.getvalue() and "─" in screen.file.getvalue()
+    pipe = Console(file=io.StringIO(), width=60)
+    Terminal(pipe).error(NodeNotFoundError("No part 9 in title 45"))
+    assert pipe.file.getvalue() == "✘ Not found: No part 9 in title 45\n"
+
+
+def test_titles_and_bare_outline_list_the_titles(run, capsys):
+    assert run("titles") == 0
+    out = capsys.readouterr().out
+    assert "Public Welfare" in out and "[Reserved]" in out
+    assert run("outline", "--json") == 0
+    listed = json.loads(capsys.readouterr().out)
+    assert listed[0]["citation"] == "45 CFR" and listed[1]["reserved"] is True
+
+
+def test_outline_json_has_citations_and_honours_depth(run, capsys):
+    assert run("outline", "45", "--json", "--depth", "1") == 0
+    tree = json.loads(capsys.readouterr().out)
+    assert tree["citation"] == "45 CFR"
+    assert [c["citation"] for c in tree["children"]] == ["45 CFR Subtitle A"]
+    assert "children" not in tree["children"][0]
+    assert run("outline", "45", "--depth", "-1") == 2
+
+
+def test_titles_from_python(ecfr):
+    (welfare, reserved) = ecfr.titles()
+    assert welfare.citation == "45 CFR" and welfare.latest == dt.date(2026, 10, 7)
+    assert welfare.to_dict()["url"].endswith("/on/2026-10-07/title-45")
+    assert reserved.reserved and reserved.to_dict(include_raw=True)["raw"]
+    assert reserved.url.endswith("/current/title-35")
+
+
+def test_reading_in_a_terminal(run, monkeypatch, capsys):
+    monkeypatch.setattr(type(cli.console), "is_terminal", property(lambda self: True))
+    screen = {"height": 40}
+    monkeypatch.setattr(
+        type(cli.console), "height", property(lambda self: screen["height"])
+    )
+    paged = []
+
+    class Pager:
+        def __init__(self, **kwargs):
+            paged.append(kwargs)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(cli.console, "pager", Pager)
+    assert run("get", "45 CFR 164.104(a)(2)(i)") == 0  # Short: no pager.
+    captured = capsys.readouterr()
+    assert "§ 164.104 Paragraph nesting." in captured.out  # The context above.
+    assert (
+        "45 CFR 164.104(a)(2)(i) · eCFR text as of 2026-10-07 · https://"
+        in captured.err
+    )
+    assert paged == []
+    screen["height"] = 5
+    assert run("get", "45", "CFR", "164") == 0
+    assert len(paged) == 1
+    assert run("get", "45", "CFR", "164", "--no-pager") == 0
+    assert len(paged) == 1
+
+
+def test_footnote_marks_become_superscripts():
+    from ecfr_md.ui import _superscripts
+
+    assert _superscripts("APF<sup>3</sup> and n<sup>a</sup>") == "APF³ and nᵃ"
+
+
+def test_a_citation_without_a_command(run, capsys):
+    assert run("45", "CFR", "164.502") == 2
+    assert "ecfr-md get 45 CFR 164.502" in capsys.readouterr().err
+
+
+def test_settings_errors_in_plain_words(run, capsys):
+    with pytest.raises(SystemExit, match="2"):
+        run("--timeout", "-5", "titles")
+    err = capsys.readouterr().err
+    assert "--timeout: input should be greater than 0 (got -5)" in err
+    with pytest.raises(SystemExit, match="2"):
+        run("titls")
+    assert 'Did you mean "titles"' in capsys.readouterr().err
+
+
+def test_file_errors_name_the_file_asked_for(run, capsys, tmp_path, monkeypatch):
+    def denied(*args, **kwargs):
+        raise PermissionError(13, "Permission denied", str(tmp_path / ".x.md.part"))
+
+    monkeypatch.setattr("ecfr_md.output.os.replace", denied)
+    assert run("get", "45", "CFR", "164", "-o", str(tmp_path / "x.md")) == 1
+    err = capsys.readouterr().err
+    assert f"File error: Can't write {tmp_path / 'x.md'}: permission denied" in err
+    assert cli._file_error(OSError("no file")).args == ("no file",)
+
+
+def test_cache_info_prints_facts_even_when_quiet(run, capsys):
+    assert run("-q", "cache", "info", "--json") == 0
+    assert set(json.loads(capsys.readouterr().out)) == {"directory", "entries", "bytes"}
+    assert run("-q", "cache", "info") == 0
+    assert capsys.readouterr().out.startswith("Directory")
+
+
+def test_tables_become_lists_when_narrow():
+    from rich.console import Console
+
+    from ecfr_md.results import Change, Match
+    from ecfr_md.ui import changes_table, search_table
+
+    change = Change(
+        "45 CFR 164.502",
+        "164.502",
+        "Uses",
+        dt.date(2024, 1, 2),
+        dt.date(2024, 1, 2),
+        "substantive",
+        raw=None,
+    )  # type: ignore[arg-type]
+    match = Match(
+        "45 CFR 164.502", "Uses", "the rule", dt.date(2017, 1, 1), None, raw=None
+    )  # type: ignore[arg-type]
+    narrow = Console(file=io.StringIO(), width=40)
+    narrow.print(changes_table([change], width=40), search_table([match], width=40))
+    out = narrow.file.getvalue()
+    assert "2024-01-02  164.502  substantive" in out and "  the rule" in out
+    middling = Console(file=io.StringIO(), width=70)
+    middling.print(changes_table([change], width=70))
+    assert "Effective" not in middling.file.getvalue()  # The first to go.
+    wide = Console(file=io.StringIO(), width=100)
+    wide.print(changes_table([change], width=100))
+    assert "Effective" in wide.file.getvalue()

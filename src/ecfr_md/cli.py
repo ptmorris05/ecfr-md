@@ -3,47 +3,57 @@
 Common commands:
 
     ecfr-md get 45 CFR 164.502                 print a section
-    ecfr-md get "45 CFR 164.502(a)(1)"         a paragraph (quote parentheses)
+    ecfr-md get 45/164.502/a/1                 a paragraph, by its address
     ecfr-md get 45 CFR Part 164 -o hipaa.md    save to a file
     ecfr-md get 45 CFR 164 --tree -o hipaa/    one file per section
     ecfr-md get --all --tree -o cfr/           every title
     ecfr-md search "minimum necessary"         find sections
     ecfr-md outline 45 CFR Part 164            table of contents
+    ecfr-md compare 45 CFR 164.502 --since 2024-01-01   what changed
+    ecfr-md titles                             what titles exist
 
 Run ecfr-md COMMAND --help for a command's options. The options below go
 before the command. Every eCFR API endpoint is under ecfr-md api.
 """
 
-import dataclasses
 import datetime as dt
 import functools
 import inspect
 import io
 import json
 import logging
+import os
+import re
 import shlex
 import sys
+import warnings
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Annotated, Unpack
 
-from cyclopts import App, Group, Parameter, config
+from cyclopts import App, CycloptsError, Group, Parameter, config
+from cyclopts.panel import CycloptsPanel
 from pydantic import BaseModel
-from rich.console import Console
+from pydantic import ValidationError as PydanticValidationError
+from rich.console import Console, RenderableType
 from rich.logging import RichHandler
-from rich.markdown import Markdown
+from rich.text import Text
 
+from ecfr_md.address import Address
 from ecfr_md.client import ECFR, Admin, Search, Versioner
 from ecfr_md.config import Settings, __version__
 from ecfr_md.errors import ECFRError, InvalidCitationError, InvalidParameterError
-from ecfr_md.params import DateLike, Hierarchy, SearchFilters
-from ecfr_md.results import Change, Match
+from ecfr_md.params import DateLike, Hierarchy, SearchFilters, to_date
+from ecfr_md.results import Matches
 from ecfr_md.ui import (
     Terminal,
     changes_table,
     outline_tree,
+    reading,
+    redline,
     search_table,
     size,
+    titles_table,
 )
 
 ENV_PREFIX = "ECFR_MD_"
@@ -51,6 +61,11 @@ EXIT_ERROR = 1
 EXIT_USAGE = 2
 FORMAT_BELOW = 2_000_000  # Larger text is printed as plain Markdown.
 HELP_FLAGS = frozenset({"--help", "-h"})
+MARKDOWN_SUFFIXES = frozenset({".md", ".markdown", ".txt", ""})
+KINDS = ("changed", "added", "removed")
+PARTIAL = re.compile(r"\.(.+?)(?:\.[0-9a-f]{32})?\.part")  # write_text's temp name.
+CITED = re.compile(r"\d|§|title\b", re.IGNORECASE)  # How a citation starts.
+COMMENT = re.compile(r"\s#")  # A comment after a citation on a --from line.
 
 DEFAULT_SETTINGS = Settings()
 
@@ -79,12 +94,17 @@ app.meta.config = config.Env(ENV_PREFIX, command=False)
 @app.command
 def get(
     *citation: str,
-    output: Annotated[Path | None, Parameter(alias="-o")] = None,
+    output: Annotated[
+        str | None, Parameter(alias="-o", allow_leading_hyphen=True)
+    ] = None,
     tree: bool = False,
     front_matter: bool = True,
     date: DateLike | None = None,
-    from_file: Annotated[Path | None, Parameter(name="--from")] = None,
+    from_file: Annotated[
+        str | None, Parameter(name="--from", allow_leading_hyphen=True)
+    ] = None,
     all_titles: Annotated[bool, Parameter(name="--all")] = False,
+    pager: bool = True,
     ecfr: Client,
     **hierarchy: Unpack[Hierarchy],
 ) -> None:
@@ -93,11 +113,15 @@ def get(
     Parameters
     ----------
     citation: str
-        What to get: a title number or citation such as 45, 45 CFR 164,
-        45 CFR Part 164 Subpart E or 45 CFR 164.502(a)(1). The hierarchy
+        What to get: a title number, citation or address such as 45,
+        45 CFR 164, 45 CFR Part 164 Subpart E, 45/164.502/a/1 or an eCFR
+        link. Several (45/164.502 45/164.504) are saved to an --output
+        directory. Asked for if left out in a terminal. The hierarchy
         options below refine it.
-    output: Path | None
-        File (or directory, with --tree) to write. Prints to stdout if omitted.
+    output: str | None
+        File to write; "-" for stdout. A name ending in "/" or an existing
+        directory gets a file named after the citation. With --tree, --from
+        or --all, the directory to write to. Prints to stdout if omitted.
     tree: bool
         Write nested directories with one file per section or appendix,
         instead of a single file.
@@ -107,46 +131,62 @@ def get(
     date: DateLike | None
         Point-in-time date, e.g. 2020-01-01, "Jan 1 2020" or "last year".
         Defaults to the most recent available.
-    from_file: Path | None
-        File with one citation per line ("-" for stdin); each is saved to the
-        --output directory. Sections in the same part share a request.
+    from_file: str | None
+        File with one citation per line ("-" for stdin), each saved to the
+        --output directory. Blank lines and "# comments" are skipped, and
+        lists such as "45 CFR 164.502, 164.506" give one file each.
     all_titles: bool
         Every title of the CFR, each saved to the --output directory. Large
         titles are fetched part by part, so this takes a while.
+    pager: bool
+        In a terminal, page through text longer than the screen ($PAGER,
+        or less).
     """
     if from_file is not None:
-        _get_many(ecfr, from_file, output, front_matter, date)
+        if citation or all_titles:
+            raise InvalidParameterError(
+                "--from reads the citations from a file; leave out "
+                + ("--all" if all_titles else "the citation")
+            )
+        _get_many(ecfr, from_file, _directory(output, "--from"), front_matter, date)
         return
     if all_titles:
         if citation:
             raise InvalidParameterError(
                 "--all gets every title; leave out the citation"
             )
-        _get_all(ecfr, output, tree, front_matter, date)
+        _get_all(ecfr, _directory(output, "--all"), tree, front_matter, date)
         return
-    if not citation:
+    if not citation and sys.stdin.isatty() and err_console.is_terminal:
+        citation = (err_console.input("Citation or address: "),)
+    if not any(word.strip() for word in citation):
         raise InvalidParameterError(
             "Say what to get, e.g. ecfr-md get 45 CFR 164, or --all for every title"
         )
-    if tree and output is None:
-        raise InvalidParameterError("--tree requires --output DIRECTORY")
-    cited = _citation(citation)
+    places = _places(citation)
+    if len(places) > 1:
+        _get_listed(ecfr, places, output, tree, front_matter, date)
+        return
+    target = _directory(output, "--tree") if tree else _file(output)
+    cited = places[0]
     terminal = _terminal(ecfr)
-    if output is None:
+    if target is None:
         with terminal.live():
-            text = ecfr.get(cited, date=date, **hierarchy).to_markdown()
+            node = ecfr.get(cited, date=date, **hierarchy)
+        text = node.to_markdown()
         if console.is_terminal and len(text) <= FORMAT_BELOW:
-            console.print(Markdown(text))  # Formatted for reading.
+            _show(reading(node), pager)  # Formatted for reading.
         else:
             _print_markdown(text)
             if console.is_terminal:
                 terminal.note("Long text is printed as Markdown; use -o to save it.")
+        terminal.note(f"{node.citation} · eCFR text as of {node.date} · {node.url}")
         return
     with terminal.live():
         if tree:
             files = ecfr.save(
                 cited,
-                output,
+                target,
                 tree=True,
                 front_matter=front_matter,
                 date=date,
@@ -154,7 +194,7 @@ def get(
             )
         else:
             file = ecfr.save(
-                cited, output, front_matter=front_matter, date=date, **hierarchy
+                cited, target, front_matter=front_matter, date=date, **hierarchy
             )
             files = [file]
     if not tree:
@@ -169,37 +209,164 @@ def get(
         {
             "Citation": terminal.target,
             "Text as of": str(terminal.date),
-            "Output": str(output),
+            "Output": str(target),
             "Files": f"{len(files):,}",
             "Size": _total_size(files),
         },
     )
 
 
-def _get_many(
+def _show(renderable: RenderableType, pager: bool) -> None:
+    """Print to the terminal, through a pager if it's taller than the screen."""
+    lines = console.render_lines(renderable, pad=False)
+    if not pager or len(lines) <= console.height:
+        console.print(renderable)
+        return
+    # Keep colours (-R), quit at once if it fits after all (-F), and leave the
+    # text on screen after quitting (-X), unless the user has set LESS.
+    os.environ.setdefault("LESS", "-RFX")
+    with console.pager(styles=sys.platform != "win32"):
+        console.print(renderable)
+
+
+def _directory(output: str | None, option: str) -> Path:
+    """The directory an option writes to, created if it doesn't exist."""
+    if output is None or output == "-":
+        raise InvalidParameterError(f"{option} requires --output DIRECTORY")
+    path = Path(output)
+    if path.exists() and not path.is_dir():
+        raise InvalidParameterError(
+            f"{option} writes a directory, but {output} is a file; "
+            f"pick a directory such as {path.with_suffix('')}-files/"
+        )
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _file(output: str | None) -> Path | None:
+    """Where to save one file; None for stdout."""
+    if output is None or output == "-":
+        return None
+    path = Path(output)
+    if output.endswith(("/", "\\")) or path.is_dir():
+        path.mkdir(parents=True, exist_ok=True)  # Named after the citation.
+        return path
+    if path.suffix.lower() not in MARKDOWN_SUFFIXES:
+        raise InvalidParameterError(
+            f"ecfr-md saves Markdown, so {output} wouldn't be a real "
+            f"{path.suffix} file; use a name ending in .md"
+        )
+    return path
+
+
+def _places(words: Sequence[str]) -> list[str]:
+    """The places named on the command line: one citation in several words
+    ("45 CFR 164.502"), or several ("45/164.502 45/164.504"), as addresses."""
+    text = _citation(tuple(words))
+    try:
+        found = Address.parse_many(text)
+    except InvalidCitationError:
+        if len(words) < 2:
+            raise
+        try:  # Each word a citation of its own: "45/164.502" "12 CFR 1026.1".
+            found = [a for word in words for a in Address.parse_many(word)]
+        except InvalidCitationError:
+            raise InvalidCitationError(
+                f"{text!r} isn't a citation or address; e.g. 45 CFR 164.502, "
+                "45/164.502/a/1, or several: 45/164.502 45/164.504"
+            ) from None
+    return [str(a) for a in found]
+
+
+def _get_listed(
     ecfr: ECFR,
-    source: Path,
-    output: Path | None,
+    places: list[str],
+    output: str | None,
+    tree: bool,
     front_matter: bool,
     date: DateLike | None,
 ) -> None:
-    if output is None:
-        raise InvalidParameterError("--from requires --output DIRECTORY")
-    # utf-8-sig also accepts the byte-order mark Windows editors add.
-    data = sys.stdin.buffer.read() if str(source) == "-" else source.read_bytes()
-    text = data.decode("utf-8-sig")
-    citations = [
-        line.strip()
-        for line in text.splitlines()
-        if line.strip() and not line.lstrip().startswith("#")
-    ]
-    if not citations:
-        raise InvalidParameterError(f"No citations in {source}")
+    """Several citations: printed one after another, or each saved."""
+    if output is None or output == "-":
+        with _terminal(ecfr).live():
+            nodes = ecfr.get_many(places, date=date)
+        _print_markdown("\n".join(node.to_markdown() for node in nodes))
+        return
+    if not tree:
+        _save_many(
+            ecfr, places, _directory(output, "Several citations"), front_matter, date
+        )
+        return
+    directory = _directory(output, "--tree")
     terminal = _terminal(ecfr)
-    output.mkdir(parents=True, exist_ok=True)
+    files: list[Path] = []
     with terminal.live():
-        nodes = ecfr.get_many(citations, date=date)
-        files = [node.save(output, front_matter=front_matter) for node in nodes]
+        for place in places:
+            files += ecfr.save(
+                place, directory, tree=True, front_matter=front_matter, date=date
+            )
+    terminal.summary(
+        "Saved",
+        {
+            "Citations": f"{len(places):,}",
+            "Output": str(directory),
+            "Files": f"{len(files):,}",
+            "Size": _total_size(files),
+        },
+    )
+
+
+def _read_citations(text: str, name: str) -> list[str]:
+    """Citations in a --from file, each once, or every line that isn't one."""
+    citations: dict[str, None] = {}  # Ordered, without repeats.
+    problems = []
+    for number, line in enumerate(text.splitlines(), 1):
+        line = COMMENT.split(line, maxsplit=1)[0].strip()
+        if not line or line.startswith("#"):
+            continue
+        try:
+            for cited in Address.parse_many(line):
+                citations[str(cited)] = None
+        except InvalidCitationError as exc:
+            problems.append(f"{name}:{number}: {exc}")
+    if problems:
+        more = f"\n... and {len(problems) - 10} more" if len(problems) > 10 else ""
+        raise InvalidCitationError("\n".join(problems[:10]) + more)
+    if not citations:
+        raise InvalidParameterError(f"No citations in {name}")
+    return list(citations)
+
+
+def _get_many(
+    ecfr: ECFR,
+    source: str,
+    output: Path,
+    front_matter: bool,
+    date: DateLike | None,
+) -> None:
+    # utf-8-sig also accepts the byte-order mark Windows editors add.
+    data = sys.stdin.buffer.read() if source == "-" else Path(source).read_bytes()
+    name = "stdin" if source == "-" else source
+    citations = _read_citations(data.decode("utf-8-sig"), name)
+    _save_many(ecfr, citations, output, front_matter, date)
+
+
+def _save_many(
+    ecfr: ECFR,
+    citations: list[str],
+    output: Path,
+    front_matter: bool,
+    date: DateLike | None,
+) -> None:
+    terminal = _terminal(ecfr)
+    with terminal.live():
+        results = ecfr.get_many(citations, date=date, errors="return")
+        files, failed = [], []
+        for cited, result in zip(citations, results, strict=True):
+            if isinstance(result, ECFRError):
+                failed.append(f"{cited}: {result}")
+            else:
+                files.append(result.save(output, front_matter=front_matter))
     terminal.summary(
         "Saved",
         {
@@ -207,22 +374,25 @@ def _get_many(
             "Output": str(output),
             "Files": f"{len(files):,}",
             "Size": _total_size(files),
-        },
+        }
+        | ({"Failed": f"{len(failed):,}"} if failed else {}),
     )
+    if failed:
+        raise ECFRError(
+            f"{len(failed)} of {len(citations)} citations could not be saved:\n"
+            + "\n".join(failed)
+        )
 
 
 def _get_all(
     ecfr: ECFR,
-    output: Path | None,
+    output: Path,
     tree: bool,
     front_matter: bool,
     date: DateLike | None,
 ) -> None:
-    if output is None:
-        raise InvalidParameterError("--all requires --output DIRECTORY")
     titles = [t.number for t in ecfr.api.versioner.titles().titles if not t.reserved]
     terminal = _terminal(ecfr)
-    output.mkdir(parents=True, exist_ok=True)
     files: list[Path] = []
     with terminal.live():
         for title in titles:
@@ -244,8 +414,7 @@ def _get_all(
 
 @app.command
 def search(
-    query: str,
-    *,
+    *query: str,
     limit: int = 20,
     save: Path | None = None,
     phrase: bool = True,
@@ -259,7 +428,7 @@ def search(
     Parameters
     ----------
     query: str
-        Words to search for in headings and text.
+        Words to search for in headings and text. Quotes are optional.
     limit: int
         Maximum number of sections to show.
     save: Path | None
@@ -275,26 +444,36 @@ def search(
     terminal = _terminal(ecfr)
     with terminal.live():
         matches = ecfr.search(
-            query, limit=limit, phrase=phrase, all_versions=all_versions, **filters
+            " ".join(query),
+            limit=limit,
+            phrase=phrase,
+            all_versions=all_versions,
+            **filters,
         )
     if as_json:
-        _print_records(matches)
+        console.print_json(json.dumps(matches.to_dict()))
     elif not matches:
         terminal.note("No matches")
     else:
-        console.print(search_table(matches))
-        total = matches.total
-        shown = f"{len(matches)} shown" + (f" of {total:,} matches" if total else "")
-        terminal.note(shown)
+        console.print(search_table(matches, width=console.width))
+        terminal.note(_search_summary(matches, limit))
     if save is None or not matches:
         return
+    directory = _directory(str(save), "--save")
     with terminal.live():
         nodes = ecfr.get_many([m.citation for m in matches])
-        files = [node.save(save) for node in nodes]
+        files = [node.save(directory) for node in nodes]
     terminal.done(
         f"Saved {len(files):,} {'file' if len(files) == 1 else 'files'} to {save}",
         _total_size(files),
     )
+
+
+def _search_summary(matches: Matches, limit: int) -> str:
+    sections = f"{len(matches)} {'section' if len(matches) == 1 else 'sections'}"
+    if matches.complete:
+        return sections
+    return f"{sections} shown; there are more (raise --limit to see them)"
 
 
 @app.command
@@ -308,6 +487,8 @@ def outline(
 ) -> None:
     """Show the table of contents of a title or any part of it, without its text.
 
+    With no citation, lists the titles.
+
     Parameters
     ----------
     citation: str
@@ -317,14 +498,41 @@ def outline(
     date: DateLike | None
         Point-in-time date. Defaults to the most recent available.
     as_json: bool
-        Print the API's JSON instead of a tree.
+        Print JSON (citation, level, heading, url, children, ...) instead
+        of a tree.
     """
+    if depth is not None and depth < 0:
+        raise InvalidParameterError("--depth must be 0 or more")
+    if not citation and not hierarchy:
+        titles(as_json=as_json, ecfr=ecfr)
+        return
     with _terminal(ecfr).live():
         entry = ecfr.outline(_citation(citation), date=date, **hierarchy)
     if as_json:
-        console.print_json(entry.raw.model_dump_json(exclude_unset=True))
+        console.print_json(json.dumps(entry.to_dict(depth=depth)))
     else:
         console.print(outline_tree(entry, depth))
+
+
+@app.command
+def titles(
+    *,
+    as_json: Annotated[bool, Parameter(name="--json")] = False,
+    ecfr: Client,
+) -> None:
+    """List the titles of the CFR and the latest date of each one's text.
+
+    Parameters
+    ----------
+    as_json: bool
+        Print JSON instead of a table.
+    """
+    with _terminal(ecfr).live():
+        found = ecfr.titles()
+    if as_json:
+        console.print_json(json.dumps([t.to_dict() for t in found]))
+    else:
+        console.print(titles_table(found))
 
 
 @app.command
@@ -352,34 +560,115 @@ def changes(
     as_json: bool
         Print JSON instead of a table.
     """
+    if since and until and to_date(since) > to_date(until):
+        raise InvalidParameterError(f"--since {since} is after --until {until}")
     terminal = _terminal(ecfr)
     with terminal.live():
         found = ecfr.changes(_citation(citation), since=since, until=until, **hierarchy)
     if as_json:
-        _print_records(found)
+        console.print_json(json.dumps([change.to_dict() for change in found]))
         return
     if found:
-        console.print(changes_table(found))
+        console.print(changes_table(found, width=console.width))
     terminal.note(f"{len(found):,} {'change' if len(found) == 1 else 'changes'}")
+    if found:  # The natural next question: what did the latest one change?
+        latest = found[0]
+        before = latest.effective - dt.timedelta(days=1)
+        terminal.note(
+            f"To see what changed: ecfr-md compare {latest.citation} --since {before}"
+        )
+
+
+@app.command
+def compare(
+    *citation: str,
+    since: DateLike,
+    until: DateLike | None = None,
+    as_json: Annotated[bool, Parameter(name="--json")] = False,
+    ecfr: Client,
+    **hierarchy: Unpack[Hierarchy],
+) -> None:
+    """Show what changed in the text between two dates, as a redline.
+
+    Parameters
+    ----------
+    citation: str
+        A citation, e.g. 45 CFR 164.502.
+    since: DateLike
+        The earlier date, e.g. the day before a change took effect.
+    until: DateLike | None
+        The later date. Defaults to the most recent available.
+    as_json: bool
+        Print JSON (each difference with its words) instead of a redline.
+    """
+    terminal = _terminal(ecfr)
+    with terminal.live():
+        found = ecfr.compare(_citation(citation), since, until, **hierarchy)
+    if as_json:
+        console.print_json(json.dumps(found.to_dict()))
+        return
+    if not console.is_terminal:
+        _print_markdown(found.to_markdown())
+    elif found:
+        console.print(redline(found))
+    kinds = [d.kind for d in found.differences]
+    counts = ", ".join(f"{kinds.count(k)} {k}" for k in KINDS if k in kinds)
+    terminal.note(
+        f"{found.since} to {found.until}: {counts or 'no changes'}; "
+        f"{found.unchanged:,} paragraphs, tables and notes unchanged"
+    )
 
 
 @app.command(name="sync")
-def sync_command(path: Path, *, ecfr: Client) -> None:
+def sync_command(
+    path: Path,
+    *,
+    dry_run: bool = False,
+    include_dated: bool = False,
+    force: bool = False,
+    migrate: bool = False,
+    ecfr: Client,
+) -> None:
     """Update Markdown saved by ecfr-md to the latest text.
 
-    PATH is a file or directory written by ecfr-md get -o. Only files whose
-    text changed are rewritten; files for sections that no longer exist are
-    deleted.
+    PATH is a file or directory written by ecfr-md get -o; folders are
+    searched to any depth. Only files whose text changed are rewritten; files
+    for sections that no longer exist are deleted. Files saved with a past
+    --date are kept at that date, and files edited since they were saved are
+    left as they are.
 
     Parameters
     ----------
     path: Path
         A saved file, a saved tree, or a directory containing them.
+    dry_run: bool
+        Show what would change without writing anything.
+    include_dated: bool
+        Also update files saved with a past --date to the latest text.
+    force: bool
+        Also overwrite or delete files edited since they were saved.
+    migrate: bool
+        Rename files and folders saved by ecfr-md 0.x (45-cfr-164.502.md,
+        subpart-e/section-164.502.md) to today's names (45_164.502.md,
+        subpart-E/164.502.md). Without it they keep their names.
     """
     terminal = _terminal(ecfr)
     with terminal.live():
-        result = ecfr.sync(path)
-    if not (result.added or result.changed or result.removed):
+        result = ecfr.sync(
+            path,
+            dry_run=dry_run,
+            include_dated=include_dated,
+            force=force,
+            migrate=migrate,
+        )
+    if not (
+        result.added
+        or result.changed
+        or result.removed
+        or result.kept
+        or result.modified
+        or result.moved
+    ):
         checked = len(result.unchanged)
         terminal.done(
             f"{path} is up to date",
@@ -390,18 +679,29 @@ def sync_command(path: Path, *, ecfr: Client) -> None:
         ("+", result.added),
         ("~", result.changed),
         ("-", result.removed),
+        ("=", result.kept),
+        ("!", result.modified),
     ):
         for file in files[:20]:
             terminal.note(f"{kind} {file}")
+    for old, new in result.moved[:20]:
+        terminal.note(f"> {old} -> {new}")
+    if result.kept:
+        terminal.note("= kept at saved date; use --include-dated to update them")
+    if result.modified:
+        terminal.note("! modified locally, left as is; use --force to overwrite them")
     terminal.summary(
-        "Synced",
+        "Would sync" if dry_run else "Synced",
         {
             "Path": str(path),
             "Changed": f"{len(result.changed):,}",
             "Added": f"{len(result.added):,}",
             "Removed": f"{len(result.removed):,}",
             "Unchanged": f"{len(result.unchanged):,}",
-        },
+            "Kept at saved date": f"{len(result.kept):,}",
+            "Modified locally": f"{len(result.modified):,}",
+        }
+        | ({"Renamed": f"{len(result.moved):,}"} if migrate else {}),
     )
 
 
@@ -410,18 +710,33 @@ app.command(cache_app)
 
 
 @cache_app.command
-def info(*, ecfr: Client) -> None:
-    """Show where the cache is and how much it holds."""
+def info(
+    *, as_json: Annotated[bool, Parameter(name="--json")] = False, ecfr: Client
+) -> None:
+    """Show where the cache is and how much it holds.
+
+    Parameters
+    ----------
+    as_json: bool
+        Print JSON instead of lines.
+    """
     store = ecfr._store
     entries, used = store.info()
-    _terminal(ecfr).summary(
-        "Cache",
-        {
-            "Directory": str(store.directory) if store.directory else "off",
-            "Entries": f"{entries:,}",
-            "Size": size(used),
-        },
-        network=False,
+    facts = {
+        "directory": str(store.directory) if store.directory else None,
+        "entries": entries,
+        "bytes": used,
+    }
+    if as_json:
+        console.print_json(json.dumps(facts))
+        return
+    console.print(
+        f"Directory  {facts['directory'] or 'off'}\n"
+        f"Entries    {entries:,}\n"
+        f"Size       {size(used)}",
+        soft_wrap=True,
+        markup=False,
+        highlight=False,
     )
 
 
@@ -440,19 +755,6 @@ def _print_markdown(text: str) -> None:
     sys.stdout.flush()
     sys.stdout.buffer.write(text.encode("utf-8"))
     sys.stdout.buffer.flush()
-
-
-def _print_records(items: Sequence[Change | Match]) -> None:
-    """Results as a JSON list, leaving out the API's raw response."""
-    records = [
-        {
-            f.name: getattr(item, f.name)
-            for f in dataclasses.fields(item)
-            if f.name != "raw"
-        }
-        for item in items
-    ]
-    console.print_json(json.dumps(records, default=str))
 
 
 def _total_size(files: Sequence[Path]) -> str:
@@ -537,27 +839,48 @@ def launcher(
     verbose: bool
         Log every request.
     """
+    # Only ecfr-md's own records: HTTP/2 libraries log every header at DEBUG.
     logging.basicConfig(
-        level=logging.DEBUG if verbose else logging.WARNING,
+        level=logging.WARNING,
         format="%(message)s",
-        handlers=[RichHandler(console=err_console, show_path=False)],
+        handlers=[RichHandler(console=err_console, show_path=False, show_time=False)],
     )
-    logging.getLogger("httpcore2").setLevel(logging.WARNING)
-    if not verbose:  # The terminal display reports retries itself.
-        logging.getLogger("ecfr_md").setLevel(logging.ERROR)
+    # The terminal display reports retries itself unless asked for every request.
+    logging.getLogger("ecfr_md").setLevel(logging.DEBUG if verbose else logging.ERROR)
     logging.captureWarnings(True)  # Show ECFRWarning through the same handler.
+    warnings.formatwarning = lambda message, *_args, **_kwargs: str(message)
     command, bound, _ = app.parse_args(tokens)
+    if "ecfr" not in inspect.signature(command).parameters:
+        command(*bound.args, **bound.kwargs)  # Help for a bare command group.
+        return 0
     terminal = Terminal(err_console, quiet=quiet)
     try:
         with ECFR(settings, progress=terminal) as ecfr:
             command(*bound.args, **bound.kwargs, ecfr=ecfr)
+    except BrokenPipeError:
+        # The reader stopped early, as `| head` does; that isn't an error.
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        return 0
     except InvalidParameterError as exc:
         terminal.error(exc)
         return EXIT_USAGE
-    except (ECFRError, OSError) as exc:
+    except OSError as exc:
+        terminal.error(_file_error(exc))
+        return EXIT_ERROR
+    except ECFRError as exc:
         terminal.error(exc)
         return EXIT_ERROR
     return 0
+
+
+def _file_error(exc: OSError) -> OSError:
+    """Name the file the user asked for, not the temporary one written first."""
+    if exc.filename is None or exc.strerror is None:
+        return exc
+    path = Path(exc.filename)
+    if match := PARTIAL.fullmatch(path.name):  # ".x.md.part" becomes x.md.
+        path = path.with_name(match[1])
+    return OSError(f"Can't write {path}: {exc.strerror.lower()}")
 
 
 def _terminal(ecfr: ECFR) -> Terminal:
@@ -569,14 +892,32 @@ def _terminal(ecfr: ECFR) -> Terminal:
     )
 
 
+def _usage_error(exc: CycloptsError) -> RenderableType:
+    """Cyclopts' message, except for settings, whose pydantic report is jargon."""
+    cause = exc.__cause__
+    if not isinstance(cause, PydanticValidationError):
+        return CycloptsPanel(exc)
+    problems = [
+        f"--{'.'.join(map(str, e['loc'])).replace('_', '-')}: "
+        f"{e['msg'][0].lower()}{e['msg'][1:]} (got {e['input']})"
+        for e in cause.errors(include_url=False)
+    ]
+    return Text(f"✘ Invalid usage: {'; '.join(problems)}")
+
+
 def run(tokens: Sequence[str], **kwargs) -> int:
     """Run the command line; connection options are listed only by ecfr-md --help."""
     tokens = list(tokens)
+    if tokens and CITED.match(tokens[0]) and tokens[0] not in app:
+        # "ecfr-md 45 CFR 164.502": the command was left out.
+        hint = f"Say what to do first, e.g. ecfr-md get {shlex.join(tokens)}"
+        Terminal(err_console).error(InvalidParameterError(hint))
+        return EXIT_USAGE
     asking = next((i for i, t in enumerate(tokens) if t in HELP_FLAGS), None)
     before = tokens if asking is None else tokens[:asking]
     TopLevelGroup.shown = not any(t in app for t in before if not t.startswith("-"))
     try:
-        return app.meta(tokens, **kwargs)
+        return app.meta(tokens, error_formatter=_usage_error, **kwargs)
     finally:
         TopLevelGroup.shown = True
 

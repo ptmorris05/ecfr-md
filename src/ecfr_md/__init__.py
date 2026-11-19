@@ -15,14 +15,17 @@ settings, or to close connections when done, use :class:`ECFR`:
 ...     part = ecfr.get("45 CFR Part 164")
 """
 
+from ecfr_md.address import Address
 from ecfr_md.citation import Citation
 from ecfr_md.client import ECFR
+from ecfr_md.compare import Comparison, Difference
 from ecfr_md.config import Settings, __version__
 from ecfr_md.document import (
     Appendix,
     Chapter,
     Division,
     Level,
+    LevelName,
     Node,
     Paragraph,
     Part,
@@ -54,28 +57,33 @@ from ecfr_md.errors import (
 )
 from ecfr_md.params import Hierarchy, PaginateBy, SearchFilters, SearchOrder
 from ecfr_md.progress import Progress
-from ecfr_md.results import Change, Match, Matches, Outline
+from ecfr_md.results import Change, Match, Matches, Outline, TitleInfo
 from ecfr_md.shortcuts import (
     changes,
+    compare,
     get,
     get_many,
     outline,
     save,
     search,
     sync,
+    titles,
 )
 from ecfr_md.syncing import SyncResult
 
 __all__ = [
     "ECFR",
     "APIError",
+    "Address",
     "AmbiguousNodeError",
     "Appendix",
     "BadRequestError",
     "Change",
     "Chapter",
     "Citation",
+    "Comparison",
     "DateOutOfRangeError",
+    "Difference",
     "Division",
     "ECFRConnectionError",
     "ECFRError",
@@ -85,6 +93,7 @@ __all__ = [
     "InvalidCitationError",
     "InvalidParameterError",
     "Level",
+    "LevelName",
     "Match",
     "Matches",
     "Node",
@@ -108,9 +117,11 @@ __all__ = [
     "Subtitle",
     "SyncResult",
     "Title",
+    "TitleInfo",
     "TitleNotFoundError",
     "__version__",
     "changes",
+    "compare",
     "get",
     "get_many",
     "load",
@@ -118,4 +129,5 @@ __all__ = [
     "save",
     "search",
     "sync",
+    "titles",
 ]

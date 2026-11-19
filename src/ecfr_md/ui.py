@@ -1,6 +1,7 @@
 """Terminal output for the ``ecfr-md`` command, drawn with rich on stderr."""
 
 import datetime as dt
+import re
 import textwrap
 import threading
 import time
@@ -12,6 +13,8 @@ from urllib.parse import parse_qsl, urlsplit
 from rich import box
 from rich.console import Console, Group, RenderableType
 from rich.live import Live
+from rich.markdown import Markdown
+from rich.padding import Padding
 from rich.panel import Panel
 from rich.progress import (
     BarColumn,
@@ -31,6 +34,8 @@ from rich.table import Table
 from rich.text import Text
 from rich.tree import Tree
 
+from ecfr_md.compare import Comparison
+from ecfr_md.document import Node, Paragraph
 from ecfr_md.errors import (
     AmbiguousNodeError,
     APIError,
@@ -46,9 +51,11 @@ from ecfr_md.errors import (
     TitleNotFoundError,
 )
 from ecfr_md.progress import Progress
-from ecfr_md.results import Change, Match, Outline
+from ecfr_md.results import Change, Match, Outline, TitleInfo
 
 ACCENT = "#5fafff"
+NARROW = 60  # Terminal columns below which tables become lists.
+WIDE = 80  # Terminal columns from which changes show the effective date.
 GOOD = "#5fd787"
 WARN = "#ffaf5f"
 BAD = "#ff5f5f"
@@ -307,6 +314,11 @@ class Terminal(Progress):
         if not self.quiet:
             self.console.print(Text(message, style=DIM), soft_wrap=True)
 
+    @property
+    def plain(self) -> bool:
+        """Writing to a file or pipe: whole lines, no boxes, nothing shortened."""
+        return not self.console.is_terminal
+
     def done(self, message: str, *details: str, network: bool = True) -> None:
         """A one-line closing message, with details dimmed."""
         if self.quiet:
@@ -317,7 +329,7 @@ class Terminal(Progress):
         extra = [*details, *(self._network_brief() if network else ())]
         if extra:
             line.append("  " + " · ".join(extra), style=DIM)
-        self.console.print(line)
+        self.console.print(line, soft_wrap=self.plain)
 
     def _network_brief(self) -> tuple[str, str]:
         transfer = _count(self.requests, "request", "requests")
@@ -333,13 +345,16 @@ class Terminal(Progress):
         """A closing panel of key facts."""
         if self.quiet:
             return
+        items = list(rows.items()) + (self._network_items() if network else [])
+        if self.plain:
+            lines = [f"✔ {title}", *(f"  {key}: {value}" for key, value in items)]
+            self.console.print("\n".join(lines), soft_wrap=True, markup=False)
+            return
         table = Table.grid(padding=(0, 2))
         table.add_column(style=DIM, justify="right")
         table.add_column()
-        for key, value in rows.items():
+        for key, value in items:
             table.add_row(key, value)
-        if network:
-            self._network_rows(table)
         self.console.print(
             Panel(
                 table,
@@ -352,7 +367,7 @@ class Terminal(Progress):
             )
         )
 
-    def _network_rows(self, table: Table) -> None:
+    def _network_items(self) -> list[tuple[str, str]]:
         elapsed = time.monotonic() - self.started_at
         transfer = f"{_count(self.requests, 'request', 'requests')}, "
         transfer += f"{size(self.bytes_received)} received"
@@ -360,8 +375,7 @@ class Terminal(Progress):
             transfer += f", {self.cached} from cache"
         if self.retries:
             transfer += f", {_count(self.retries, 'retry', 'retries')}"
-        table.add_row("Network", transfer)
-        table.add_row("Time", f"{elapsed:.1f}s")
+        return [("Network", transfer), ("Time", f"{elapsed:.1f}s")]
 
     def error(self, exc: BaseException) -> None:
         """An error panel; shown even when quiet."""
@@ -372,6 +386,9 @@ class Terminal(Progress):
                 table.add_row(f"[bold]{node.citation}[/]", Text(_first_line(node)[:70]))
             body = Group(Text(str(exc).split(":")[0] + ":"), table)
         name = next((t for cls, t in ERROR_TITLES if isinstance(exc, cls)), "Error")
+        if self.plain:
+            self.console.print(f"✘ {name}: {exc}", soft_wrap=True, markup=False)
+            return
         self.console.print(
             Panel(
                 body,
@@ -451,21 +468,36 @@ def _contents(children: Sequence[Outline]) -> str:
     return ", ".join(words)
 
 
-def changes_table(changes: Sequence[Change]) -> RenderableType:
-    """Changes; for a single section, its heading is shown once, above."""
+def changes_table(changes: Sequence[Change], width: int = 80) -> RenderableType:
+    """Changes; for a single section, its heading is shown once, above.
+
+    In a narrow terminal the effective date goes first, so the section and
+    its heading keep room to be read.
+    """
     single = len({c.identifier for c in changes}) == 1
+    styles = {"removed": BAD, "substantive": WARN, "editorial": DIM}
+    if width < NARROW:  # A list: a table this narrow has room for nothing.
+        rows: list[RenderableType] = []
+        for c in changes:
+            line = Text(f"{c.issued}  ")
+            line.append(c.identifier, style="bold")
+            line.append(f"  {c.kind}", style=styles[c.kind])
+            rows += [line, Text(f"  {c.heading}", style=DIM)]
+        return Group(*rows)
+    effective = width >= WIDE
     table = Table(box=box.SIMPLE_HEAD, header_style=f"bold {ACCENT}", pad_edge=False)
     table.add_column("Issued", no_wrap=True)
-    table.add_column("Effective", no_wrap=True, style=DIM)
+    if effective:
+        table.add_column("Effective", no_wrap=True, style=DIM)
     if not single:
-        table.add_column("Section", max_width=14, overflow="fold")
-        table.add_column("Heading", min_width=20)
-    table.add_column("Kind", no_wrap=True, min_width=len("substantive"))
-    styles = {"removed": BAD, "substantive": WARN, "editorial": DIM}
+        table.add_column("Section", no_wrap=True)
+        table.add_column("Heading", min_width=12, ratio=1)
+    table.add_column("Kind", no_wrap=True)
     for c in changes:
         kind = Text(c.kind, style=styles[c.kind])
         columns = [] if single else [c.identifier, c.heading]
-        table.add_row(str(c.issued), str(c.effective), *columns, kind)
+        dates = [str(c.issued), str(c.effective)] if effective else [str(c.issued)]
+        table.add_row(*dates, *columns, kind)
     if not single:
         return table
     heading = Text(changes[0].citation, style="bold")
@@ -473,10 +505,18 @@ def changes_table(changes: Sequence[Change]) -> RenderableType:
     return Group(heading, table)
 
 
-def search_table(matches: Sequence[Match]) -> Table:
+def search_table(matches: Sequence[Match], width: int = 80) -> RenderableType:
+    if width < NARROW:  # A list, as for changes.
+        rows: list[RenderableType] = []
+        for m in matches:
+            rows += [Text(m.citation, style="bold"), Text(f"  {m.heading}")]
+            if m.excerpt:
+                excerpt = textwrap.shorten(m.excerpt, EXCERPT_WIDTH, placeholder="…")
+                rows.append(Text(f"  {excerpt}", style=DIM))
+        return Group(*rows)
     table = Table(box=box.SIMPLE_HEAD, header_style=f"bold {ACCENT}", pad_edge=False)
     table.add_column("Citation", no_wrap=True, style="bold")
-    table.add_column("Heading / excerpt")
+    table.add_column("Heading / excerpt", min_width=20, ratio=1)
     for m in matches:
         cell = Text(m.heading)
         if m.excerpt:
@@ -484,3 +524,66 @@ def search_table(matches: Sequence[Match]) -> Table:
             cell.append(f"\n{excerpt}", style=DIM)
         table.add_row(m.citation, cell)
     return table
+
+
+def titles_table(titles: Sequence[TitleInfo]) -> Table:
+    table = Table(box=box.SIMPLE_HEAD, header_style=f"bold {ACCENT}", pad_edge=False)
+    table.add_column("Title", justify="right", no_wrap=True, style="bold")
+    table.add_column("Name")
+    table.add_column("Text as of", no_wrap=True, style=DIM)
+    for t in titles:
+        if t.reserved:
+            table.add_row(str(t.number), Text("[Reserved]", style=DIM), "")
+            continue
+        when = str(t.latest) + (" (updating)" if t.processing else "")
+        table.add_row(str(t.number), t.name, when)
+    return table
+
+
+def redline(comparison: Comparison) -> Group:
+    """Changed blocks, deletions struck through in red, insertions in green."""
+    styles = {"=": "", "-": f"strike {BAD}", "+": f"underline {GOOD}"}
+    labels = {"added": "Added", "removed": "Removed", "changed": "Changed"}
+    blocks: list[RenderableType] = []
+    for difference in comparison.differences:
+        text = Text()
+        for op, words in difference.words:
+            text.append(words.replace("**", ""), style=styles[op])
+        blocks += [Text(labels[difference.kind], style=f"bold {DIM}"), text, Text()]
+    return Group(*blocks)
+
+
+SUPERSCRIPT = str.maketrans(
+    "0123456789+-=()abcdefhijklmnoprstuvwxyz", "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾ᵃᵇᶜᵈᵉᶠʰⁱʲᵏˡᵐⁿᵒᵖʳˢᵗᵘᵛʷˣʸᶻ"
+)
+SUP_TAG = re.compile(r"<sup>([^<]*)</sup>")
+CONTEXT_WIDTH = 100  # Characters of each parent paragraph shown above a lookup.
+
+
+def reading(node: Node) -> RenderableType:
+    """A node formatted for reading: paragraphs indented by depth, and for a
+    paragraph, the section and parent paragraphs it continues, dimmed."""
+    depths = {
+        p.blocks[0]: p.depth
+        for p in [node, *node.iter("paragraph")]
+        if isinstance(p, Paragraph) and p.blocks
+    }
+    parts: list[RenderableType] = []
+    if isinstance(node, Paragraph):
+        for above in reversed(node.ancestors):
+            lead = above.own_text if isinstance(above, Paragraph) else above.heading
+            plain = _superscripts(lead).replace("*", "")
+            lead = textwrap.shorten(plain, CONTEXT_WIDTH, placeholder=" …")
+            parts.append(Text(lead, style=DIM))
+        parts.append(Text())
+    depth = 0
+    for block in node.to_markdown().split("\n\n"):
+        depth = depths.get(block, depth)  # Other blocks continue the paragraph.
+        rendered = Markdown(_superscripts(block))
+        parts.append(Padding(rendered, (0, 0, 1, 2 * max(depth - 1, 0))))
+    return Group(*parts)
+
+
+def _superscripts(text: str) -> str:
+    """Footnote marks the terminal can show: "<sup>3</sup>" as "³"."""
+    return SUP_TAG.sub(lambda m: m[1].translate(SUPERSCRIPT), text)

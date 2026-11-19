@@ -16,7 +16,6 @@ from ecfr_md import (
     InvalidCitationError,
     InvalidParameterError,
     NodeNotFoundError,
-    NotFoundError,
     ResponseFormatError,
     ServerError,
     Settings,
@@ -72,8 +71,9 @@ def test_paragraph_label_heading_and_tree():
     assert s["a"].label == "(a)"
     assert s["a"].heading == ""  # (a) has no text of its own.
     paragraph = s["(a)(1)"]
+    assert paragraph.slug == "1"
     assert paragraph.to_markdown_tree() == {
-        PurePosixPath(f"{paragraph.slug}.md"): paragraph.to_markdown()
+        PurePosixPath("1_1.1_a_1.md"): paragraph.to_markdown()
     }
 
 
@@ -277,7 +277,7 @@ def test_missing_text_within_the_date_range_is_not_a_date_problem(ecfr, api):
         "/api/versioner/v1/versions/title-45.json", {"content_versions": [version]}
     )
     api.text(FULL, '{"error":"No matching content found."}', status=404)
-    with pytest.raises(NotFoundError):
+    with pytest.raises(LookupError):
         ecfr.get("45 CFR 164.104")
 
 
@@ -342,7 +342,7 @@ def test_get_prints_long_text_as_markdown_in_a_terminal(run, monkeypatch, capsys
     ("tokens", "message"),
     [
         (("get", "--from", "list.txt"), "--from requires --output"),
-        (("outline",), "Say which title or citation"),
+        (("changes",), "Say which title or citation"),
     ],
 )
 def test_more_usage_errors(run, capsys, tokens, message):
@@ -373,7 +373,8 @@ def test_sync_lists_what_changed(run, capsys, tmp_path):
     text = edited.read_text(encoding="utf-8")
     edited.write_text(text.replace("\n\n", "\n\nEdited.\n\n", 1), encoding="utf-8")
     capsys.readouterr()
-    assert run("sync", str(tmp_path)) == 0
+    # Edited files are kept (see test_sync.py) unless forced.
+    assert run("sync", str(tmp_path), "--force") == 0
     assert "~ " in capsys.readouterr().err
     assert edited.read_text(encoding="utf-8") == text
 
@@ -381,9 +382,12 @@ def test_sync_lists_what_changed(run, capsys, tmp_path):
 def test_sync_rewrites_files_saved_in_another_encoding(run, tmp_path):
     # Editors on Windows may re-save a file as cp1252, where "—" is not UTF-8.
     assert run("get", "45", "CFR", "164", "--tree", "-o", str(tmp_path)) == 0
-    edited = next(p for p in tmp_path.rglob("*.md") if p.name != "index.md")
+    edited = next(
+        p
+        for p in sorted(tmp_path.rglob("*.md"))
+        if p.name != "index.md" and "—" in p.read_text("utf-8")
+    )
     text = edited.read_text(encoding="utf-8")
-    assert "—" in text
     edited.write_text(text, encoding="cp1252")
     assert run("sync", str(tmp_path)) == 0
     assert edited.read_text(encoding="utf-8") == text

@@ -46,18 +46,23 @@ pip install git+https://github.com/ptmorris05/ecfr-md
 
 ```sh
 ecfr-md get 45 CFR 164.502                       # print a section
-ecfr-md get "45 CFR 164.502(a)(1)"               # a paragraph (quote parentheses)
+ecfr-md get 45/164.502/a/1                       # a paragraph, by its address
+ecfr-md get 45/164.502 45/164.504 -o out/        # several, one file each
 ecfr-md get 45 CFR Part 164 -o hipaa.md          # save to one file
 ecfr-md get 45 CFR Part 164 --tree -o hipaa/     # one file per section
 ecfr-md get 45 CFR 164.502 --date 2020-01-01     # as of a date
 ecfr-md get --from list.txt -o out/              # one citation per line
 ecfr-md get --all --tree -o cfr/                 # the whole CFR, every title
 
-ecfr-md search "minimum necessary"               # sections that use the phrase
+ecfr-md titles                                   # what titles exist
+ecfr-md search minimum necessary                 # sections that use the phrase
+ecfr-md search minimum necessary --in "45 CFR 164"   # only in Part 164
 ecfr-md search "minimum necessary" --save out/   # and save their text
 ecfr-md outline 45 CFR Part 164 --depth 1        # table of contents, no text
 ecfr-md changes 45 CFR Part 164 --since 2024-01-01
+ecfr-md compare 45 CFR 164.502 --since 2024-04-25    # what changed, as a redline
 ecfr-md sync hipaa/                              # update saved files
+ecfr-md sync old/ --migrate                      # and rename to today's layout
 
 ecfr-md cache info
 ecfr-md cache clear
@@ -65,15 +70,19 @@ ecfr-md cache clear
 
 | Command | Does |
 | --- | --- |
-| `get CITATION` | Prints Markdown, or saves it with `-o FILE`. `--tree -o DIR` writes one file per section. `--from FILE -o DIR` takes one citation per line (`-` for stdin). `--all -o DIR` saves every title (with `--tree`, a folder per title). `--date` for text as of a date. `--no-front-matter` leaves out the metadata header. |
-| `outline CITATION` | Prints the table of contents. `--depth N` limits levels and counts what's below. Part sizes are shown. |
-| `changes CITATION` | Lists changes to sections: when issued, when effective, and whether substantive, editorial or a removal. `--since` and `--until` take dates. |
-| `search QUERY` | Lists current sections that contain the words as a phrase (`--no-phrase`: anywhere in the section). `--limit N` (default 20), `--all-versions`, `--save DIR`, `--json`, plus the API's filters (`--agency SLUG`, `--date`, `--last-modified-after`, …). |
-| `sync PATH` | Updates a file, tree or directory saved by `get`, `search --save` or `--from`. Rewrites only files whose text changed, deletes files for sections that no longer exist, and leaves other files alone. |
-| `cache info`, `cache clear` | Shows or deletes the local cache. |
+| `get CITATION` | Prints the text, or saves it with `-o FILE`. In a terminal, paragraphs are indented, a paragraph shows the section and paragraphs above it, and long text goes through a pager (`--no-pager` to skip it); every lookup ends with its citation, date and eCFR link. Several citations or addresses print one after another, or with `-o DIR` save one file each; with no citation in a terminal, it asks for one ("Citation or address:"), so you can paste. `-o` takes a `.md` file, a directory (an existing one, or a name ending in `/`) or `-` for stdout. `--tree -o DIR` writes one file per section. `--from FILE -o DIR` takes one citation per line (`-` for stdin; `# comments`, quotes and lists such as `45 CFR 164.502, 164.506` are fine): every line is checked first, repeats are saved once, and if some can't be found the rest are still saved. `--all -o DIR` saves every title (with `--tree`, a folder per title). `--date` for text as of a date. `--no-front-matter` leaves out the metadata header. |
+| `titles` | Lists the titles and the latest date of each one's text. |
+| `outline CITATION` | Prints the table of contents (no citation: the titles). `--depth N` limits levels and counts what's below. Part sizes are shown. |
+| `changes CITATION` | Lists changes to sections: when issued, when effective, and whether substantive, editorial or a removal. `--since` and `--until` take dates. Ends with the `compare` command for the latest change. |
+| `compare CITATION --since DATE` | Shows what changed in the text between `--since` and `--until` (default: latest): changed, added and removed paragraphs, with words struck out and inserted. Piped, it prints Markdown with `<del>` and `<ins>`. |
+| `search WORDS` | Lists current sections that contain the words as a phrase (quotes optional; `--no-phrase`: anywhere in the section). `--in CITATION` searches only a title or part of one. `--limit N` (default 20), `--all-versions`, `--save DIR`, `--json`, plus the API's filters (`--agency SLUG`, `--date`, `--last-modified-after`, …); an unknown agency is named, with suggestions. |
+| `sync PATH` | Updates a file, tree or directory saved by `get`, `search --save` or `--from`, searching folders to any depth. Rewrites only files whose text changed, deletes files for sections that no longer exist, and leaves other files alone. Keeps snapshots saved with a past `--date` (`--include-dated` updates them) and files you edited (`--force` overwrites them). `--dry-run` shows what would change. See [Keeping files up to date](#keeping-files-up-to-date). |
+| `cache info`, `cache clear` | Shows (`--json` too) or deletes the local cache. |
 | `api admin …`, `api search …`, `api versioner …` | One command per API endpoint, printing its JSON. See [API](#api). |
 
-`outline`, `changes` and `search` take `--json` for JSON output. A citation can be one quoted string or separate words; keywords such as `--part 164` work too. Without `-o`, `get` prints formatted text in a terminal and plain Markdown when piped.
+`titles`, `outline`, `changes`, `compare` and `search` take `--json` for JSON output (`search --json` is `{"complete", "total_versions", "results"}`). A citation can be one quoted string or separate words, and anything in [Citations and addresses](#citations-and-addresses) works, eCFR links and saved files' names included; keywords such as `--part 164` work too. Without `-o`, `get` prints formatted text in a terminal and plain Markdown when piped. When stderr isn't a terminal (a pipe, a log, CI), messages and summaries are plain whole lines you can grep.
+
+A citation that names a subpart or appendix without its part, like `45 CFR Subpart E`, is checked against the title's table of contents: if several parts have one, the error lists them rather than guessing. A citation that doesn't exist says what does ("No subpart Z in 45 CFR Part 164. It has subparts A, B, C, D, E"). A date after the latest the eCFR has gives the latest text, with a warning, and files are labeled with the text's real date.
 
 Options that go before the command (`ecfr-md --help` lists them all):
 
@@ -84,10 +93,12 @@ Options that go before the command (`ecfr-md --help` lists them all):
 | `--no-cache`, `--cache-dir PATH`, `--cache-max-age SECONDS` | `ECFR_MD_CACHE`, `ECFR_MD_CACHE_DIR`, `ECFR_MD_CACHE_MAX_AGE` | on, user cache directory |
 | `--user-agent TEXT`, `--headers.NAME VALUE` | `ECFR_MD_USER_AGENT`, `ECFR_MD_HEADERS` | `ecfr-md/<version>` |
 | `--rate-limit N`: requests per second | `ECFR_MD_RATE_LIMIT` | none |
-| `--concurrency N`: parts fetched at once | `ECFR_MD_CONCURRENCY` | 4 |
+| `--concurrency N`: most requests in flight at once, across all threads | `ECFR_MD_CONCURRENCY` | 2 |
 | `--timeout`, `--max-attempts`, `--backoff-initial`, `--backoff-max` | `ECFR_MD_…` | 60 s, 5, 1 s, 60 s |
 
 While it runs, `ecfr-md` shows on stderr what it is fetching and as of which date, a bar per download, progress through parts for large titles, retries and rate limiting, and a summary at the end.
+
+The eCFR answers "too many requests" (429) when one client has 3 or more requests running, whatever the rate (measured November 2026); 2 run without any and get over 90% of the best throughput. So `--concurrency` defaults to 2 and is enforced across all threads. If a 429 comes anyway, ecfr-md halves the requests in flight, never returns to the level that got it, and logs a warning: a 429 means the settings need tuning, not more retries. 429s don't count against `--max-attempts`.
 
 Exit codes: `0` success, `1` API, network or file error, `2` invalid usage.
 
@@ -99,21 +110,29 @@ Exit codes: `0` success, `1` API, network or file error, `2` invalid usage.
 import ecfr_md
 
 section = ecfr_md.get("45 CFR 164.502")
-section["(a)(1)"].text  # one paragraph, as Markdown
+section["(a)(1)"].text  # a paragraph and its subparagraphs, as Markdown
 section.save("164.502.md")  # returns the path
 
 ecfr_md.get("45 CFR 164.502", date="2020-01-01")  # as of a date
 ecfr_md.save("45 CFR Part 164", "hipaa/", tree=True)  # one file per section
 
-for match in ecfr_md.search("minimum necessary", limit=5):
+for match in ecfr_md.search("minimum necessary", within="45 CFR Part 164"):
     print(match.citation, match.heading)
 
 for change in ecfr_md.changes("45 CFR Part 164", since="2024-01-01"):
     print(change.issued, change.citation, change.kind)
 
+print(ecfr_md.compare("45 CFR 164.502", since="2024-04-25").to_markdown())  # redline
+
 print(ecfr_md.outline("45 CFR Part 164")["Subpart E"])  # table of contents
+ecfr_md.titles()  # every title, with the date of its latest text
 ecfr_md.sync("hipaa/")  # update saved files
+
+nodes = ecfr_md.get_many(["45 CFR 164.502", "45 CFR 164.999"], errors="return")
+# -> [<Section 45 CFR 164.502 ...>, NodeNotFoundError('No section 164.999 ...')]
 ```
+
+Misspelled keywords are errors, with a suggestion (`get(45, prt="164")`: "did you mean part?"), and levels can be numbers (`part=164`). Anything that doesn't exist raises a `LookupError` (`NodeNotFoundError`, `TitleNotFoundError`, or `AmbiguousNodeError` listing the candidates).
 
 The module-level functions share one client with default settings. To set a user agent, rate limit and so on, or to close connections when you're done, make your own:
 
@@ -124,25 +143,62 @@ with ECFR(Settings(user_agent="my-app/1.0 (me@example.com)")) as ecfr:
     section = ecfr.get("45 CFR 164.502")  # same methods as the module
 ```
 
-- Citations down to the paragraph: `45 CFR 164.502(a)(1)(i)`
+- Citations down to the paragraph: `45 CFR 164.502(a)(1)(i)`, or the address `45/164.502/a/1/i`
 - Text as of any date the eCFR has (2017 on)
 - All text from the source is kept; a nightly test checks this
 - Saved files record the citation, date, source URL and retrieval time
 - Typed methods for every eCFR API endpoint
 
-## Citations
+## Citations and addresses
 
-| Citation | Gets |
-| --- | --- |
-| `45`, `Title 45` | Title |
-| `45 CFR Subtitle A Chapter I Subchapter C` | Subtitle, chapter, subchapter |
-| `45 CFR 164`, `45 CFR Part 164` | Part |
-| `45 CFR Part 164 Subpart E` | Subpart |
-| `45 CFR 164.502`, `45 C.F.R. § 164.502` | Section |
-| `45 CFR 164.502(a)(1)(i)(A)` | Paragraph |
-| `45 CFR Appendix A to Subpart C of Part 164`, `12 CFR Supplement I to Part 1026` | Appendix, supplement, table, exhibit, etc. |
+Every place in the CFR has an **address**: short, unambiguous, and safe to type in a shell, put in a URL or use as a file name. ecfr-md names its files with them, and `get`, `save`, `outline`, `changes`, `search(within=)` and node lookups take them, along with citations and links.
 
-Case, `§`, commas and periods in "C.F.R." don't matter. Keywords also work, alone or with a citation:
+| Address | Citation | Is |
+| --- | --- | --- |
+| `45` | `45 CFR` | Title |
+| `45/subtitle-A`, `45/chapter-I/subchapter-C` | `45 CFR Subtitle A`, `45 CFR Chapter I Subchapter C` | Subtitle, chapter, subchapter |
+| `45/part-164` (or `45/164`) | `45 CFR Part 164` | Part |
+| `45/part-164/subpart-E` | `45 CFR Part 164 Subpart E` | Subpart |
+| `45/164.502` | `45 CFR 164.502` | Section |
+| `45/164.502/a/1/i/A` | `45 CFR 164.502(a)(1)(i)(A)` | Paragraph |
+| `12/part-1026/supplement-I`, `45/part-164/subpart-C/appendix-A` | `12 CFR Supplement I to Part 1026`, `45 CFR Appendix A to Subpart C of Part 164` | Appendix, supplement, table (`table-1`), figure, schedule, … |
+| `12/part-9/group-ECFR129c8723f2e5dc7` | | Unnumbered group of sections, by its eCFR id |
+| `45/164.502@2020-01-01` | | As of a date (also `@2020`, `@2020-01`, `@current`) |
+
+- A section is unique in its title, so its address leaves out the part. Parentheses inside a section number become dots: 26 CFR 1.401(k)-1 is `26/1.401.k-1` (and 26 CFR 1.401 paragraph (k) is `26/1.401/k`). The eCFR's reserved ranges use `..`: `17/210.3-07..210.3-08`.
+- Paragraph markers lose their parentheses and italics. Where a marker repeats among its siblings, as in definitions, each says which it is: `45/164.501/1~2` is the second (1); `45/164.501/1` alone is ambiguous and raises `AmbiguousNodeError` listing them.
+- Lists and ranges: `45/164.502,164.504` (later items keep the title), `45/164.502/a/1,2` (a marker alone is a sibling of the paragraph before), `45/164.502/b..d`.
+- Addresses use only letters, digits and `. - / @ , ~`, in the eCFR's case.
+
+```python
+from ecfr_md import Address
+
+address = Address.parse("45 C.F.R. § 164.502(a)(1) (2018)")
+str(address)  # '45/164.502/a/1@2018-10-01'
+address.citation()  # '45 CFR 164.502(a)(1)'
+address.citation("bluebook")  # '45 C.F.R. § 164.502(a)(1) (2018)'
+address.url()  # 'https://www.ecfr.gov/on/2018-10-01/title-45/section-164.502#p-164.502(a)(1)'
+address.uri()  # 'cfr:45/164.502/a/1@2018-10-01'
+address.file_name()  # '45_164.502_a_1@2018-10-01.md'
+Address.parse_many("45/164.502,164.504")  # two addresses
+```
+
+Nodes have `address` (`45/164.502/a/1`), `uri` (`cfr:45/164.502/a/1@2024-01-01`, with the text's date), `citation` (`45 CFR 164.502(a)(1)`), `cite("bluebook")` and `url` (the eCFR page); `to_dict()` includes `address` and `uri`, as do outlines, changes, matches and titles.
+
+`Address.parse` (and everything that takes a citation) reads:
+
+- Addresses, also as `title-45/section-164.502` or `cfr:45/164.502` URIs.
+- Citations, with or without `§`, case, commas and periods in "C.F.R.": `45 CFR 164.502(a)(1)`, `45 C.F.R. pt. 164, subpt. E`, `45 CFR Subtitle A Chapter I Subchapter C`, `45 CFR Appendix A to Subpart C of Part 164`, `12 CFR Supplement I to Part 1026`, markers spaced or dotted (`45 CFR 164.502 a 1`, `45 CFR 164.502.a.1`), and lists (`45 CFR §§ 164.502, 164.506`).
+- Links: eCFR pages (`https://www.ecfr.gov/current/title-45/section-164.502#p-164.502(a)(1)`, `/on/2020-01-01/...`) and API requests, Cornell LII (`law.cornell.edu/cfr/text/45/164.502#a_1`), GovInfo (`govinfo.gov/link/cfr/45/164?sectionnum=502`, granule ids such as `CFR-2023-title45-vol2-sec164-502`) and USLM identifiers (`/us/cfr/t45/s164.502/a/1`).
+- The names of files ecfr-md saved, today's (`45_164.502_a_1.md`, any path in a saved tree) and ecfr-md 0.x's (`45-cfr-164.502-a.md`, `part-164/subpart-e/section-164.502.md`).
+
+Citations can be pasted as found: surrounding quotes and invisible characters are ignored, `Supp.` and `app.` are completed from the part (`12 C.F.R. pt. 1026, app. J` is `Appendix J to Part 1026`), `45 CFR 164.500 et seq.` is § 164.500, and `45 CFR Subpart E of Part 164` and `Part 164 of Title 45` work.
+
+A trailing year, as in a Bluebook citation (`45 C.F.R. § 164.502 (2018)`), means that year's **annual edition** of the title, which is revised as of January 1 for titles 1–16, April 1 for titles 17–27, July 1 for titles 28–41 and October 1 for titles 42–50: `45 CFR 164.502 (2018)` is the text as of 2018-10-01. A date in the citation and a different `date=` (`--date`) is an error.
+
+A range of sections (`164.500-164.534`, `164.500 through 164.534`) is an error: cite the part or subpart instead. Where one place is expected, a list is an error too; `get_many` (on the command line, several citations with `-o DIR`, or `--from FILE`) takes several. `Citation` still parses citations alone, as before, but has no place for a date, so it rejects a trailing year.
+
+Keywords also work, alone or with a citation:
 
 ```python
 ecfr_md.get(45, part="164", subpart="E")
@@ -152,7 +208,7 @@ ecfr_md.get(45, part="164", subpart="E")
 ecfr-md get 45 --part 164 --subpart E
 ```
 
-In a shell, quote citations that contain parentheses.
+In a shell, quote citations that contain parentheses, or use the address.
 
 ## Dates
 
@@ -170,23 +226,63 @@ ecfr-md get 45 CFR Part 164 -o hipaa.md
 ecfr-md get 45 CFR Part 164 --tree -o hipaa/
 ```
 
-- One file: headings follow the hierarchy, starting at `#` for what you asked for. If the path is an existing directory, the file is named after the citation, e.g. `45-cfr-164.502.md`.
-- Tree: a directory per level, each with an `index.md` (heading, notes, links to children), and one file per section or appendix.
+- One file: headings follow the hierarchy, starting at `#` for what you asked for. If the path is an existing directory (or ends in `/`), the file is named after the address, with `_` for `/`: `45_164.502.md`, `45_164.502_a_1.md`, `45_part-164_subpart-E.md`. Text as of a past date is named with its date too, e.g. `45_part-164@2018-01-01.md`, so snapshots saved into one directory don't overwrite each other. A file name you give is used as is.
+- Tree: a directory per level, each with an `index.md` (heading, notes, links to children), and one file per section or appendix, named as in addresses:
+
+  ```
+  title-45/index.md
+  title-45/subtitle-A/subchapter-C/part-164/index.md
+  title-45/subtitle-A/subchapter-C/part-164/subpart-E/164.502.md
+  title-12/chapter-X/part-1026/supplement-I.md
+  ```
+
+  The top folder is what you saved (`part-164/` for a part). Unnumbered groups of sections get no folder: their sections are in the subpart's folder, under the group's heading in its `index.md`. An appendix to a subpart is in that subpart's folder. Names that would differ only in case, such as 40 CFR Part 60's subparts `Cc` and `CC`, are told apart with `~2` (`subpart-CC`, `subpart-Cc~2`), so trees work on case-insensitive file systems. A path in a saved tree reads as an address, so `ecfr-md get cfr/title-45/subtitle-A/subchapter-C/part-164/subpart-E/164.502.md` gets that text again; dates are in the front matter, not the path.
+
+  Saving a tree over an earlier save of the same tree (another date, say) removes the files ecfr-md wrote for sections that are no longer there, so the tree never mixes dates. Files ecfr-md didn't write, and files you edited, are kept.
 
 Each file starts with YAML front matter. Turn it off with `front_matter=False` or `--no-front-matter`.
 
 ```yaml
 ---
 citation: "45 CFR 164.502"
+address: "45/164.502"
 heading: "§ 164.502 Uses and disclosures of protected health information: General rules."
 date: "2026-10-07"
 source: "https://www.ecfr.gov/on/2026-10-07/title-45/section-164.502"
 api: "https://www.ecfr.gov/api/versioner/v1/full/2026-10-07/title-45.xml?section=164.502"
 retrieved: "2026-10-09T17:02:11+00:00"
 generator: "ecfr-md 0.1.0"
+layout: 2
 disclaimer: "The eCFR is an editorial compilation of CFR material and Federal Register amendments. It is not an official legal edition of the CFR."
+digest: "sha256:3f1c…"
 ---
 ```
+
+- `pinned` (only for text as of a past date) repeats the date you asked for, e.g. `pinned: "2018-01-01"`. `sync` keeps such files at that date.
+- `layout` is the version of the file names: 2 is the layout above. Files saved by ecfr-md 0.x have none.
+- `digest` is the SHA-256 of everything after the front matter. `sync` uses it to tell whether you edited the file. Files saved by earlier versions have no digest and are synced as before.
+
+### Keeping files up to date
+
+`sync` brings saved files to the latest text. It reads the citation from each file's front matter (or a tree's top `index.md`), so it works on a single file, a tree's top folder, or any folder holding saves at any depth.
+
+```sh
+ecfr-md sync notes/ --dry-run   # show what would change, write nothing
+ecfr-md sync notes/             # update
+```
+
+```python
+result = ecfr_md.sync("notes/", dry_run=True)
+result.changed, result.added, result.removed, result.unchanged
+result.kept  # snapshots saved with a past date, left at that date
+result.modified  # files edited since they were saved, left as they are
+result.moved  # (old, new) paths renamed by migrate=True
+```
+
+- Snapshots saved with a past date (`pinned` in the front matter) are kept and reported as "kept at saved date". `include_dated=True` (`--include-dated`) moves them to the latest text.
+- Files whose text no longer matches their `digest` are kept and reported as "modified locally", including files for sections that no longer exist. `force=True` (`--force`) overwrites or deletes them.
+- Files ecfr-md didn't write are never touched.
+- Files and trees saved by ecfr-md 0.x, with lowercase names (`45-cfr-164.502.md`, `part-164/subpart-e/section-164.502.md`), are updated in place under those names. `migrate=True` (`--migrate`) renames them to today's layout (`45_164.502.md`, `part-164/subpart-E/164.502.md`) and lists them in `result.moved` as (old, new) pairs. Names you chose, such as `hipaa.md` or a tree folder you renamed, are kept; files you edited stay where they are.
 
 `save` processes the XML as it reads it from disk, so large titles don't need to fit in memory. The API times out on the largest titles (e.g. Title 40), so text above the part level over 50 MB is fetched one part at a time and joined. Files are written to a temporary name and renamed.
 
@@ -204,28 +300,47 @@ part[0]  # first child
 part["Subpart E"], part["§ 164.512"]  # by identifier, at any depth
 part["164.512(k)(1)(i)"]  # paragraphs
 part["45 CFR 164.512(k)(1)"]  # citations
+part["subpart-E"], part["164.512/k/1"]  # addresses, relative to the node
+part["164.512"]["k/1"], part["45/164.512/k"]
 part.get("164.999")  # None if missing
 part.iter("section")  # all sections
 part.find(level="appendix")  # first match
 
-paragraph = part["164.512(k)(1)(i)"]
-paragraph.citation  # '45 CFR 164.512(k)(1)(i)'
-paragraph.heading  # 'Armed Forces personnel'
-paragraph.text  # its own Markdown
+paragraph = part["164.512(k)"]
+paragraph.citation  # '45 CFR 164.512(k)'
+paragraph.heading  # 'Standard: Uses and disclosures for specialized government functions'
+paragraph.text  # (k) and everything in it, as Markdown
+paragraph.own_text  # only (k)'s lead text, up to (k)(1)
 paragraph.parent, paragraph.section, paragraph.ancestors
 ```
 
-Nodes have `level`, `identifier`, `heading`, `citation`, `hierarchy`, `date`, `provenance`, `parent`, `children`, `to_markdown()`, `to_markdown_tree()` and `save()`.
+Nodes have `level`, `identifier`, `heading`, `citation`, `address`, `uri`, `cite()`, `url` (the eCFR page), `slug` (its name in a saved tree), `hierarchy`, `date`, `provenance`, `parent`, `children`, `text`, `to_markdown()`, `to_markdown_tree()`, `toc()`, `to_dict()` and `save()`. `text` is everything inside the node on every level, the same as `to_markdown()`.
+
+Level names (`"section"`, `"subject_group"`, …) are case-insensitive; a name that isn't a level, such as `"sections"`, raises `InvalidParameterError` listing the levels. `Level` members are strings, so `node.level == "section"` works.
+
+### Sized for a prompt
+
+```python
+part.toc()  # citations and headings, indented, down to paragraphs; no text
+part.toc(depth=2)  # two levels below the part
+part.to_markdown(max_chars=20_000)  # cut at a paragraph break, with a note
+```
+
+### JSON
+
+`to_dict()` returns a dict that `json.dumps` accepts, with the same keys on nodes, outlines, changes and matches: `citation`, `address`, `uri`, `level`, `identifier`, `heading`, `date` (ISO format), `url`, plus `text` and `children` on nodes, `reserved`, `size` and `children` on outlines, `issued`, `effective` and `kind` on changes, and `excerpt`, `starts_on` and `ends_on` on matches. `depth=` limits the children (`0` for none), `text=False` leaves out nodes' text (a node's text includes its children's), and `include_raw=True` adds the API's response as `raw`. Use `to_dict()` rather than `dataclasses.asdict` or pydantic, which don't know about dates and back-references.
+
+In Jupyter, nodes display as Markdown and outlines as a nested list, cut at about 20,000 characters.
 
 If more than one node matches a key, `node[key]` raises `AmbiguousNodeError` with the matches in `.candidates`. `find()` returns the first match.
 
 ### Outlines, changes and search results
 
-`outline()` returns the table of contents as an `Outline`, without the text. It navigates like a node (`outline["Subpart E"]`, `outline.iter("section")`, `.parent`, `.children`) and has `level`, `identifier`, `heading`, `citation`, `reserved` and `size`; `str(outline)` is the indented table of contents.
+`outline()` returns the table of contents as an `Outline`, without the text. It navigates like a node (`outline["Subpart E"]`, `outline["subpart-E"]`, `outline.iter("section")`, `outline.find(level="appendix")`, `.parent`, `.ancestors`, `.children`) and has `level`, `identifier`, `heading`, `citation`, `address`, `uri`, `url`, `reserved` and `size`; `str(outline)` is the indented table of contents. `level` is a `Level`, or the eCFR's own type name (such as `"hed1"`) for unnumbered headings.
 
-`changes()` returns `Change` objects, newest first: `citation`, `heading`, `issued` (when the eCFR published it), `effective` and `kind` (`"substantive"`, `"editorial"` or `"removed"`).
+`changes()` returns `Change` objects, newest first: `citation`, `level`, `heading`, `url`, `issued` (when the eCFR published it), `effective` and `kind` (`"substantive"`, `"editorial"` or `"removed"`).
 
-`search()` returns `Match` objects, best first: `citation` (pass it to `get`), `heading`, `excerpt`, `starts_on` and `ends_on`. The list's `.total` is how many the eCFR found. Words are matched as a phrase unless `phrase=False` or the query has its own quotes; `limit`, `all_versions` and the API's filters (`agency_slugs`, `date`, `last_modified_after`, …) are keywords.
+`search()` returns `Match` objects, best first: `citation` (pass it to `get`), `level`, `identifier`, `heading`, `url`, `excerpt`, `starts_on` and `ends_on`. The list's `.total` is how many the eCFR found. Words are matched as a phrase unless `phrase=False` or the query has its own quotes; `limit`, `all_versions` and the API's filters (`agency_slugs`, `date`, `last_modified_after`, …) are keywords.
 
 Each keeps the API's response in `.raw`.
 
@@ -328,7 +443,7 @@ ECFR_MD_USER_AGENT="my-app/1.0" ecfr-md get 45
 
 ## Public API
 
-Everything exported from `ecfr_md` (the module-level functions, `ECFR`, `Settings`, `Citation`, the node classes, `Level`, `Outline`, `Change`, `Match`, `Matches`, `load`, `Progress`, `SyncResult`, the search enums and typed dicts, and the exceptions), plus the response models in `ecfr_md.models`. Other modules are internal. The `ecfr-md` command and its options are public too.
+Everything exported from `ecfr_md` (the module-level functions, `ECFR`, `Settings`, `Citation`, the node classes, `Level`, `LevelName`, `Outline`, `Change`, `Match`, `Matches`, `load`, `Progress`, `SyncResult`, the search enums and typed dicts, and the exceptions), plus the response models in `ecfr_md.models`. Other modules are internal. The `ecfr-md` command and its options are public too.
 
 ## Errors
 

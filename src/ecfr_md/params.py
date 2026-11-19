@@ -66,7 +66,8 @@ def _convert_date(type_: type, tokens: Sequence[Token]) -> dt.date:
 
 
 # Statically a date or a string; at runtime also anything with a .date() method.
-DateLike = Annotated[
+# A ``type`` alias, so signatures and help() show "DateLike", not the validators.
+type DateLike = Annotated[
     dt.date | str, BeforeValidator(to_date), Parameter(converter=_convert_date)
 ]
 
@@ -81,7 +82,9 @@ class Hierarchy(TypedDict, total=False):
     chapter: str
         Chapter, roman numerals or digits, e.g. 'I'.
     subchapter: str
-        Subchapter, e.g. 'C'. Full text ignores this unless chapter is also given.
+        Subchapter, e.g. 'C'. The API's full text ignores subtitle, chapter
+        and subchapter and returns the whole title; ecfr-md get and save cut
+        them out of it.
     part: str
         Part, e.g. '164'.
     subpart: str
@@ -111,9 +114,12 @@ class SearchFilters(TypedDict, total=False):
 
     Attributes
     ----------
+    within: str
+        Limit to a title or any part of it, given as a citation, e.g.
+        "45 CFR Part 164" or "21 CFR 11".
     agency_slugs: list[str]
         Limit to content associated with these agencies: slugs such as
-        health-and-human-services (see ecfr-md api admin agencies).
+        health-and-human-services-department (see ecfr-md api admin agencies).
     date: DateLike
         Limit to content present on this date.
     last_modified_after: DateLike
@@ -126,6 +132,7 @@ class SearchFilters(TypedDict, total=False):
         Limit to content last modified on or before this date.
     """
 
+    within: Annotated[str, Parameter(name="--in")]
     agency_slugs: Annotated[list[str], Parameter(name="--agency", negative=())]
     date: DateLike
     last_modified_after: DateLike

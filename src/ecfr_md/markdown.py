@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import BinaryIO
 
+from ecfr_md.address import appendix_key, appendix_subpart, encode_id, encode_section
 from ecfr_md.config import BASE_URL
 from ecfr_md.errors import ResponseFormatError
 
@@ -25,7 +26,11 @@ Events = Iterable[tuple[str, ET.Element]]
 MAX_HEADING_LEVEL = 6
 INDEX_FILE = "index.md"
 LEAF_TYPES = frozenset({"SECTION", "APPENDIX"})
-DIR_NAMES = {"SUBCHAP": "subchapter", "SUBJGRP": "subject-group"}
+TREE_NAMES = {"SUBCHAP": "subchapter", "SUBJGRP": "group"}
+LEGACY_NAMES = {"SUBCHAP": "subchapter", "SUBJGRP": "subject-group"}
+# Version 2 of the saved-file layout: names as in addresses. Version 1 is
+# ecfr-md 0.x's lowercase names, still written to sync trees saved with it.
+LAYOUT = 2
 
 # P, P-2 and P-DASH are paragraphs; FP, FP-1, FP1-2, FP-DASH are flush lines.
 PARAGRAPH_TAG = re.compile(r"F?P\d*(?:-\w+)?|FRP")
@@ -173,34 +178,117 @@ class _Folder:
     title: str = ""  # Inline heading text, for links from the parent
     plain: str = ""  # Heading without formatting, for metadata
     blocks: list[str] = field(default_factory=list)
+    # Links and subheadings for index.md; a flattened group shares its parent's.
     contents: list[str] = field(default_factory=list)
-    taken: set[str] = field(default_factory=set)
+    flat: bool = False
+
+
+def tree_names(
+    events: Events, *, layout: int = LAYOUT, free: bool = False
+) -> list[str]:
+    """The name of each folder or file :func:`write_tree` makes, in order.
+
+    One name per division outside a section or appendix, as ``write_tree``
+    meets them; "" for a subject group, whose sections go in its parent's
+    folder. Siblings whose names differ only in case ("subpart-Cc",
+    "subpart-CC") are told apart in code-point order, the first keeping its
+    name and the others getting "~2", "~3": names don't depend on document
+    order, and work on case-insensitive file systems. ``layout=1`` gives the
+    names of ecfr-md 0.x ("subpart-cc-2").
+
+    Names are worked out before writing, since a later sibling can change an
+    earlier one's name. With ``free``, elements are cleared as they are read.
+    """
+    names: list[str] = []
+    siblings: list[list[int]] = [[]]  # Indexes of each open folder's entries.
+    folders: list[bool] = []  # Whether each open division has its own folder.
+    subparts: list[str | None] = []  # The subpart each open division is in.
+    leaf: ET.Element | None = None
+    for event, el in events:
+        if event == "end":
+            if leaf is None or el is leaf:
+                leaf = None
+                if is_division(el):
+                    subparts.pop()
+                    if folders.pop():
+                        _distinguish(names, siblings.pop(), layout)
+            if free:
+                el.clear()
+            continue
+        if leaf is not None or not is_division(el):
+            continue
+        kind = el.get("TYPE")
+        flat = layout >= LAYOUT and kind == "SUBJGRP" and bool(folders)
+        name = "" if flat else segment(el, layout)
+        within = subparts[-1] if subparts else None
+        subparts.append(el.get("N") if kind == "SUBPART" else within)
+        if kind == "APPENDIX" and layout >= LAYOUT:
+            # "Appendix A to Subpart C" can sit beside subpart C, in the part;
+            # its file goes in subpart C's folder, as its address says.
+            subpart = appendix_subpart(el.get("N", ""))
+            if subpart is not None and subpart != within:
+                name = f"subpart-{encode_id(subpart)}/{name}"
+        names.append(name)
+        if not flat:
+            siblings[-1].append(len(names) - 1)
+        if kind in LEAF_TYPES:
+            leaf = el
+        own = not flat and kind not in LEAF_TYPES
+        folders.append(own)
+        if own:
+            siblings.append([])
+    _distinguish(names, siblings.pop(), layout)
+    return names
+
+
+def _distinguish(names: list[str], entries: list[int], layout: int) -> None:
+    """Suffix the names of siblings that would share a file or folder."""
+    if layout < LAYOUT:  # ecfr-md 0.x: "-2", "-3" in document order.
+        taken: set[str] = set()
+        for i in entries:
+            name, n = names[i], 2
+            while names[i] in taken:
+                names[i], n = f"{name}-{n}", n + 1
+            taken.add(names[i])
+        return
+    seen: dict[str, int] = {}
+    for i in sorted(entries, key=lambda i: (names[i], i)):
+        key = names[i].casefold()
+        seen[key] = seen.get(key, 0) + 1
+        if seen[key] > 1:
+            names[i] = f"{names[i]}~{seen[key]}"
 
 
 def write_tree(
     events: Events,
     emit: Callable[[PurePosixPath, str, list[ET.Element], str], object],
     *,
+    names: list[str],
     free: bool = False,
 ) -> None:
     """Emit one file per section or appendix and an ``index.md`` per level.
 
-    ``emit(path, markdown, divisions, heading)`` receives each file's relative
-    path, its Markdown, the chain of division elements down to it and its plain
-    heading. Index files arrive after their children.
+    ``names`` are the folder and file names from :func:`tree_names`, for the
+    same events. ``emit(path, markdown, divisions, heading)`` receives each
+    file's relative path, its Markdown, the chain of division elements down
+    to it and its plain heading. Index files arrive after their children.
     """
     stack: list[ET.Element] = []
     folders: list[_Folder] = []
-    taken: set[str] = set()
+    entries = iter(names)
     leaf: ET.Element | None = None  # Leaves are rendered whole when they end.
     for event, el in events:
         if event == "start":
             stack.append(el)
             if leaf is None and is_division(el):
                 parent = folders[-1] if folders else None
-                name = dedupe(slug(el), parent.taken if parent else taken)
-                path = (parent.path if parent else PurePosixPath()) / name
-                folders.append(_Folder(el, path))
+                name = next(entries)
+                if parent and not name:  # A subject group: no folder of its own.
+                    folders.append(_Folder(el, parent.path, contents=parent.contents))
+                    folders[-1].flat = True
+                else:
+                    path = (parent.path if parent else PurePosixPath()) / name
+                    folders.append(_Folder(el, path))
                 if el.get("TYPE") in LEAF_TYPES:
                     leaf = el
             continue
@@ -210,6 +298,10 @@ def write_tree(
         parent_el = stack[-1] if stack else None
         if folders and el is folders[-1].element:
             folder = folders.pop()
+            if folder.flat:
+                if free and parent_el is not None:
+                    parent_el.remove(el)
+                continue
             chain = [f.element for f in folders] + [el]
             file_leaf = leaf
             if el is leaf:
@@ -219,8 +311,7 @@ def write_tree(
             else:
                 file = folder.path / INDEX_FILE
                 heading = folder.heading or _heading(el.get("N", ""), 1)
-                contents = ["\n".join(folder.contents)] if folder.contents else []
-                body = join([heading, *folder.blocks, *contents])
+                body = join([heading, *folder.blocks, *_contents(folder.contents)])
                 emit(file, body, chain, folder.plain)
             if folders:
                 link = file.relative_to(folders[-1].path).as_posix()
@@ -232,16 +323,31 @@ def write_tree(
                 folders[-1].contents.append(f"- [{text}]({link})")
         elif folders and parent_el is folders[-1].element:
             folder = folders[-1]
-            if el.tag == "HEAD":
+            if el.tag == "HEAD" and folder.flat:
+                folder.contents.append(_heading(render_inline(el), 2))
+            elif el.tag == "HEAD":
                 if not folder.heading:
                     folder.title, folder.plain = render_inline(el), plain_text(el)
                     folder.heading = _heading(folder.title, 1)
+            elif folder.flat:
+                folder.contents += _blocks(el, 3)
             else:
                 folder.blocks += _blocks(el, 2)
         else:
             continue
         if free and parent_el is not None:
             parent_el.remove(el)
+
+
+def _contents(entries: list[str]) -> list[str]:
+    """An index's links as lists, with each subject group's heading between."""
+    blocks: list[str] = []
+    for entry in entries:
+        if entry.startswith("- [") and blocks and blocks[-1].startswith("- ["):
+            blocks[-1] += "\n" + entry
+        else:
+            blocks.append(entry)
+    return blocks
 
 
 def render_blocks(el: ET.Element, level: int = 1) -> list[str]:
@@ -529,20 +635,21 @@ def outer_divisions(el: ET.Element) -> list[ET.Element]:
     return [el] if is_division(el) else [d for c in el for d in outer_divisions(c)]
 
 
-def slug(el: ET.Element) -> str:
+def segment(el: ET.Element, layout: int = LAYOUT) -> str:
+    """A division's folder name, or file name without ".md", in a saved tree.
+
+    Named as in addresses: "title-45", "part-164", "subpart-E", "164.502",
+    "supplement-I", "group-ECFR…". ``layout=1`` gives ecfr-md 0.x's names:
+    "subpart-e", "section-164.502", "appendix-supplement-i-to-part-1026".
+    """
     kind = el.get("TYPE", el.tag).upper()
-    return make_slug(DIR_NAMES.get(kind, kind.lower()), el.get("N", ""))
-
-
-def make_slug(kind: str, identifier: str) -> str:
-    ident = re.sub(r"[^a-z0-9.]+", "-", identifier.lower()).strip("-.")
-    return f"{kind}-{ident}" if ident else kind
-
-
-def dedupe(name: str, taken: set[str]) -> str:
-    """Suffix ``name`` if a sibling already uses it, and reserve the result."""
-    candidate, n = name, 2
-    while candidate in taken:
-        candidate, n = f"{name}-{n}", n + 1
-    taken.add(candidate)
-    return candidate
+    identifier = el.get("N", "")
+    if layout < LAYOUT:
+        name = re.sub(r"[^a-z0-9.]+", "-", identifier.lower()).strip("-.")
+        kind = LEGACY_NAMES.get(kind, kind.lower())
+        return f"{kind}-{name}" if name else kind
+    if kind == "SECTION":
+        return encode_section(identifier)
+    if kind == "APPENDIX":
+        return appendix_key(identifier)
+    return f"{TREE_NAMES.get(kind, kind.lower())}-{encode_id(identifier)}"

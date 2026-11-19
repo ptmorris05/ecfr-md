@@ -11,7 +11,14 @@ import pytest
 from rich.console import Console
 
 import ecfr_md
-from ecfr_md import ECFR, Citation, InvalidCitationError, NodeNotFoundError, shortcuts
+from ecfr_md import (
+    ECFR,
+    Citation,
+    InvalidCitationError,
+    InvalidParameterError,
+    NodeNotFoundError,
+    shortcuts,
+)
 from ecfr_md.ui import Terminal
 
 RESULTS = "/api/search/v1/results"
@@ -127,7 +134,9 @@ def test_excerpts_end_at_a_word(ecfr, api):
 def test_search_command_json_and_no_matches(run, api, capsys):
     api.json(RESULTS, {"results": [result("164.102")], "meta": {"total_count": 1}})
     assert run("search", "rule", "--json") == 0
-    (record,) = json.loads(capsys.readouterr().out)
+    found = json.loads(capsys.readouterr().out)
+    assert found["complete"] is True and found["total_versions"] == 1
+    (record,) = found["results"]
     assert record["citation"] == "45 CFR 164.102" and "raw" not in record
     api.json(RESULTS, {"results": [], "meta": {"total_count": 0}})
     assert run("search", "nothing", "--save", "out") == 0
@@ -188,13 +197,14 @@ def test_module_functions_share_one_client(api, monkeypatch, tmp_path):
     assert [n.citation for n in ecfr_md.get_many(["45 CFR 164.102"])] == [
         "45 CFR 164.102"
     ]
-    assert ecfr_md.save("45 CFR 164.102", tmp_path) == tmp_path / "45-cfr-164.102.md"
+    assert ecfr_md.save("45 CFR 164.102", tmp_path) == tmp_path / "45_164.102.md"
     files = ecfr_md.save("45 CFR Part 164", tmp_path / "tree", tree=True)
     assert len(files) == 7
     assert ecfr_md.outline("45 CFR Part 164").identifier == "164"
     assert ecfr_md.changes("45 CFR Part 164") == []
     assert ecfr_md.search("rule")[0].citation == "45 CFR 164.104"
     assert ecfr_md.sync(tmp_path / "tree").changed == []
+    assert ecfr_md.titles()[0].number == 45
 
 
 # Terminal and help
@@ -218,3 +228,47 @@ def test_connection_options_are_listed_only_at_the_top(run, capsys):
     assert "Connection" not in out and "--output" in out
     run("--help")
     assert "Connection" in capsys.readouterr().out
+
+
+def test_search_within_a_citation(ecfr, api):
+    api.json(RESULTS, {"results": [result("164.102")], "meta": {"total_count": 1}})
+    ecfr.search("rule", within="45 CFR Part 164 Subpart A")
+    sent = dict(api.requests[-1].url.params)
+    assert sent["hierarchy[title]"] == "45"
+    assert sent["hierarchy[part]"] == "164" and sent["hierarchy[subpart]"] == "A"
+
+
+def test_search_command_scope_and_unquoted_words(run, api):
+    api.json(RESULTS, {"results": [], "meta": {"total_count": 0}})
+    assert run("search", "minimum", "necessary", "--in", "45 CFR 164") == 0
+    sent = dict(api.requests[-1].url.params)
+    assert sent["query"] == '"minimum necessary"' and sent["hierarchy[part]"] == "164"
+
+
+def test_unknown_agencies_are_named(ecfr, api):
+    api.json(RESULTS, {"results": [], "meta": {"total_count": 0}})
+    hhs = {"name": "HHS", "display_name": "HHS", "sortable_name": "HHS",
+           "slug": "health-and-human-services-department", "children": [
+               {"name": "CMS", "display_name": "CMS", "sortable_name": "CMS",
+                "slug": "centers-for-medicare-medicaid-services"}]}  # fmt: skip
+    api.json("/api/admin/v1/agencies.json", {"agencies": [hhs]})
+    with pytest.raises(InvalidParameterError, match="did you mean health-and-human"):
+        ecfr.search("x", agency_slugs=["health-and-human-services"])
+    with pytest.raises(InvalidParameterError, match=r"^No agency 'zz' \("):
+        ecfr.search("x", agency_slugs=["zz"])
+    assert (
+        ecfr.search("x", agency_slugs=["centers-for-medicare-medicaid-services"]) == []
+    )
+
+
+def test_an_empty_search_is_a_usage_error(run, capsys):
+    assert run("search", " ") == 2
+    assert "Give words to search for" in capsys.readouterr().err
+
+
+def test_search_says_when_there_are_more(run, api, capsys):
+    page = {"results": [result("164.102"), result("164.104")],
+            "meta": {"total_count": 9, "total_pages": 3}}  # fmt: skip
+    api.json(RESULTS, page)
+    assert run("search", "rule", "--limit", "1") == 0
+    assert "1 section shown; there are more" in capsys.readouterr().err
