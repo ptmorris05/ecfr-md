@@ -307,6 +307,11 @@ class Terminal(Progress):
         if not self.quiet:
             self.console.print(Text(message, style=DIM), soft_wrap=True)
 
+    @property
+    def plain(self) -> bool:
+        """Writing to a file or pipe: whole lines, no boxes, nothing shortened."""
+        return not self.console.is_terminal
+
     def done(self, message: str, *details: str, network: bool = True) -> None:
         """A one-line closing message, with details dimmed."""
         if self.quiet:
@@ -317,7 +322,7 @@ class Terminal(Progress):
         extra = [*details, *(self._network_brief() if network else ())]
         if extra:
             line.append("  " + " · ".join(extra), style=DIM)
-        self.console.print(line)
+        self.console.print(line, soft_wrap=self.plain)
 
     def _network_brief(self) -> tuple[str, str]:
         transfer = _count(self.requests, "request", "requests")
@@ -333,13 +338,16 @@ class Terminal(Progress):
         """A closing panel of key facts."""
         if self.quiet:
             return
+        items = list(rows.items()) + (self._network_items() if network else [])
+        if self.plain:
+            lines = [f"✔ {title}", *(f"  {key}: {value}" for key, value in items)]
+            self.console.print("\n".join(lines), soft_wrap=True, markup=False)
+            return
         table = Table.grid(padding=(0, 2))
         table.add_column(style=DIM, justify="right")
         table.add_column()
-        for key, value in rows.items():
+        for key, value in items:
             table.add_row(key, value)
-        if network:
-            self._network_rows(table)
         self.console.print(
             Panel(
                 table,
@@ -352,7 +360,7 @@ class Terminal(Progress):
             )
         )
 
-    def _network_rows(self, table: Table) -> None:
+    def _network_items(self) -> list[tuple[str, str]]:
         elapsed = time.monotonic() - self.started_at
         transfer = f"{_count(self.requests, 'request', 'requests')}, "
         transfer += f"{size(self.bytes_received)} received"
@@ -360,8 +368,7 @@ class Terminal(Progress):
             transfer += f", {self.cached} from cache"
         if self.retries:
             transfer += f", {_count(self.retries, 'retry', 'retries')}"
-        table.add_row("Network", transfer)
-        table.add_row("Time", f"{elapsed:.1f}s")
+        return [("Network", transfer), ("Time", f"{elapsed:.1f}s")]
 
     def error(self, exc: BaseException) -> None:
         """An error panel; shown even when quiet."""
@@ -372,6 +379,9 @@ class Terminal(Progress):
                 table.add_row(f"[bold]{node.citation}[/]", Text(_first_line(node)[:70]))
             body = Group(Text(str(exc).split(":")[0] + ":"), table)
         name = next((t for cls, t in ERROR_TITLES if isinstance(exc, cls)), "Error")
+        if self.plain:
+            self.console.print(f"✘ {name}: {exc}", soft_wrap=True, markup=False)
+            return
         self.console.print(
             Panel(
                 body,

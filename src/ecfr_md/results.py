@@ -435,11 +435,31 @@ class Match:
 
 
 class Matches(list[Match]):
-    """Search matches, best first. ``total`` is how many the eCFR found."""
+    """Search matches, best first, one per section.
 
-    def __init__(self, matches: Iterable[Match] = (), total: int | None = None):
+    ``total`` is how many matching versions the eCFR counted: a section that
+    matches in several versions counts several times. ``complete`` is true
+    when every match is in the list.
+    """
+
+    def __init__(
+        self,
+        matches: Iterable[Match] = (),
+        total: int | None = None,
+        *,
+        complete: bool = False,
+    ):
         super().__init__(matches)
         self.total = total
+        self.complete = complete
+
+    def to_dict(self) -> dict[str, Any]:
+        """JSON-ready: the matches, and whether more exist."""
+        return {
+            "complete": self.complete,
+            "total_versions": self.total,
+            "results": [m.to_dict() for m in self],
+        }
 
 
 def _without_number(name: str, identifier: str) -> str:

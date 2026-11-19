@@ -17,7 +17,7 @@ import threading
 import time
 import warnings
 import xml.etree.ElementTree as ET
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
@@ -557,6 +557,10 @@ class ECFR:
         all_versions: bool
             Include past versions of sections, not only current text.
         """
+        if not query.strip():
+            raise InvalidParameterError(
+                'Give words to search for, e.g. "minimum necessary"'
+            )
         if phrase and '"' not in query and len(query.split()) > 1:
             query = f'"{query}"'
         per_page = min(MAX_PER_PAGE, limit * 3)  # Duplicates are dropped below.
@@ -578,7 +582,26 @@ class ECFR:
             if len(matches) >= limit or page >= pages or page * per_page >= 10_000:
                 break
             page += 1
-        return Matches(matches[:limit], found.meta.total_count)
+        if not matches and (slugs := filters.get("agency_slugs")):
+            self._check_agencies(slugs)
+        complete = page >= pages and len(matches) <= limit
+        return Matches(matches[:limit], found.meta.total_count, complete=complete)
+
+    def _check_agencies(self, slugs: list[str]) -> None:
+        """Say which agency slugs don't exist; the API just finds nothing."""
+        known: set[str] = set()
+        pending = list(self.api.admin.agencies().agencies)
+        while pending:
+            agency = pending.pop()
+            known.add(agency.slug)
+            pending += agency.children
+        for slug in slugs:
+            if slug not in known:
+                close = difflib.get_close_matches(slug, known, n=3, cutoff=0.5)
+                hint = f"; did you mean {' or '.join(close)}?" if close else ""
+                raise InvalidParameterError(
+                    f"No agency {slug!r}{hint} (ecfr-md api admin agencies lists them)"
+                )
 
     def sync(
         self,
@@ -617,7 +640,7 @@ class ECFR:
     @overload
     def get_many(
         self,
-        citations: list[str | int],
+        citations: Sequence[str | int],
         *,
         date: DateLike | None = None,
         errors: Literal["raise"] = "raise",
@@ -626,7 +649,7 @@ class ECFR:
     @overload
     def get_many(
         self,
-        citations: list[str | int],
+        citations: Sequence[str | int],
         *,
         date: DateLike | None = None,
         errors: Literal["return"],
@@ -635,7 +658,7 @@ class ECFR:
     @validated
     def get_many(
         self,
-        citations: list[str | int],
+        citations: Sequence[str | int],
         *,
         date: DateLike | None = None,
         errors: Literal["raise", "return"] = "raise",
@@ -647,7 +670,7 @@ class ECFR:
 
         Parameters
         ----------
-        citations: list[str | int]
+        citations: Sequence[str | int]
             Citations, as for :meth:`get`.
         date: DateLike | None
             Point-in-time date for all of them. Defaults to the most recent.
@@ -1307,6 +1330,11 @@ class Search:
     ) -> M:
         params = dict(params)
         params["agency_slugs[]"] = params.pop("agency_slugs", None)
+        if within := params.pop("within", None):
+            cited = Citation.parse(str(within))
+            params["hierarchy[title]"] = cited.title
+            for level, value in cited.hierarchy.items():
+                params[f"hierarchy[{level}]"] = value
         return self._client._request_model(model, f"{SEARCH}/{endpoint}", params)
 
     @validated

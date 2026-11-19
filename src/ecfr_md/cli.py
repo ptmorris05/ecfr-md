@@ -22,6 +22,7 @@ import io
 import json
 import logging
 import os
+import re
 import shlex
 import sys
 import warnings
@@ -35,11 +36,12 @@ from rich.console import Console
 from rich.logging import RichHandler
 from rich.markdown import Markdown
 
+from ecfr_md.citation import Citation
 from ecfr_md.client import ECFR, Admin, Search, Versioner
 from ecfr_md.config import Settings, __version__
 from ecfr_md.errors import ECFRError, InvalidCitationError, InvalidParameterError
 from ecfr_md.params import DateLike, Hierarchy, SearchFilters
-from ecfr_md.results import Change, Match
+from ecfr_md.results import Change, Match, Matches
 from ecfr_md.ui import (
     Terminal,
     changes_table,
@@ -53,6 +55,8 @@ EXIT_ERROR = 1
 EXIT_USAGE = 2
 FORMAT_BELOW = 2_000_000  # Larger text is printed as plain Markdown.
 HELP_FLAGS = frozenset({"--help", "-h"})
+MARKDOWN_SUFFIXES = frozenset({".md", ".markdown", ".txt", ""})
+COMMENT = re.compile(r"\s#")  # A comment after a citation on a --from line.
 
 DEFAULT_SETTINGS = Settings()
 
@@ -81,11 +85,15 @@ app.meta.config = config.Env(ENV_PREFIX, command=False)
 @app.command
 def get(
     *citation: str,
-    output: Annotated[Path | None, Parameter(alias="-o")] = None,
+    output: Annotated[
+        str | None, Parameter(alias="-o", allow_leading_hyphen=True)
+    ] = None,
     tree: bool = False,
     front_matter: bool = True,
     date: DateLike | None = None,
-    from_file: Annotated[Path | None, Parameter(name="--from")] = None,
+    from_file: Annotated[
+        str | None, Parameter(name="--from", allow_leading_hyphen=True)
+    ] = None,
     all_titles: Annotated[bool, Parameter(name="--all")] = False,
     ecfr: Client,
     **hierarchy: Unpack[Hierarchy],
@@ -98,8 +106,10 @@ def get(
         What to get: a title number or citation such as 45, 45 CFR 164,
         45 CFR Part 164 Subpart E or 45 CFR 164.502(a)(1). The hierarchy
         options below refine it.
-    output: Path | None
-        File (or directory, with --tree) to write. Prints to stdout if omitted.
+    output: str | None
+        File to write; "-" for stdout. A name ending in "/" or an existing
+        directory gets a file named after the citation. With --tree, --from
+        or --all, the directory to write to. Prints to stdout if omitted.
     tree: bool
         Write nested directories with one file per section or appendix,
         instead of a single file.
@@ -109,32 +119,37 @@ def get(
     date: DateLike | None
         Point-in-time date, e.g. 2020-01-01, "Jan 1 2020" or "last year".
         Defaults to the most recent available.
-    from_file: Path | None
-        File with one citation per line ("-" for stdin); each is saved to the
-        --output directory. Sections in the same part share a request.
+    from_file: str | None
+        File with one citation per line ("-" for stdin), each saved to the
+        --output directory. Blank lines and "# comments" are skipped, and
+        lists such as "45 CFR 164.502, 164.506" give one file each.
     all_titles: bool
         Every title of the CFR, each saved to the --output directory. Large
         titles are fetched part by part, so this takes a while.
     """
     if from_file is not None:
-        _get_many(ecfr, from_file, output, front_matter, date)
+        if citation or all_titles:
+            raise InvalidParameterError(
+                "--from reads the citations from a file; leave out "
+                + ("--all" if all_titles else "the citation")
+            )
+        _get_many(ecfr, from_file, _directory(output, "--from"), front_matter, date)
         return
     if all_titles:
         if citation:
             raise InvalidParameterError(
                 "--all gets every title; leave out the citation"
             )
-        _get_all(ecfr, output, tree, front_matter, date)
+        _get_all(ecfr, _directory(output, "--all"), tree, front_matter, date)
         return
     if not citation:
         raise InvalidParameterError(
             "Say what to get, e.g. ecfr-md get 45 CFR 164, or --all for every title"
         )
-    if tree and output is None:
-        raise InvalidParameterError("--tree requires --output DIRECTORY")
+    target = _directory(output, "--tree") if tree else _file(output)
     cited = _citation(citation)
     terminal = _terminal(ecfr)
-    if output is None:
+    if target is None:
         with terminal.live():
             text = ecfr.get(cited, date=date, **hierarchy).to_markdown()
         if console.is_terminal and len(text) <= FORMAT_BELOW:
@@ -148,7 +163,7 @@ def get(
         if tree:
             files = ecfr.save(
                 cited,
-                output,
+                target,
                 tree=True,
                 front_matter=front_matter,
                 date=date,
@@ -156,7 +171,7 @@ def get(
             )
         else:
             file = ecfr.save(
-                cited, output, front_matter=front_matter, date=date, **hierarchy
+                cited, target, front_matter=front_matter, date=date, **hierarchy
             )
             files = [file]
     if not tree:
@@ -171,37 +186,84 @@ def get(
         {
             "Citation": terminal.target,
             "Text as of": str(terminal.date),
-            "Output": str(output),
+            "Output": str(target),
             "Files": f"{len(files):,}",
             "Size": _total_size(files),
         },
     )
 
 
+def _directory(output: str | None, option: str) -> Path:
+    """The directory an option writes to, created if it doesn't exist."""
+    if output is None or output == "-":
+        raise InvalidParameterError(f"{option} requires --output DIRECTORY")
+    path = Path(output)
+    if path.exists() and not path.is_dir():
+        raise InvalidParameterError(
+            f"{option} writes a directory, but {output} is a file; "
+            f"pick a directory such as {path.with_suffix('')}-files/"
+        )
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _file(output: str | None) -> Path | None:
+    """Where to save one file; None for stdout."""
+    if output is None or output == "-":
+        return None
+    path = Path(output)
+    if output.endswith(("/", "\\")) or path.is_dir():
+        path.mkdir(parents=True, exist_ok=True)  # Named after the citation.
+        return path
+    if path.suffix.lower() not in MARKDOWN_SUFFIXES:
+        raise InvalidParameterError(
+            f"ecfr-md saves Markdown, so {output} wouldn't be a real "
+            f"{path.suffix} file; use a name ending in .md"
+        )
+    return path
+
+
+def _read_citations(text: str, name: str) -> list[str]:
+    """Citations in a --from file, each once, or every line that isn't one."""
+    citations: dict[str, None] = {}  # Ordered, without repeats.
+    problems = []
+    for number, line in enumerate(text.splitlines(), 1):
+        line = COMMENT.split(line, maxsplit=1)[0].strip()
+        if not line or line.startswith("#"):
+            continue
+        try:
+            for cited in Citation.parse_many(line):
+                citations[str(cited)] = None
+        except InvalidCitationError as exc:
+            problems.append(f"{name}:{number}: {exc}")
+    if problems:
+        more = f"\n... and {len(problems) - 10} more" if len(problems) > 10 else ""
+        raise InvalidCitationError("\n".join(problems[:10]) + more)
+    if not citations:
+        raise InvalidParameterError(f"No citations in {name}")
+    return list(citations)
+
+
 def _get_many(
     ecfr: ECFR,
-    source: Path,
-    output: Path | None,
+    source: str,
+    output: Path,
     front_matter: bool,
     date: DateLike | None,
 ) -> None:
-    if output is None:
-        raise InvalidParameterError("--from requires --output DIRECTORY")
     # utf-8-sig also accepts the byte-order mark Windows editors add.
-    data = sys.stdin.buffer.read() if str(source) == "-" else source.read_bytes()
-    text = data.decode("utf-8-sig")
-    citations = [
-        line.strip()
-        for line in text.splitlines()
-        if line.strip() and not line.lstrip().startswith("#")
-    ]
-    if not citations:
-        raise InvalidParameterError(f"No citations in {source}")
+    data = sys.stdin.buffer.read() if source == "-" else Path(source).read_bytes()
+    name = "stdin" if source == "-" else source
+    citations = _read_citations(data.decode("utf-8-sig"), name)
     terminal = _terminal(ecfr)
-    output.mkdir(parents=True, exist_ok=True)
     with terminal.live():
-        nodes = ecfr.get_many(citations, date=date)
-        files = [node.save(output, front_matter=front_matter) for node in nodes]
+        results = ecfr.get_many(citations, date=date, errors="return")
+        files, failed = [], []
+        for cited, result in zip(citations, results, strict=True):
+            if isinstance(result, ECFRError):
+                failed.append(f"{cited}: {result}")
+            else:
+                files.append(result.save(output, front_matter=front_matter))
     terminal.summary(
         "Saved",
         {
@@ -209,22 +271,25 @@ def _get_many(
             "Output": str(output),
             "Files": f"{len(files):,}",
             "Size": _total_size(files),
-        },
+        }
+        | ({"Failed": f"{len(failed):,}"} if failed else {}),
     )
+    if failed:
+        raise ECFRError(
+            f"{len(failed)} of {len(citations)} citations could not be saved:\n"
+            + "\n".join(failed)
+        )
 
 
 def _get_all(
     ecfr: ECFR,
-    output: Path | None,
+    output: Path,
     tree: bool,
     front_matter: bool,
     date: DateLike | None,
 ) -> None:
-    if output is None:
-        raise InvalidParameterError("--all requires --output DIRECTORY")
     titles = [t.number for t in ecfr.api.versioner.titles().titles if not t.reserved]
     terminal = _terminal(ecfr)
-    output.mkdir(parents=True, exist_ok=True)
     files: list[Path] = []
     with terminal.live():
         for title in titles:
@@ -246,8 +311,7 @@ def _get_all(
 
 @app.command
 def search(
-    query: str,
-    *,
+    *query: str,
     limit: int = 20,
     save: Path | None = None,
     phrase: bool = True,
@@ -261,7 +325,7 @@ def search(
     Parameters
     ----------
     query: str
-        Words to search for in headings and text.
+        Words to search for in headings and text. Quotes are optional.
     limit: int
         Maximum number of sections to show.
     save: Path | None
@@ -277,26 +341,36 @@ def search(
     terminal = _terminal(ecfr)
     with terminal.live():
         matches = ecfr.search(
-            query, limit=limit, phrase=phrase, all_versions=all_versions, **filters
+            " ".join(query),
+            limit=limit,
+            phrase=phrase,
+            all_versions=all_versions,
+            **filters,
         )
     if as_json:
-        _print_records(matches)
+        console.print_json(json.dumps(matches.to_dict()))
     elif not matches:
         terminal.note("No matches")
     else:
         console.print(search_table(matches))
-        total = matches.total
-        shown = f"{len(matches)} shown" + (f" of {total:,} matches" if total else "")
-        terminal.note(shown)
+        terminal.note(_search_summary(matches, limit))
     if save is None or not matches:
         return
+    directory = _directory(str(save), "--save")
     with terminal.live():
         nodes = ecfr.get_many([m.citation for m in matches])
-        files = [node.save(save) for node in nodes]
+        files = [node.save(directory) for node in nodes]
     terminal.done(
         f"Saved {len(files):,} {'file' if len(files) == 1 else 'files'} to {save}",
         _total_size(files),
     )
+
+
+def _search_summary(matches: Matches, limit: int) -> str:
+    sections = f"{len(matches)} {'section' if len(matches) == 1 else 'sections'}"
+    if matches.complete:
+        return sections
+    return f"{sections} shown; there are more (raise --limit to see them)"
 
 
 @app.command

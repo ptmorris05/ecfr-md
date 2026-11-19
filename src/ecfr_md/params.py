@@ -112,9 +112,12 @@ class SearchFilters(TypedDict, total=False):
 
     Attributes
     ----------
+    within: str
+        Limit to a title or any part of it, given as a citation, e.g.
+        "45 CFR Part 164" or "21 CFR 11".
     agency_slugs: list[str]
         Limit to content associated with these agencies: slugs such as
-        health-and-human-services (see ecfr-md api admin agencies).
+        health-and-human-services-department (see ecfr-md api admin agencies).
     date: DateLike
         Limit to content present on this date.
     last_modified_after: DateLike
@@ -127,6 +130,7 @@ class SearchFilters(TypedDict, total=False):
         Limit to content last modified on or before this date.
     """
 
+    within: Annotated[str, Parameter(name="--in")]
     agency_slugs: Annotated[list[str], Parameter(name="--agency", negative=())]
     date: DateLike
     last_modified_after: DateLike

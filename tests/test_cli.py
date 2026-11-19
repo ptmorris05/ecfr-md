@@ -1,3 +1,4 @@
+import io
 import json
 import logging
 
@@ -176,3 +177,75 @@ def test_verbose_logs_only_our_requests(run):
     assert logging.getLogger("hpack").level == logging.NOTSET
     assert run("api", "versioner", "titles") == 0
     assert logging.getLogger("ecfr_md").level == logging.ERROR
+
+
+def test_from_lists_comments_repeats_and_stdin(run, tmp_path, monkeypatch):
+    text = (
+        '"45 CFR 164.104"  # quoted, with a comment\n'
+        "45 CFR 164.104\n"  # A repeat.
+        "45 CFR 164.106, 164.108\n"  # A list.
+    )
+    monkeypatch.setattr("sys.stdin", io.TextIOWrapper(io.BytesIO(text.encode())))
+    assert run("get", "--from", "-", "-o", str(tmp_path / "out")) == 0
+    names = sorted(p.name for p in (tmp_path / "out").iterdir())
+    assert names == ["45-cfr-164.104.md", "45-cfr-164.106.md", "45-cfr-164.108.md"]
+
+
+def test_from_reports_every_bad_line(run, capsys, tmp_path):
+    listing = tmp_path / "list.txt"
+    listing.write_text("45 CFR 164.104\nbogus\n" + "nope\n" * 11, encoding="utf-8")
+    assert run("get", "--from", str(listing), "-o", str(tmp_path / "out")) == 2
+    err = capsys.readouterr().err
+    assert "list.txt:2:" in err and "and 2 more" in err
+    assert not (tmp_path / "out").exists() or not any((tmp_path / "out").iterdir())
+
+
+def test_from_saves_what_it_can(run, capsys, tmp_path):
+    listing = tmp_path / "list.txt"
+    listing.write_text("45 CFR 164.104\n45 CFR 164.999\n", encoding="utf-8")
+    assert run("get", "--from", str(listing), "-o", str(tmp_path / "out")) == 1
+    assert [p.name for p in (tmp_path / "out").iterdir()] == ["45-cfr-164.104.md"]
+    assert "1 of 2 citations could not be saved" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("tokens", "message"),
+    [
+        (("get", "45", "--from", "x.txt", "-o", "d"), "leave out the citation"),
+        (("get", "--all", "--from", "x.txt", "-o", "d"), "leave out --all"),
+        (("get", "--from", "x.txt", "-o", "-"), "--from requires --output"),
+        (("get", "45", "-o", "s.docx"), "use a name ending in .md"),
+    ],
+)
+def test_output_usage_errors(run, capsys, tokens, message):
+    assert run(*tokens) == 2
+    assert message in capsys.readouterr().err
+
+
+def test_tree_onto_a_file_is_explained(run, capsys, tmp_path):
+    existing = tmp_path / "fut.md"
+    existing.write_text("x", encoding="utf-8")
+    assert run("get", "45", "--tree", "-o", str(existing)) == 2
+    assert "pick a directory such as" in capsys.readouterr().err
+
+
+def test_output_dash_and_new_directories(run, capsys, tmp_path):
+    assert run("get", "45", "CFR", "164.104", "-o", "-") == 0
+    assert capsys.readouterr().out.startswith("# §")
+    assert run("get", "45", "CFR", "164.104", "-o", f"{tmp_path}/new/") == 0
+    assert [p.name for p in (tmp_path / "new").iterdir()] == ["45-cfr-164.104.md"]
+
+
+def test_terminals_get_panels_and_pipes_get_lines():
+    from rich.console import Console
+
+    from ecfr_md.errors import NodeNotFoundError
+    from ecfr_md.ui import Terminal
+
+    screen = Console(file=io.StringIO(), force_terminal=True, width=60, no_color=True)
+    Terminal(screen).error(NodeNotFoundError("No part 9 in title 45"))
+    Terminal(screen).summary("Saved", {"Files": "3"}, network=False)
+    assert "✘ Not found" in screen.file.getvalue() and "╭" in screen.file.getvalue()
+    pipe = Console(file=io.StringIO(), width=60)
+    Terminal(pipe).error(NodeNotFoundError("No part 9 in title 45"))
+    assert pipe.file.getvalue() == "✘ Not found: No part 9 in title 45\n"

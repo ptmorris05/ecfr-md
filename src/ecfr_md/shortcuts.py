@@ -9,7 +9,7 @@ drift; signatures are written out so type checkers see them.
 
 import atexit
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Literal, Unpack, overload
 
@@ -57,7 +57,9 @@ def get(
 
 
 @_documented_by(ECFR.get_many)
-def get_many(citations: list[str | int], *, date: DateLike | None = None) -> list[Node]:
+def get_many(
+    citations: Sequence[str | int], *, date: DateLike | None = None
+) -> list[Node]:
     return client().get_many(citations, date=date)
 
 

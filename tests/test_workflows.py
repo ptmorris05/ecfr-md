@@ -201,12 +201,13 @@ def test_search_command_shows_current_matches(run, capsys, results):
     captured = capsys.readouterr()
     assert captured.out.count("45 CFR 164.104") == 1
     assert "45 CFR 164.106" in captured.out and "minimum necessary" in captured.out
-    assert "2 shown of 3 matches" in captured.err
+    assert "2 sections" in captured.err
 
 
 def test_search_save(run, api, capsys, results, tmp_path):
-    assert run("search", "minimum", "--save", str(tmp_path)) == 0
-    assert sorted(p.name for p in tmp_path.iterdir()) == [
+    new = tmp_path / "new"  # Created: it was saved as a single file.
+    assert run("search", "minimum", "--save", str(new)) == 0
+    assert sorted(p.name for p in new.iterdir()) == [
         "45-cfr-164.104.md",
         "45-cfr-164.106.md",
     ]
