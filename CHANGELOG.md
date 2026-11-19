@@ -28,6 +28,20 @@ Install from GitHub; ecfr-md is not on PyPI.
 - `get -o -` prints to stdout; `get --from -` reads stdin; `--from` lines
   may have `# comments`, quotes and lists.
 - `cache info --json`.
+- Export formats besides Markdown: plain text, HTML, JSON, EPUB, Word and PDF.
+  `Node.export(path, format=None)` and `save(..., format=)` on nodes, `ECFR`
+  and `ecfr_md` pick the format from the file's suffix (`hipaa.pdf`) unless
+  `format=` names one; `ecfr-md get -o hipaa.pdf` and `--format` likewise,
+  and `get --format json|text|html` prints. HTML pages are standalone, light
+  and dark, print well, and anchor paragraphs with the eCFR's ids
+  (`#p-164.502(a)(1)`). JSON is the node tree with each node's own text and
+  provenance. Word documents use Word's heading styles; PDFs have a bookmark
+  per heading, a running head and page numbers. With `tree=True` (`--tree`,
+  and `--all`), text and HTML get a file per section and an index page per
+  level, and the others a file per part, written as the text is read.
+- Extras `docx` (python-docx), `pdf` (Typst, which needs no system libraries)
+  and `all`. Without one, saving raises `MissingDependencyError`, which says
+  what to install.
 - Addresses: one short, shell-safe name for every place in the CFR, e.g.
   `45/164.502/a/1`, `45/part-164/subpart-E`, `12/part-1026/supplement-I`,
   `26/1.401.k-1` (26 CFR 1.401(k)-1), `45/164.501/1~2` (the second of two
@@ -106,6 +120,10 @@ Install from GitHub; ecfr-md is not on PyPI.
 
 ### Changed
 
+- **Breaking:** saving to a `.txt` file writes plain text, not Markdown, and
+  other suffixes (`.html`, `.pdf`, ...) save that format; `get -o` no longer
+  rejects them. A suffix that names no format is an error; names without a
+  suffix are still Markdown.
 - **Breaking:** `--concurrency` defaults to 2 (was 4) and bounds requests in
   flight across all threads: the eCFR answers 429 to 3 or more. After a 429
   the limit halves and never returns to the level that got it; 429s don't

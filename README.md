@@ -42,6 +42,16 @@ uv add git+https://github.com/ptmorris05/ecfr-md
 pip install git+https://github.com/ptmorris05/ecfr-md
 ```
 
+Saving Word and PDF files needs an extra: `docx`, `pdf`, or `all` for both. Name it before the `@`:
+
+```sh
+uv tool install "ecfr-md[all] @ git+https://github.com/ptmorris05/ecfr-md"
+uv add "ecfr-md[pdf] @ git+https://github.com/ptmorris05/ecfr-md"
+pip install "ecfr-md[docx] @ git+https://github.com/ptmorris05/ecfr-md"
+```
+
+PDFs are typeset by [Typst](https://typst.app/), whose Python wheels need no other software.
+
 ## Command line
 
 ```sh
@@ -50,6 +60,8 @@ ecfr-md get 45/164.502/a/1                       # a paragraph, by its address
 ecfr-md get 45/164.502 45/164.504 -o out/        # several, one file each
 ecfr-md get 45 CFR Part 164 -o hipaa.md          # save to one file
 ecfr-md get 45 CFR Part 164 --tree -o hipaa/     # one file per section
+ecfr-md get 45 CFR Part 164 -o hipaa.pdf         # PDF, Word, EPUB, HTML, text, JSON
+ecfr-md get 45 CFR 164.502 --format json         # print JSON
 ecfr-md get 45 CFR 164.502 --date 2020-01-01     # as of a date
 ecfr-md get --from list.txt -o out/              # one citation per line
 ecfr-md get --all --tree -o cfr/                 # the whole CFR, every title
@@ -70,7 +82,7 @@ ecfr-md cache clear
 
 | Command | Does |
 | --- | --- |
-| `get CITATION` | Prints the text, or saves it with `-o FILE`. In a terminal, paragraphs are indented, a paragraph shows the section and paragraphs above it, and long text goes through a pager (`--no-pager` to skip it); every lookup ends with its citation, date and eCFR link. Several citations or addresses print one after another, or with `-o DIR` save one file each; with no citation in a terminal, it asks for one ("Citation or address:"), so you can paste. `-o` takes a `.md` file, a directory (an existing one, or a name ending in `/`) or `-` for stdout. `--tree -o DIR` writes one file per section. `--from FILE -o DIR` takes one citation per line (`-` for stdin; `# comments`, quotes and lists such as `45 CFR 164.502, 164.506` are fine): every line is checked first, repeats are saved once, and if some can't be found the rest are still saved. `--all -o DIR` saves every title (with `--tree`, a folder per title). `--date` for text as of a date. `--no-front-matter` leaves out the metadata header. |
+| `get CITATION` | Prints the text, or saves it with `-o FILE`. In a terminal, paragraphs are indented, a paragraph shows the section and paragraphs above it, and long text goes through a pager (`--no-pager` to skip it); every lookup ends with its citation, date and eCFR link. Several citations or addresses print one after another, or with `-o DIR` save one file each; with no citation in a terminal, it asks for one ("Citation or address:"), so you can paste. `-o` takes a file, a directory (an existing one, or a name ending in `/`) or `-` for stdout; the file's suffix picks the format (`.md`, `.txt`, `.html`, `.json`, `.epub`, `.docx`, `.pdf`), or `--format` does (see [Formats](#formats)). `--tree -o DIR` writes one file per section. `--from FILE -o DIR` takes one citation per line (`-` for stdin; `# comments`, quotes and lists such as `45 CFR 164.502, 164.506` are fine): every line is checked first, repeats are saved once, and if some can't be found the rest are still saved. `--all -o DIR` saves every title (with `--tree`, a folder per title). `--date` for text as of a date. `--no-front-matter` leaves out the metadata header. |
 | `titles` | Lists the titles and the latest date of each one's text. |
 | `outline CITATION` | Prints the table of contents (no citation: the titles). `--depth N` limits levels and counts what's below. Part sizes are shown. |
 | `changes CITATION` | Lists changes to sections: when issued, when effective, and whether substantive, editorial or a removal. `--since` and `--until` take dates. Ends with the `compare` command for the latest change. |
@@ -240,7 +252,7 @@ ecfr-md get 45 CFR Part 164 --tree -o hipaa/
 
   Saving a tree over an earlier save of the same tree (another date, say) removes the files ecfr-md wrote for sections that are no longer there, so the tree never mixes dates. Files ecfr-md didn't write, and files you edited, are kept.
 
-Each file starts with YAML front matter. Turn it off with `front_matter=False` or `--no-front-matter`.
+Each Markdown file starts with YAML front matter. Turn it off with `front_matter=False` or `--no-front-matter`.
 
 ```yaml
 ---
@@ -261,6 +273,36 @@ digest: "sha256:3f1c…"
 - `pinned` (only for text as of a past date) repeats the date you asked for, e.g. `pinned: "2018-01-01"`. `sync` keeps such files at that date.
 - `layout` is the version of the file names: 2 is the layout above. Files saved by ecfr-md 0.x have none.
 - `digest` is the SHA-256 of everything after the front matter. `sync` uses it to tell whether you edited the file. Files saved by earlier versions have no digest and are synced as before.
+
+### Formats
+
+Besides Markdown, ecfr-md saves plain text, HTML, JSON, EPUB, Word and PDF. The file's suffix picks the format, or `format=` (`--format`) does:
+
+```python
+part = ecfr_md.get("45 CFR Part 164")
+part.export("hipaa.pdf")  # PDF, from the suffix
+part.export("hipaa/", "html", tree=True)  # a page per section
+ecfr_md.save("45 CFR Part 164", "hipaa.docx")  # the same, without loading it first
+ecfr_md.save("45 CFR 164", "hipaa", tree=True, format="epub")
+```
+
+```sh
+ecfr-md get 45 CFR Part 164 -o hipaa.epub
+ecfr-md get 45 CFR Part 164 --tree -o site/ --format html
+ecfr-md get --all --tree -o cfr-pdf/ --format pdf   # a PDF per part, every title
+```
+
+| Format | Suffix | What you get |
+| --- | --- | --- |
+| `markdown` | `.md` | As above. |
+| `text` | `.txt` | One line per paragraph, indented by its level; tables in columns. Starts with the same front matter as Markdown. |
+| `html` | `.html` | One page with its own styles (light and dark, and print), no scripts. Each division is a `<section>` and each paragraph has the eCFR's id, so `hipaa.html#p-164.502(a)(1)` works as it does on ecfr.gov. Notes are small and grey. |
+| `json` | `.json` | The node tree: `level`, `identifier`, `heading`, `citation`, `address`, `url`, `text` (the node's own Markdown, without its children's) and `children`, down to sections, with `provenance` on the top node. |
+| `epub` | `.epub` | An EPUB 3 e-book with a table of contents, a page per division. |
+| `docx` | `.docx` | A Word document using Word's heading styles, so the navigation pane shows the outline. Needs the `docx` extra. |
+| `pdf` | `.pdf` | US Letter pages with a bookmark per heading, a running head and page numbers. Needs the `pdf` extra. |
+
+With `tree=True` (`--tree`), text and HTML are saved like Markdown, a file per section or appendix with an index page per level (HTML pages link to their index and back), while JSON, EPUB, Word and PDF get a file per part, in the same folders: `title-45/subtitle-A/subchapter-C/part-164.pdf`. Either way the text is written as it's read, so a tree of a whole title never needs all of it in memory. Without the extra a format needs, saving raises `MissingDependencyError`, saying what to install.
 
 ### Keeping files up to date
 
@@ -443,7 +485,7 @@ ECFR_MD_USER_AGENT="my-app/1.0" ecfr-md get 45
 
 ## Public API
 
-Everything exported from `ecfr_md` (the module-level functions, `ECFR`, `Settings`, `Citation`, the node classes, `Level`, `LevelName`, `Outline`, `Change`, `Match`, `Matches`, `load`, `Progress`, `SyncResult`, the search enums and typed dicts, and the exceptions), plus the response models in `ecfr_md.models`. Other modules are internal. The `ecfr-md` command and its options are public too.
+Everything exported from `ecfr_md` (the module-level functions, `ECFR`, `Settings`, `Citation`, the node classes, `Level`, `LevelName`, `Format`, `Outline`, `Change`, `Match`, `Matches`, `load`, `Progress`, `SyncResult`, the search enums and typed dicts, and the exceptions), plus the response models in `ecfr_md.models`. Other modules are internal. The `ecfr-md` command and its options are public too.
 
 ## Errors
 
@@ -460,6 +502,7 @@ All exceptions derive from `ecfr_md.ECFRError`.
 | `ECFRConnectionError`, `ECFRTimeoutError` | The API can't be reached, after retries. |
 | `APIError`: `BadRequestError`, `NotFoundError`, `RateLimitError`, `ServerError` | HTTP error. Has `status_code`, `url`, `detail`, `retry_after`. |
 | `ResponseFormatError` | A response isn't the expected JSON or XML. |
+| `MissingDependencyError` | Saving Word or PDF without its extra installed; the message says what to install. Also an `ImportError`. |
 
 ## Examples
 
