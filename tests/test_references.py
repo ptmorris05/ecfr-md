@@ -229,7 +229,7 @@ TREE = """<DIV5 N="160" TYPE="PART"><HEAD>PART 160—GENERAL</HEAD>
 
 def test_saved_trees_link_between_their_files(tmp_path):
     files = load(TREE, title=45).save(tmp_path, tree=True)
-    purpose = (tmp_path / "part-160/subpart-A/160.101.md").read_text()
+    purpose = (tmp_path / "part-160/subpart-A/160.101.md").read_text(encoding="utf-8")
     assert "[§ 160.103](../subpart-B/160.103.md)" in purpose
     assert "[subpart B of this part](../subpart-B/index.md)" in purpose
     assert "[appendix A to this part](../appendix-A.md)" in purpose
@@ -237,18 +237,19 @@ def test_saved_trees_link_between_their_files(tmp_path):
         "[§ 164.502](https://www.ecfr.gov/current/title-45/section-164.502)" in purpose
     )
     assert "[paragraph (a) of this section](160.101.md)" in purpose
-    index = (tmp_path / "part-160/index.md").read_text()
+    index = (tmp_path / "part-160/index.md").read_text(encoding="utf-8")
     assert "[42 U.S.C. 1320d](https://uscode.house.gov/" in index
-    assert (
-        "[this part](../index.md)"
-        in (tmp_path / "part-160/subpart-B/160.103.md").read_text()
-    )
+    assert "[this part](../index.md)" in (
+        tmp_path / "part-160/subpart-B/160.103.md"
+    ).read_text(encoding="utf-8")
     assert all(read_front_matter(f)["links"] is True for f in files)
 
 
 def test_trees_can_be_saved_without_links(tmp_path):
     files = load(TREE, title=45).save(tmp_path, tree=True, links=False)
-    assert "](" not in (tmp_path / "part-160/subpart-A/160.101.md").read_text()
+    assert "](" not in (tmp_path / "part-160/subpart-A/160.101.md").read_text(
+        encoding="utf-8"
+    )
     assert all(read_front_matter(f)["links"] is False for f in files)
 
 
@@ -258,9 +259,9 @@ def test_single_files_link_on_request(tmp_path):
     assert "links" not in plain
     linked = part.save(tmp_path / "linked.md", links=True)
     assert read_front_matter(linked)["links"] is True
-    assert "[§ 160.103](https://www.ecfr.gov/" in linked.read_text()
+    assert "[§ 160.103](https://www.ecfr.gov/" in linked.read_text(encoding="utf-8")
     paragraph = part["160.101(a)"].save(tmp_path / "p.md", tree=True)
-    assert "[§ 160.103](https://" in paragraph[0].read_text()
+    assert "[§ 160.103](https://" in paragraph[0].read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize(

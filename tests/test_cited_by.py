@@ -40,10 +40,12 @@ def test_cited_by_searches_for_the_number(ecfr, api):
 def test_client_saves_link_trees_by_default(ecfr, tmp_path):
     files = ecfr.save("45 CFR Part 164", tmp_path, tree=True)
     assert all(read_front_matter(f)["links"] is True for f in files)
-    index = (tmp_path / "part-164/index.md").read_text()
+    index = (tmp_path / "part-164/index.md").read_text(encoding="utf-8")
     assert "[42 U.S.C. 1320d](https://uscode.house.gov/" in index
     single = ecfr.save("45 CFR Part 164", tmp_path / "one.md", links=True)
-    assert "[78 FR 5692](https://www.federalregister.gov/" in single.read_text()
+    assert "[78 FR 5692](https://www.federalregister.gov/" in single.read_text(
+        encoding="utf-8"
+    )
     paragraph = ecfr.save("45 CFR 164.104(a)", tmp_path / "p.md", links=True)
     assert read_front_matter(paragraph)["links"] is True
 
@@ -52,11 +54,12 @@ def test_sync_adds_links_once_to_trees_saved_before_them(ecfr, tmp_path):
     ecfr.save("45 CFR Part 164", tmp_path, tree=True, links=False)
     assert not ecfr.sync(tmp_path).changed  # Saved without links: kept so.
     for file in tmp_path.rglob("*.md"):  # As saved before links existed.
-        file.write_text(file.read_text().replace("links: false\n", ""))
+        text = file.read_text(encoding="utf-8")
+        file.write_text(text.replace("links: false\n", ""), encoding="utf-8")
     result = ecfr.sync(tmp_path)
     index = tmp_path / "part-164/index.md"
     assert index in result.changed
-    assert "[42 U.S.C. 1320d](" in index.read_text()
+    assert "[42 U.S.C. 1320d](" in index.read_text(encoding="utf-8")
     assert not ecfr.sync(tmp_path).changed
 
 
@@ -95,4 +98,9 @@ def test_cli_get_links(run, capsys, tmp_path):
     assert (
         run("get", "45 CFR Part 164", "--tree", "--no-links", "-o", str(tmp_path)) == 0
     )
-    assert "](" not in (tmp_path / "part-164/index.md").read_text().split("\n- [")[0]
+    assert (
+        "]("
+        not in (tmp_path / "part-164/index.md")
+        .read_text(encoding="utf-8")
+        .split("\n- [")[0]
+    )
