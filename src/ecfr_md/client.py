@@ -49,6 +49,7 @@ from tenacity import (
     wait_exponential_jitter,
 )
 
+from ecfr_md import definitions as defined
 from ecfr_md import models, sources
 from ecfr_md.address import (
     APPENDIX_KEY,
@@ -63,7 +64,7 @@ from ecfr_md.citation import Citation
 from ecfr_md.compare import Comparison
 from ecfr_md.compare import compare as compare_texts
 from ecfr_md.config import RETRY_STATUS_CODES, SPLIT_ABOVE, Settings
-from ecfr_md.definitions import Definitions, define
+from ecfr_md.definitions import Definition, Definitions, define
 from ecfr_md.document import Level, Node, Source, load_file, save_events
 from ecfr_md.errors import (
     AmbiguousNodeError,
@@ -1017,6 +1018,25 @@ class ECFR:
             and (m.raw.hierarchy.title == str(place.title) or named in m.excerpt)
         ]
         return Matches(matches[:limit], found.total, complete=found.complete)
+
+    @validated
+    def definitions(
+        self, citation: str | int, /, *, date: DateLike | None = None
+    ) -> list[Definition]:
+        """Every defined term that governs a place, nearest first.
+
+        Reads the same definitions sections as :meth:`define`, keeping those
+        that apply to the place; where a term is defined at several levels,
+        the nearest definition wins.
+
+        Parameters
+        ----------
+        citation: str | int
+            Where the terms are used: a section, part or other division.
+        date: DateLike | None
+            Point-in-time date. Defaults to the most recent available.
+        """
+        return defined.definitions(self, citation, date)
 
     def _check_agencies(self, slugs: list[str]) -> None:
         """Say which agency slugs don't exist; the API just finds nothing."""

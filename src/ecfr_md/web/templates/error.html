@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}{{ status }}{% endblock %}
+{% block view %}error{% endblock %}
+{% block main %}
+<article class="text problem-page">
+  <h1>{{ "Not in the CFR" if status == 404 else "Offline" if status == 503 else "Can’t show that" }}</h1>
+  <p>{{ message }}</p>
+  <form action="/go" method="get" class="big-find" role="search">
+    <label class="sr" for="err-find">Go to a citation, or search</label>
+    <input id="err-find" name="cite" type="search" placeholder="A citation, e.g. 45 CFR 164.502, or words" autocomplete="off">
+  </form>
+</article>
+{% endblock %}

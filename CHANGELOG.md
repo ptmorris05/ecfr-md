@@ -51,6 +51,33 @@ Install from GitHub; ecfr-md is not on PyPI.
   line, and an AI agents guide with setup for Claude Code and other MCP
   clients.
 - Not-found errors suggest near misses: "did you mean 164.502?".
+- `ecfr-md serve`: a web navigator for the CFR, run on this computer
+  (`web` extra: Starlette, uvicorn, Jinja2). Paths mirror ecfr.gov
+  (`/current/...`, `/on/DATE/...`, `/compare/LATER/to/EARLIER/...`), and
+  `/go?cite=` resolves any citation. Pages for titles, divisions (contents
+  with section counts and sizes), text, history, comparisons (an inline
+  word-level redline), search, export in every format (downloaded, or saved
+  to `--save-dir`) and settings (every `Settings` field, applied at once and
+  optionally written to the config file). A command palette (`⌘K`) for
+  citations, headings, known names, words, dates and actions; hover
+  previews of cross-references and "open beside"; defined terms underlined
+  with their definitions; paragraph and range deep links; copy with
+  citation (OFR or Bluebook); a versions timeline; outline, focus, text size,
+  density, light and dark; `j`/`k`/`[`/`]`/`u` keys. Text streams with a
+  progress hairline, neighbouring pages are prerendered, a service worker
+  keeps read pages offline, and there is a print stylesheet. Every page is
+  also `.md` and `.json`, with `/llms.txt` and `/openapi.json`. It answers
+  only local host names unless `--host` opens it, and refuses cross-site
+  requests that change anything. `ecfr_md.web.create_app()` is the ASGI app.
+- `ECFR.definitions(citation)`: every defined term that governs a place,
+  nearest first, as the web navigator underlines them.
+- `ecfr_md.compare.aligned()`: both texts block by block, unchanged blocks
+  included, for a whole-text redline; `Difference.kind` is `"unchanged"`
+  for those.
+- The HTML writer is a class, `render.html_writer.Writer`, with a method
+  per kind of block to override; inline `<ins>` and `<del>` are kept as
+  insertions and deletions.
+- The `all` extra includes `web`.
 - MIT license. Releases are published on GitHub from version tags, with the
   wheel and source distribution attached and build provenance attested.
 - A documentation site with an API reference, built from the README,

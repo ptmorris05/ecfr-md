@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% from "_macros.html" import toc, meta, pager %}
+{% block title %}{{ page.title }}{% endblock %}
+{% block view %}read{% endblock %}
+{% block main %}
+<article class="text" id="text">
+  {{ meta(page) }}
+  {% if rows %}
+  <details class="contents-inline">
+    <summary>Contents</summary>
+    {{ toc(rows) }}
+  </details>
+  {% endif %}
+  {% for chunk in text %}{{ chunk }}{% endfor %}
+</article>
+{% endblock %}
+{% block pager %}{{ pager(neighbours) }}{% endblock %}

@@ -310,7 +310,7 @@ def test_what_definitions_apply_to(api, ecfr):
     api.json("/api/versioner/v1/structure/2026-10-07/title-45.json", structure)
     found = ecfr.define("Term A", "45 CFR 164.104")
     (term,) = found
-    assert term.citation == "45 CFR 164.108" and term.applies_to is None
+    assert term.citation == "45 CFR 164.108" and term.applies_to == "45 CFR Part 164"
     assert not ecfr.define("nothing", "45 CFR 164.104")
     section = load(
         "<DIV8 N='1.1' TYPE='SECTION'><HEAD>§ 1.1 Definitions.</HEAD>"

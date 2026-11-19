@@ -279,10 +279,7 @@ def define(
     if not term.strip(" \"'"):
         raise InvalidParameterError('Give a term to define, e.g. "covered entity"')
     term = term.strip(" \"'")
-    place = Address.parse(citation)
-    when = date if date is not None else place.date
-    entry = ecfr.outline(str(place.undated()), date=when)
-    placed = ecfr._place(entry.address, entry.date)
+    placed, when = _placed(ecfr, citation, date)
     chain = [placed, *placed.ancestors]
     searched: list[str] = []
     seen: set[str] = set()
@@ -293,7 +290,7 @@ def define(
             break
         for candidate in _candidates(scope, placed, seen):
             seen.add(candidate.address)
-            node = candidate.read(entry.date)
+            node = candidate.read(when)
             searched.append(node.citation)
             applies = _applies_to(node, candidate)
             definitions = find_definitions(node, applies.citation if applies else None)
@@ -328,6 +325,45 @@ def define(
     )
 
 
+def definitions(
+    ecfr: ECFR, citation: str | int, date: DateLike | None = None
+) -> list[Definition]:
+    """See :meth:`ECFR.definitions <ecfr_md.client.ECFR.definitions>`."""
+    placed, when = _placed(ecfr, citation, date)
+    seen: set[str] = set()
+    nearest: dict[str, Definition] = {}  # A nearer definition hides farther ones.
+    for scope in [placed, *placed.ancestors]:
+        if scope.level in (Level.TITLE, Level.SUBTITLE, "cfr"):
+            break
+        for candidate in _candidates(scope, placed, seen):
+            seen.add(candidate.address)
+            if not DEFINITIONS_HEADING.search(candidate.heading):
+                continue  # The place itself: its italic run-in headings aren't terms.
+            node = candidate.read(when)
+            applies = _applies_to(node, candidate)
+            if applies is not None and not (
+                _within(placed, applies) or _within(candidate, placed)
+            ):
+                continue
+            for found in find_definitions(node, applies.citation if applies else None):
+                for term in found.terms:
+                    nearest.setdefault(_key(term), found)
+        if scope.level in (Level.SUBCHAPTER, Level.CHAPTER):
+            break
+    return list(dict.fromkeys(nearest.values()))
+
+
+def _placed(
+    ecfr: ECFR, citation: str | int, date: DateLike | None
+) -> tuple[Outline, dt.date]:
+    """A place's entry in the whole CFR's outline, and the date of its text."""
+    place = Address.parse(citation)
+    when = date if date is not None else place.date
+    entry = ecfr.outline(str(place.undated()), date=when)
+    assert entry.date is not None  # Outlines from a client are dated.
+    return ecfr._place(entry.address, entry.date), entry.date
+
+
 def _candidates(scope: Outline, place: Outline, seen: set[str]) -> list[Outline]:
     """The definitions sections in a division to read, nearest first."""
     if scope is place and scope.level in LEAVES:
@@ -350,8 +386,8 @@ def _applies_to(node: Node, entry: Outline) -> Outline | None:
     definitions apply to this subchapter"."""
     intro = node.text[:600]
     found = APPLIES.search(intro)
-    if found is None:
-        return None
+    if found is None:  # Saying nothing, a section's definitions cover its part.
+        return next((a for a in entry.ancestors if a.level == Level.PART), None)
     level = found[1].lower()
     if level == "section":
         return entry
