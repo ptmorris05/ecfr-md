@@ -65,9 +65,9 @@ SUBPART_TAIL = re.compile(
     rf"\s+(?:of|to)\s+(?:(?P<this>this\s+part)|[Pp]art\s+(?P<part>{PART}){TAIL})"
 )
 APPENDIX = re.compile(
-    rf"\b(?P<kind>[Aa]ppendix|[Ss]upplement)\s+(?P<des>[A-Z]{{1,3}}|[IVX]+|\d+)\b"
+    rf"\b(?P<kind>[Aa]ppendix|[Ss]upplement)\s+(?P<des>[IVX]+|[A-Z]{{1,3}}\d*|\d+)\b"
     rf"(?:\s+(?:to|of)\s+(?:(?:[Ss]ubpart\s+(?P<subpart>{SUBPART})\s+of\s+)?"
-    rf"(?:(?P<this>this\s+part)|[Pp]art\s+(?P<part>{PART}))))?"
+    rf"(?:(?P<this>this\s+part)|[Pp]art\s+(?P<part>{PART}){TAIL})))?"
 )
 THIS = re.compile(r"\b[Tt]his\s+(?P<level>part|section|subpart)\b")
 USC = re.compile(
@@ -357,7 +357,8 @@ def _appendices(text: str, where: _Where) -> Found:
         if part is None:
             continue
         key = f"{found['kind'].lower()}-{found['des']}"
-        target = where.at(part=part, subpart=found["subpart"], appendix=key)
+        title = int(found["of"]) if found["of"] else None
+        target = where.at(title, part=part, subpart=found["subpart"], appendix=key)
         yield found.start(), found.end(), target
 
 
@@ -409,9 +410,16 @@ def _paragraph(
 
 def _continue(previous: tuple[str, ...], markers: tuple[str, ...]) -> tuple[str, ...]:
     """Markers listed after others, as "(a)(1) and (2)" lists (a)(2): they
-    replace the previous ones from the level their first marker is at."""
-    first = markers[0]
-    levels = [d for d in range(min(len(previous), 4), 0, -1) if POSITIONS[d](first)]
+    replace the previous ones from the level they start at, the deepest
+    where each marker fits the level after the one before ("(c)(3)" after
+    (c)(2)(i) starts at (c), not at the roman numeral c)."""
+    levels = [
+        d
+        for d in range(min(len(previous), 4), 0, -1)
+        if all(
+            d + k in POSITIONS and POSITIONS[d + k](m) for k, m in enumerate(markers)
+        )
+    ]
     if not levels:
         return markers
     return (*previous[: levels[0] - 1], *markers)

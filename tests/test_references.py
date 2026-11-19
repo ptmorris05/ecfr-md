@@ -107,6 +107,18 @@ def _found(text: str, context=CONTEXT) -> list[tuple[str, str | None]]:
         ("this section", [("this section", "45/164.502")]),
         ("§ followed by nothing", []),
         ("§ (a)", []),
+        (
+            "§ 164.508(a)(4)(i) and (c)(1)",
+            [("§ 164.508(a)(4)(i)", "45/164.508/a/4/i"), ("(c)(1)", "45/164.508/c/1")],
+        ),
+        (
+            "appendix A of part 36 of title 28",
+            [("appendix A of part 36 of title 28", "28/part-36/appendix-A")],
+        ),
+        (
+            "appendix M1 to this part",
+            [("appendix M1 to this part", "45/part-164/appendix-M1")],
+        ),
         ("subpart Eb", []),
         (
             "45 CFR 164.502(a) and (b)",
