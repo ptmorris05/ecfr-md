@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Literal, Unpack, overload
 
 from ecfr_md.client import ECFR
+from ecfr_md.compare import Comparison
 from ecfr_md.document import Node
 from ecfr_md.params import DateLike, Hierarchy, SearchFilters
 from ecfr_md.results import Change, Matches, Outline, TitleInfo
@@ -124,6 +125,17 @@ def outline(
     **hierarchy: Unpack[Hierarchy],
 ) -> Outline:
     return client().outline(citation, date=date, **hierarchy)
+
+
+@_documented_by(ECFR.compare)
+def compare(
+    citation: str | int,
+    /,
+    since: DateLike,
+    until: DateLike | None = None,
+    **hierarchy: Unpack[Hierarchy],
+) -> Comparison:
+    return client().compare(citation, since, until, **hierarchy)
 
 
 @_documented_by(ECFR.changes)

@@ -31,6 +31,7 @@ from rich.table import Table
 from rich.text import Text
 from rich.tree import Tree
 
+from ecfr_md.compare import Comparison
 from ecfr_md.errors import (
     AmbiguousNodeError,
     APIError,
@@ -508,3 +509,16 @@ def titles_table(titles: Sequence[TitleInfo]) -> Table:
         when = str(t.latest) + (" (updating)" if t.processing else "")
         table.add_row(str(t.number), t.name, when)
     return table
+
+
+def redline(comparison: Comparison) -> Group:
+    """Changed blocks, deletions struck through in red, insertions in green."""
+    styles = {"=": "", "-": f"strike {BAD}", "+": f"underline {GOOD}"}
+    labels = {"added": "Added", "removed": "Removed", "changed": "Changed"}
+    blocks: list[RenderableType] = []
+    for difference in comparison.differences:
+        text = Text()
+        for op, words in difference.words:
+            text.append(words.replace("**", ""), style=styles[op])
+        blocks += [Text(labels[difference.kind], style=f"bold {DIM}"), text, Text()]
+    return Group(*blocks)

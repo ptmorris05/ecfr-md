@@ -46,6 +46,8 @@ from tenacity import (
 from ecfr_md import models
 from ecfr_md.cache import Store, default_directory
 from ecfr_md.citation import Citation
+from ecfr_md.compare import Comparison
+from ecfr_md.compare import compare as compare_texts
 from ecfr_md.config import RETRY_STATUS_CODES, SPLIT_ABOVE, Settings
 from ecfr_md.document import Node, Source, load, save_events
 from ecfr_md.errors import (
@@ -497,6 +499,46 @@ class ECFR:
             raise
         path = _path(structure, cited)
         return Outline.build(path[-1], cited.title, _levels(path), date=date)
+
+    @validated
+    def compare(
+        self,
+        citation: str | int,
+        /,
+        since: DateLike,
+        until: DateLike | None = None,
+        **hierarchy: Unpack[Hierarchy],
+    ) -> Comparison:
+        """What changed in the text between two dates, block by block.
+
+        Each changed paragraph (or table, or note) is a
+        :class:`~ecfr_md.compare.Difference` that can show its words deleted
+        and inserted; ``to_markdown()`` gives a redline of them all.
+
+        Parameters
+        ----------
+        citation: str | int
+            A title number or citation, as for :meth:`get`.
+        since: DateLike
+            The earlier date, e.g. the day before a change took effect.
+        until: DateLike | None
+            The later date. Defaults to the most recent available.
+        """
+        cited = Citation.parse(citation).with_hierarchy(hierarchy)
+        before = self.get(citation, date=since, **hierarchy)
+        after = self.get(citation, date=until, **hierarchy)
+        assert before.date is not None and after.date is not None  # Set by get().
+        if before.date > after.date:
+            raise InvalidParameterError(
+                f"The first date ({before.date}) is after the second ({after.date})"
+            )
+        return compare_texts(
+            str(cited),
+            before.to_markdown(),
+            after.to_markdown(),
+            before.date,
+            after.date,
+        )
 
     @validated
     def changes(

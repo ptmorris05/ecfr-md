@@ -9,6 +9,7 @@ Common commands:
     ecfr-md get --all --tree -o cfr/           every title
     ecfr-md search "minimum necessary"         find sections
     ecfr-md outline 45 CFR Part 164            table of contents
+    ecfr-md compare 45 CFR 164.502 --since 2024-01-01   what changed
     ecfr-md titles                             what titles exist
 
 Run ecfr-md COMMAND --help for a command's options. The options below go
@@ -41,12 +42,13 @@ from ecfr_md.citation import Citation
 from ecfr_md.client import ECFR, Admin, Search, Versioner
 from ecfr_md.config import Settings, __version__
 from ecfr_md.errors import ECFRError, InvalidCitationError, InvalidParameterError
-from ecfr_md.params import DateLike, Hierarchy, SearchFilters
+from ecfr_md.params import DateLike, Hierarchy, SearchFilters, to_date
 from ecfr_md.results import Change, Match, Matches
 from ecfr_md.ui import (
     Terminal,
     changes_table,
     outline_tree,
+    redline,
     search_table,
     size,
     titles_table,
@@ -58,6 +60,7 @@ EXIT_USAGE = 2
 FORMAT_BELOW = 2_000_000  # Larger text is printed as plain Markdown.
 HELP_FLAGS = frozenset({"--help", "-h"})
 MARKDOWN_SUFFIXES = frozenset({".md", ".markdown", ".txt", ""})
+KINDS = ("changed", "added", "removed")
 COMMENT = re.compile(r"\s#")  # A comment after a citation on a --from line.
 
 DEFAULT_SETTINGS = Settings()
@@ -459,6 +462,8 @@ def changes(
     as_json: bool
         Print JSON instead of a table.
     """
+    if since and until and to_date(since) > to_date(until):
+        raise InvalidParameterError(f"--since {since} is after --until {until}")
     terminal = _terminal(ecfr)
     with terminal.live():
         found = ecfr.changes(_citation(citation), since=since, until=until, **hierarchy)
@@ -468,6 +473,52 @@ def changes(
     if found:
         console.print(changes_table(found))
     terminal.note(f"{len(found):,} {'change' if len(found) == 1 else 'changes'}")
+    if found:  # The natural next question: what did the latest one change?
+        latest = found[0]
+        before = latest.effective - dt.timedelta(days=1)
+        terminal.note(
+            f"To see what changed: ecfr-md compare {latest.citation} --since {before}"
+        )
+
+
+@app.command
+def compare(
+    *citation: str,
+    since: DateLike,
+    until: DateLike | None = None,
+    as_json: Annotated[bool, Parameter(name="--json")] = False,
+    ecfr: Client,
+    **hierarchy: Unpack[Hierarchy],
+) -> None:
+    """Show what changed in the text between two dates, as a redline.
+
+    Parameters
+    ----------
+    citation: str
+        A citation, e.g. 45 CFR 164.502.
+    since: DateLike
+        The earlier date, e.g. the day before a change took effect.
+    until: DateLike | None
+        The later date. Defaults to the most recent available.
+    as_json: bool
+        Print JSON (each difference with its words) instead of a redline.
+    """
+    terminal = _terminal(ecfr)
+    with terminal.live():
+        found = ecfr.compare(_citation(citation), since, until, **hierarchy)
+    if as_json:
+        console.print_json(json.dumps(found.to_dict()))
+        return
+    if not console.is_terminal:
+        _print_markdown(found.to_markdown())
+    elif found:
+        console.print(redline(found))
+    kinds = [d.kind for d in found.differences]
+    counts = ", ".join(f"{kinds.count(k)} {k}" for k in KINDS if k in kinds)
+    terminal.note(
+        f"{found.since} to {found.until}: {counts or 'no changes'}; "
+        f"{found.unchanged:,} paragraphs, tables and notes unchanged"
+    )
 
 
 @app.command(name="sync")

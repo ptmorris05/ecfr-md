@@ -17,6 +17,7 @@ settings, or to close connections when done, use :class:`ECFR`:
 
 from ecfr_md.citation import Citation
 from ecfr_md.client import ECFR
+from ecfr_md.compare import Comparison, Difference
 from ecfr_md.config import Settings, __version__
 from ecfr_md.document import (
     Appendix,
@@ -58,6 +59,7 @@ from ecfr_md.progress import Progress
 from ecfr_md.results import Change, Match, Matches, Outline, TitleInfo
 from ecfr_md.shortcuts import (
     changes,
+    compare,
     get,
     get_many,
     outline,
@@ -77,7 +79,9 @@ __all__ = [
     "Change",
     "Chapter",
     "Citation",
+    "Comparison",
     "DateOutOfRangeError",
+    "Difference",
     "Division",
     "ECFRConnectionError",
     "ECFRError",
@@ -115,6 +119,7 @@ __all__ = [
     "TitleNotFoundError",
     "__version__",
     "changes",
+    "compare",
     "get",
     "get_many",
     "load",
