@@ -32,10 +32,13 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Annotated, Unpack
 
-from cyclopts import App, Group, Parameter, config
+from cyclopts import App, CycloptsError, Group, Parameter, config
+from cyclopts.panel import CycloptsPanel
 from pydantic import BaseModel
+from pydantic import ValidationError as PydanticValidationError
 from rich.console import Console, RenderableType
 from rich.logging import RichHandler
+from rich.text import Text
 
 from ecfr_md.citation import Citation
 from ecfr_md.client import ECFR, Admin, Search, Versioner
@@ -61,6 +64,8 @@ FORMAT_BELOW = 2_000_000  # Larger text is printed as plain Markdown.
 HELP_FLAGS = frozenset({"--help", "-h"})
 MARKDOWN_SUFFIXES = frozenset({".md", ".markdown", ".txt", ""})
 KINDS = ("changed", "added", "removed")
+PARTIAL = re.compile(r"\.(.+?)(?:\.[0-9a-f]{32})?\.part")  # write_text's temp name.
+CITED = re.compile(r"\d|§|title\b", re.IGNORECASE)  # How a citation starts.
 COMMENT = re.compile(r"\s#")  # A comment after a citation on a --from line.
 
 DEFAULT_SETTINGS = Settings()
@@ -376,7 +381,7 @@ def search(
     elif not matches:
         terminal.note("No matches")
     else:
-        console.print(search_table(matches))
+        console.print(search_table(matches, width=console.width))
         terminal.note(_search_summary(matches, limit))
     if save is None or not matches:
         return
@@ -490,7 +495,7 @@ def changes(
         _print_records(found)
         return
     if found:
-        console.print(changes_table(found))
+        console.print(changes_table(found, width=console.width))
     terminal.note(f"{len(found):,} {'change' if len(found) == 1 else 'changes'}")
     if found:  # The natural next question: what did the latest one change?
         latest = found[0]
@@ -618,18 +623,33 @@ app.command(cache_app)
 
 
 @cache_app.command
-def info(*, ecfr: Client) -> None:
-    """Show where the cache is and how much it holds."""
+def info(
+    *, as_json: Annotated[bool, Parameter(name="--json")] = False, ecfr: Client
+) -> None:
+    """Show where the cache is and how much it holds.
+
+    Parameters
+    ----------
+    as_json: bool
+        Print JSON instead of lines.
+    """
     store = ecfr._store
     entries, used = store.info()
-    _terminal(ecfr).summary(
-        "Cache",
-        {
-            "Directory": str(store.directory) if store.directory else "off",
-            "Entries": f"{entries:,}",
-            "Size": size(used),
-        },
-        network=False,
+    facts = {
+        "directory": str(store.directory) if store.directory else None,
+        "entries": entries,
+        "bytes": used,
+    }
+    if as_json:
+        console.print_json(json.dumps(facts))
+        return
+    console.print(
+        f"Directory  {facts['directory'] or 'off'}\n"
+        f"Entries    {entries:,}\n"
+        f"Size       {size(used)}",
+        soft_wrap=True,
+        markup=False,
+        highlight=False,
     )
 
 
@@ -770,10 +790,23 @@ def launcher(
     except InvalidParameterError as exc:
         terminal.error(exc)
         return EXIT_USAGE
-    except (ECFRError, OSError) as exc:
+    except OSError as exc:
+        terminal.error(_file_error(exc))
+        return EXIT_ERROR
+    except ECFRError as exc:
         terminal.error(exc)
         return EXIT_ERROR
     return 0
+
+
+def _file_error(exc: OSError) -> OSError:
+    """Name the file the user asked for, not the temporary one written first."""
+    if exc.filename is None or exc.strerror is None:
+        return exc
+    path = Path(exc.filename)
+    if match := PARTIAL.fullmatch(path.name):  # ".x.md.part" becomes x.md.
+        path = path.with_name(match[1])
+    return OSError(f"Can't write {path}: {exc.strerror.lower()}")
 
 
 def _terminal(ecfr: ECFR) -> Terminal:
@@ -785,14 +818,32 @@ def _terminal(ecfr: ECFR) -> Terminal:
     )
 
 
+def _usage_error(exc: CycloptsError) -> RenderableType:
+    """Cyclopts' message, except for settings, whose pydantic report is jargon."""
+    cause = exc.__cause__
+    if not isinstance(cause, PydanticValidationError):
+        return CycloptsPanel(exc)
+    problems = [
+        f"--{'.'.join(map(str, e['loc'])).replace('_', '-')}: "
+        f"{e['msg'][0].lower()}{e['msg'][1:]} (got {e['input']})"
+        for e in cause.errors(include_url=False)
+    ]
+    return Text(f"✘ Invalid usage: {'; '.join(problems)}")
+
+
 def run(tokens: Sequence[str], **kwargs) -> int:
     """Run the command line; connection options are listed only by ecfr-md --help."""
     tokens = list(tokens)
+    if tokens and CITED.match(tokens[0]) and tokens[0] not in app:
+        # "ecfr-md 45 CFR 164.502": the command was left out.
+        hint = f"Say what to do first, e.g. ecfr-md get {shlex.join(tokens)}"
+        Terminal(err_console).error(InvalidParameterError(hint))
+        return EXIT_USAGE
     asking = next((i for i, t in enumerate(tokens) if t in HELP_FLAGS), None)
     before = tokens if asking is None else tokens[:asking]
     TopLevelGroup.shown = not any(t in app for t in before if not t.startswith("-"))
     try:
-        return app.meta(tokens, **kwargs)
+        return app.meta(tokens, error_formatter=_usage_error, **kwargs)
     finally:
         TopLevelGroup.shown = True
 

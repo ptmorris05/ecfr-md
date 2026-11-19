@@ -54,6 +54,8 @@ from ecfr_md.progress import Progress
 from ecfr_md.results import Change, Match, Outline, TitleInfo
 
 ACCENT = "#5fafff"
+NARROW = 60  # Terminal columns below which tables become lists.
+WIDE = 80  # Terminal columns from which changes show the effective date.
 GOOD = "#5fd787"
 WARN = "#ffaf5f"
 BAD = "#ff5f5f"
@@ -466,21 +468,36 @@ def _contents(children: Sequence[Outline]) -> str:
     return ", ".join(words)
 
 
-def changes_table(changes: Sequence[Change]) -> RenderableType:
-    """Changes; for a single section, its heading is shown once, above."""
+def changes_table(changes: Sequence[Change], width: int = 80) -> RenderableType:
+    """Changes; for a single section, its heading is shown once, above.
+
+    In a narrow terminal the effective date goes first, so the section and
+    its heading keep room to be read.
+    """
     single = len({c.identifier for c in changes}) == 1
+    styles = {"removed": BAD, "substantive": WARN, "editorial": DIM}
+    if width < NARROW:  # A list: a table this narrow has room for nothing.
+        rows: list[RenderableType] = []
+        for c in changes:
+            line = Text(f"{c.issued}  ")
+            line.append(c.identifier, style="bold")
+            line.append(f"  {c.kind}", style=styles[c.kind])
+            rows += [line, Text(f"  {c.heading}", style=DIM)]
+        return Group(*rows)
+    effective = width >= WIDE
     table = Table(box=box.SIMPLE_HEAD, header_style=f"bold {ACCENT}", pad_edge=False)
     table.add_column("Issued", no_wrap=True)
-    table.add_column("Effective", no_wrap=True, style=DIM)
+    if effective:
+        table.add_column("Effective", no_wrap=True, style=DIM)
     if not single:
-        table.add_column("Section", max_width=14, overflow="fold")
-        table.add_column("Heading", min_width=20)
-    table.add_column("Kind", no_wrap=True, min_width=len("substantive"))
-    styles = {"removed": BAD, "substantive": WARN, "editorial": DIM}
+        table.add_column("Section", no_wrap=True)
+        table.add_column("Heading", min_width=12, ratio=1)
+    table.add_column("Kind", no_wrap=True)
     for c in changes:
         kind = Text(c.kind, style=styles[c.kind])
         columns = [] if single else [c.identifier, c.heading]
-        table.add_row(str(c.issued), str(c.effective), *columns, kind)
+        dates = [str(c.issued), str(c.effective)] if effective else [str(c.issued)]
+        table.add_row(*dates, *columns, kind)
     if not single:
         return table
     heading = Text(changes[0].citation, style="bold")
@@ -488,10 +505,18 @@ def changes_table(changes: Sequence[Change]) -> RenderableType:
     return Group(heading, table)
 
 
-def search_table(matches: Sequence[Match]) -> Table:
+def search_table(matches: Sequence[Match], width: int = 80) -> RenderableType:
+    if width < NARROW:  # A list, as for changes.
+        rows: list[RenderableType] = []
+        for m in matches:
+            rows += [Text(m.citation, style="bold"), Text(f"  {m.heading}")]
+            if m.excerpt:
+                excerpt = textwrap.shorten(m.excerpt, EXCERPT_WIDTH, placeholder="…")
+                rows.append(Text(f"  {excerpt}", style=DIM))
+        return Group(*rows)
     table = Table(box=box.SIMPLE_HEAD, header_style=f"bold {ACCENT}", pad_edge=False)
     table.add_column("Citation", no_wrap=True, style="bold")
-    table.add_column("Heading / excerpt")
+    table.add_column("Heading / excerpt", min_width=20, ratio=1)
     for m in matches:
         cell = Text(m.heading)
         if m.excerpt:

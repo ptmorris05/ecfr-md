@@ -150,8 +150,7 @@ def test_cache_info_and_clear(run, capsys, isolated_cache):
     assert run("get", "45", "CFR", "164") == 0  # Fills the cache.
     capsys.readouterr()
     assert run("cache", "info") == 0
-    err = capsys.readouterr().err
-    assert str(isolated_cache) in err.replace("\n", "") or "Entries" in err
+    assert str(isolated_cache) in capsys.readouterr().out
     assert run("cache", "clear") == 0
     assert not isolated_cache.exists() or not any(isolated_cache.rglob("*"))
 
@@ -316,3 +315,63 @@ def test_footnote_marks_become_superscripts():
     from ecfr_md.ui import _superscripts
 
     assert _superscripts("APF<sup>3</sup> and n<sup>a</sup>") == "APF³ and nᵃ"
+
+
+def test_a_citation_without_a_command(run, capsys):
+    assert run("45", "CFR", "164.502") == 2
+    assert "ecfr-md get 45 CFR 164.502" in capsys.readouterr().err
+
+
+def test_settings_errors_in_plain_words(run, capsys):
+    with pytest.raises(SystemExit, match="2"):
+        run("--timeout", "-5", "titles")
+    err = capsys.readouterr().err
+    assert "--timeout: input should be greater than 0 (got -5)" in err
+    with pytest.raises(SystemExit, match="2"):
+        run("titls")
+    assert 'Did you mean "titles"' in capsys.readouterr().err
+
+
+def test_file_errors_name_the_file_asked_for(run, capsys, tmp_path, monkeypatch):
+    def denied(*args, **kwargs):
+        raise PermissionError(13, "Permission denied", str(tmp_path / ".x.md.part"))
+
+    monkeypatch.setattr("ecfr_md.output.os.replace", denied)
+    assert run("get", "45", "CFR", "164", "-o", str(tmp_path / "x.md")) == 1
+    err = capsys.readouterr().err
+    assert f"File error: Can't write {tmp_path / 'x.md'}: permission denied" in err
+    assert cli._file_error(OSError("no file")).args == ("no file",)
+
+
+def test_cache_info_prints_facts_even_when_quiet(run, capsys):
+    assert run("-q", "cache", "info", "--json") == 0
+    assert set(json.loads(capsys.readouterr().out)) == {"directory", "entries", "bytes"}
+    assert run("-q", "cache", "info") == 0
+    assert capsys.readouterr().out.startswith("Directory")
+
+
+def test_tables_become_lists_when_narrow():
+    from rich.console import Console
+
+    from ecfr_md.results import Change, Match
+    from ecfr_md.ui import changes_table, search_table
+
+    change = Change(
+        "45 CFR 164.502",
+        "164.502",
+        "Uses",
+        dt.date(2024, 1, 2),
+        dt.date(2024, 1, 2),
+        "substantive",
+        raw=None,
+    )  # type: ignore[arg-type]
+    match = Match(
+        "45 CFR 164.502", "Uses", "the rule", dt.date(2017, 1, 1), None, raw=None
+    )  # type: ignore[arg-type]
+    narrow = Console(file=io.StringIO(), width=40)
+    narrow.print(changes_table([change], width=40), search_table([match], width=40))
+    out = narrow.file.getvalue()
+    assert "2024-01-02  164.502  substantive" in out and "  the rule" in out
+    middling = Console(file=io.StringIO(), width=70)
+    middling.print(changes_table([change], width=70))
+    assert "Effective" not in middling.file.getvalue()  # The first to go.
