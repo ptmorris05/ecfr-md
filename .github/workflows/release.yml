@@ -44,17 +44,19 @@ jobs:
       - name: Release notes from the changelog
         run: |
           version="${GITHUB_REF_NAME#v}"
-          awk -v v="$version" '
-            $0 ~ "^## \\[" v "\\]" { found = 1; next }
+          # A pre-release (0.2.0rc1) has the notes of what is unreleased.
+          case "$version" in *[!0-9.]*) section=Unreleased ;; *) section="$version" ;; esac
+          awk -v v="$section" '
+            index($0, "## [" v "]") == 1 { found = 1; next }
             found && /^## \[/ { exit }
             found { print }
           ' CHANGELOG.md > notes.md
-          test -s notes.md || { echo "::error::CHANGELOG.md has no section for $version"; exit 1; }
+          test -s notes.md || { echo "::error::CHANGELOG.md has no section for $section"; exit 1; }
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           flags=()
-          case "$GITHUB_REF_NAME" in *-*) flags+=(--prerelease) ;; esac
+          case "${GITHUB_REF_NAME#v}" in *[!0-9.]*) flags+=(--prerelease) ;; esac
           gh release create "$GITHUB_REF_NAME" dist/* \
             --title "ecfr-md ${GITHUB_REF_NAME#v}" --notes-file notes.md --verify-tag "${flags[@]}"

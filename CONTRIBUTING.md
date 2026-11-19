@@ -27,4 +27,4 @@ Match the code around you: small functions, plain-English docstrings that say wh
 
 ## Releases
 
-Releases are GitHub-only (there is no PyPI package). Set the version in `pyproject.toml`, move the Unreleased notes under it in `CHANGELOG.md`, merge, then push a tag `vX.Y.Z`. The release workflow checks the tag matches the version, runs the full test matrix, builds the wheel and source distribution with provenance attestations, and publishes the GitHub Release with the changelog section as its notes. Tags with a hyphen (`v0.2.0-rc1`) publish a pre-release.
+Releases are GitHub-only (there is no PyPI package). Set the version in `pyproject.toml`, move the Unreleased notes under it in `CHANGELOG.md`, merge, then push a tag `vX.Y.Z`. The release workflow checks the tag matches the version, runs the full test matrix, builds the wheel and source distribution with provenance attestations, and publishes the GitHub Release with the changelog section as its notes. A pre-release version such as `0.2.0rc1` (tag `v0.2.0rc1`) publishes a pre-release, with the Unreleased notes.
