@@ -198,6 +198,7 @@ async def settle(app, pilot) -> None:
 async def keys(app, pilot, *pressed: str) -> None:
     for key in pressed:
         await pilot.press(key)
+        await pilot.wait_for_scheduled_animations()  # Scrolling, on slow machines.
         await settle(app, pilot)
 
 
