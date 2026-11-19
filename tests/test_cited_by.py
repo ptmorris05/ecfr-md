@@ -1,5 +1,7 @@
 """What cites a place, and saving and syncing linked Markdown with a client."""
 
+import json
+
 import pytest
 
 from ecfr_md import InvalidParameterError
@@ -56,3 +58,41 @@ def test_sync_adds_links_once_to_trees_saved_before_them(ecfr, tmp_path):
     assert index in result.changed
     assert "[42 U.S.C. 1320d](" in index.read_text()
     assert not ecfr.sync(tmp_path).changed
+
+
+def test_cli_references(run, capsys):
+    assert run("references", "45 CFR 164.106") == 0
+    out, err = capsys.readouterr()
+    assert "paragraph (a)" in out and "45 CFR 164.106(a)" in out
+    assert "1 reference" in err
+    assert run("references", "45 CFR 164.102", "--json") == 0
+    found = json.loads(capsys.readouterr().out)
+    assert [r["kind"] for r in found] == ["fr"]
+    assert run("references", "45 CFR 164.108") == 0
+    out, err = capsys.readouterr()
+    assert "0 references" in err
+
+
+def test_cli_cited_by(run, api, capsys):
+    body = {
+        "results": [_result("45", "164.504", "by § 164.502(e)")],
+        "meta": {"total_count": 1, "total_pages": 1},
+    }
+    api.json("/api/search/v1/results", body)
+    assert run("cited-by", "45 CFR 164.502") == 0
+    assert "45 CFR 164.504" in capsys.readouterr().out
+    assert run("cited-by", "45 CFR 164.502", "--json") == 0
+    assert json.loads(capsys.readouterr().out)["results"][0]["address"]
+    assert run("cited-by", "45 CFR 164.504") == 0
+    assert "Nothing found" in capsys.readouterr().err
+
+
+def test_cli_get_links(run, capsys, tmp_path):
+    assert run("get", "45 CFR 164.102", "--links") == 0
+    assert "[78 FR 5692](https://www.federalregister.gov/" in capsys.readouterr().out
+    assert run("get", "45 CFR 164.102", "45 CFR 164.106", "--links") == 0
+    assert "[78 FR 5692](" in capsys.readouterr().out
+    assert (
+        run("get", "45 CFR Part 164", "--tree", "--no-links", "-o", str(tmp_path)) == 0
+    )
+    assert "](" not in (tmp_path / "part-164/index.md").read_text().split("\n- [")[0]

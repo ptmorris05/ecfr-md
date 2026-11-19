@@ -247,3 +247,11 @@ def test_anchors_match_the_ecfr(ecfr):
     appendix = part["Appendix A to Subpart C of Part 164"]
     assert appendix.anchor == "Appendix-A-to-Subpart-C-of-Part-164"
     assert load("<DIV1 N='45' TYPE='TITLE'/>", title=45).anchor is None
+
+
+def test_cli_outline_of_a_section_shows_its_neighbours(run, capsys):
+    assert run("outline", "45 CFR 160.101") == 0
+    err = capsys.readouterr().err
+    assert "Previous: none · Next: 45 CFR 164.102" in err
+    assert run("outline", "45 CFR Part 160") == 0
+    assert "Previous:" not in capsys.readouterr().err
