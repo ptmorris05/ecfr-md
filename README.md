@@ -53,10 +53,13 @@ ecfr-md get 45 CFR 164.502 --date 2020-01-01     # as of a date
 ecfr-md get --from list.txt -o out/              # one citation per line
 ecfr-md get --all --tree -o cfr/                 # the whole CFR, every title
 
-ecfr-md search "minimum necessary"               # sections that use the phrase
+ecfr-md titles                                   # what titles exist
+ecfr-md search minimum necessary                 # sections that use the phrase
+ecfr-md search minimum necessary --in "45 CFR 164"   # only in Part 164
 ecfr-md search "minimum necessary" --save out/   # and save their text
 ecfr-md outline 45 CFR Part 164 --depth 1        # table of contents, no text
 ecfr-md changes 45 CFR Part 164 --since 2024-01-01
+ecfr-md compare 45 CFR 164.502 --since 2024-04-25    # what changed, as a redline
 ecfr-md sync hipaa/                              # update saved files
 
 ecfr-md cache info
@@ -65,15 +68,19 @@ ecfr-md cache clear
 
 | Command | Does |
 | --- | --- |
-| `get CITATION` | Prints Markdown, or saves it with `-o FILE`. `--tree -o DIR` writes one file per section. `--from FILE -o DIR` takes one citation per line (`-` for stdin). `--all -o DIR` saves every title (with `--tree`, a folder per title). `--date` for text as of a date. `--no-front-matter` leaves out the metadata header. |
-| `outline CITATION` | Prints the table of contents. `--depth N` limits levels and counts what's below. Part sizes are shown. |
-| `changes CITATION` | Lists changes to sections: when issued, when effective, and whether substantive, editorial or a removal. `--since` and `--until` take dates. |
-| `search QUERY` | Lists current sections that contain the words as a phrase (`--no-phrase`: anywhere in the section). `--limit N` (default 20), `--all-versions`, `--save DIR`, `--json`, plus the API's filters (`--agency SLUG`, `--date`, `--last-modified-after`, …). |
+| `get CITATION` | Prints the text, or saves it with `-o FILE`. In a terminal, paragraphs are indented, a paragraph shows the section and paragraphs above it, and long text goes through a pager (`--no-pager` to skip it); every lookup ends with its citation, date and eCFR link. `-o` takes a `.md` file, a directory (an existing one, or a name ending in `/`) or `-` for stdout. `--tree -o DIR` writes one file per section. `--from FILE -o DIR` takes one citation per line (`-` for stdin; `# comments`, quotes and lists such as `45 CFR 164.502, 164.506` are fine): every line is checked first, repeats are saved once, and if some can't be found the rest are still saved. `--all -o DIR` saves every title (with `--tree`, a folder per title). `--date` for text as of a date. `--no-front-matter` leaves out the metadata header. |
+| `titles` | Lists the titles and the latest date of each one's text. |
+| `outline CITATION` | Prints the table of contents (no citation: the titles). `--depth N` limits levels and counts what's below. Part sizes are shown. |
+| `changes CITATION` | Lists changes to sections: when issued, when effective, and whether substantive, editorial or a removal. `--since` and `--until` take dates. Ends with the `compare` command for the latest change. |
+| `compare CITATION --since DATE` | Shows what changed in the text between `--since` and `--until` (default: latest): changed, added and removed paragraphs, with words struck out and inserted. Piped, it prints Markdown with `<del>` and `<ins>`. |
+| `search WORDS` | Lists current sections that contain the words as a phrase (quotes optional; `--no-phrase`: anywhere in the section). `--in CITATION` searches only a title or part of one. `--limit N` (default 20), `--all-versions`, `--save DIR`, `--json`, plus the API's filters (`--agency SLUG`, `--date`, `--last-modified-after`, …); an unknown agency is named, with suggestions. |
 | `sync PATH` | Updates a file, tree or directory saved by `get`, `search --save` or `--from`, searching folders to any depth. Rewrites only files whose text changed, deletes files for sections that no longer exist, and leaves other files alone. Keeps snapshots saved with a past `--date` (`--include-dated` updates them) and files you edited (`--force` overwrites them). `--dry-run` shows what would change. See [Keeping files up to date](#keeping-files-up-to-date). |
-| `cache info`, `cache clear` | Shows or deletes the local cache. |
+| `cache info`, `cache clear` | Shows (`--json` too) or deletes the local cache. |
 | `api admin …`, `api search …`, `api versioner …` | One command per API endpoint, printing its JSON. See [API](#api). |
 
-`outline`, `changes` and `search` take `--json` for JSON output. A citation can be one quoted string or separate words; keywords such as `--part 164` work too. Without `-o`, `get` prints formatted text in a terminal and plain Markdown when piped.
+`titles`, `outline`, `changes`, `compare` and `search` take `--json` for JSON output (`search --json` is `{"complete", "total_versions", "results"}`). A citation can be one quoted string or separate words; keywords such as `--part 164` work too. Without `-o`, `get` prints formatted text in a terminal and plain Markdown when piped. When stderr isn't a terminal (a pipe, a log, CI), messages and summaries are plain whole lines you can grep.
+
+A citation that names a subpart or appendix without its part, like `45 CFR Subpart E`, is checked against the title's table of contents: if several parts have one, the error lists them rather than guessing. A citation that doesn't exist says what does ("No subpart Z in 45 CFR Part 164. It has subparts A, B, C, D, E"). A date after the latest the eCFR has gives the latest text, with a warning, and files are labeled with the text's real date.
 
 Options that go before the command (`ecfr-md --help` lists them all):
 
@@ -84,10 +91,12 @@ Options that go before the command (`ecfr-md --help` lists them all):
 | `--no-cache`, `--cache-dir PATH`, `--cache-max-age SECONDS` | `ECFR_MD_CACHE`, `ECFR_MD_CACHE_DIR`, `ECFR_MD_CACHE_MAX_AGE` | on, user cache directory |
 | `--user-agent TEXT`, `--headers.NAME VALUE` | `ECFR_MD_USER_AGENT`, `ECFR_MD_HEADERS` | `ecfr-md/<version>` |
 | `--rate-limit N`: requests per second | `ECFR_MD_RATE_LIMIT` | none |
-| `--concurrency N`: parts fetched at once | `ECFR_MD_CONCURRENCY` | 4 |
+| `--concurrency N`: most requests in flight at once, across all threads | `ECFR_MD_CONCURRENCY` | 2 |
 | `--timeout`, `--max-attempts`, `--backoff-initial`, `--backoff-max` | `ECFR_MD_…` | 60 s, 5, 1 s, 60 s |
 
 While it runs, `ecfr-md` shows on stderr what it is fetching and as of which date, a bar per download, progress through parts for large titles, retries and rate limiting, and a summary at the end.
+
+The eCFR answers "too many requests" (429) when one client has 3 or more requests running, whatever the rate (measured November 2026); 2 run without any and get over 90% of the best throughput. So `--concurrency` defaults to 2 and is enforced across all threads. If a 429 comes anyway, ecfr-md halves the requests in flight, never returns to the level that got it, and logs a warning: a 429 means the settings need tuning, not more retries. 429s don't count against `--max-attempts`.
 
 Exit codes: `0` success, `1` API, network or file error, `2` invalid usage.
 
@@ -105,15 +114,23 @@ section.save("164.502.md")  # returns the path
 ecfr_md.get("45 CFR 164.502", date="2020-01-01")  # as of a date
 ecfr_md.save("45 CFR Part 164", "hipaa/", tree=True)  # one file per section
 
-for match in ecfr_md.search("minimum necessary", limit=5):
+for match in ecfr_md.search("minimum necessary", within="45 CFR Part 164"):
     print(match.citation, match.heading)
 
 for change in ecfr_md.changes("45 CFR Part 164", since="2024-01-01"):
     print(change.issued, change.citation, change.kind)
 
+print(ecfr_md.compare("45 CFR 164.502", since="2024-04-25").to_markdown())  # redline
+
 print(ecfr_md.outline("45 CFR Part 164")["Subpart E"])  # table of contents
+ecfr_md.titles()  # every title, with the date of its latest text
 ecfr_md.sync("hipaa/")  # update saved files
+
+nodes = ecfr_md.get_many(["45 CFR 164.502", "45 CFR 164.999"], errors="return")
+# -> [<Section 45 CFR 164.502 ...>, NodeNotFoundError('No section 164.999 ...')]
 ```
+
+Misspelled keywords are errors, with a suggestion (`get(45, prt="164")`: "did you mean part?"), and levels can be numbers (`part=164`). Anything that doesn't exist raises a `LookupError` (`NodeNotFoundError`, `TitleNotFoundError`, or `AmbiguousNodeError` listing the candidates).
 
 The module-level functions share one client with default settings. To set a user agent, rate limit and so on, or to close connections when you're done, make your own:
 

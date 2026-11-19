@@ -10,6 +10,25 @@ Install from GitHub; ecfr-md is not on PyPI.
 
 ### Added
 
+- `ecfr-md titles`, `ecfr_md.titles()` and `ECFR.titles()`: every title with
+  the latest date of its text (`TitleInfo`). A bare `ecfr-md outline` lists
+  them too.
+- `ecfr-md compare CITATION --since DATE [--until DATE]`, `ECFR.compare()`
+  and `ecfr_md.compare()`: what changed between two dates, paragraph by
+  paragraph and word by word (`Comparison`, `Difference`). `changes` ends
+  with the compare command for the latest change.
+- `search --in CITATION` (`within=` in Python, and on every search
+  endpoint) limits a search to a title or any part of it. Unquoted words
+  form one query.
+- `get_many(..., errors="return")` keeps going past citations that fail.
+- In a terminal, `get` indents paragraphs, shows the section and parent
+  paragraphs above a paragraph, pages long text (`--no-pager`), shows
+  footnote marks as superscripts, and ends with the citation, date and
+  eCFR link.
+- `get -o -` prints to stdout; `get --from -` reads stdin; `--from` lines
+  may have `# comments`, quotes and lists.
+- `cache info --json`.
+
 - `ecfr-md get --all -o DIR`: every title, one file each, or with `--tree` one
   folder per title (`DIR/title-N/`). Reserved titles are skipped; `sync DIR`
   updates them all.
@@ -57,6 +76,25 @@ Install from GitHub; ecfr-md is not on PyPI.
 
 ### Changed
 
+- **Breaking:** `--concurrency` defaults to 2 (was 4) and bounds requests in
+  flight across all threads: the eCFR answers 429 to 3 or more. After a 429
+  the limit halves and never returns to the level that got it; 429s don't
+  use up `--max-attempts`; the throttle settles below the rate that got a
+  429 instead of climbing back.
+- **Breaking:** `search --json` is an object, `{"complete",
+  "total_versions", "results"}`; `Matches.complete` says whether every match
+  is listed. The summary counts sections, not versions.
+- **Breaking:** `outline --json` prints `to_dict()` (citation, level,
+  heading, url, children) and honours `--depth`, instead of the API's JSON.
+- **Breaking:** a date after a title's latest gives the latest text with a
+  warning, labeled with that date (it raised `DateOutOfRangeError`).
+- Not-found errors are `NodeNotFoundError` (a `LookupError`) naming what is
+  missing and what exists, instead of an HTTP 404 with the API's URL.
+- Unknown keyword arguments are errors with a suggestion; ints are
+  accepted for levels; argument and setting errors are in plain words.
+- When stderr isn't a terminal, messages and summaries are whole lines.
+- Narrow terminals get lists instead of squeezed tables.
+
 - **Breaking:** `Paragraph.text` is the paragraph and its subparagraphs, like
   `text` on every other node and `to_markdown()`. Its own lead text is now
   `Paragraph.own_text`.
@@ -96,6 +134,17 @@ Install from GitHub; ecfr-md is not on PyPI.
   minutes), so a dated request without the cache makes one more small request.
 
 ### Fixed
+
+- `45 CFR Subpart E` (a subpart in many parts) silently gave Part 5's;
+  it now lists the candidates.
+- A subtitle, chapter or subchapter fetched and saved the whole title under
+  the narrower citation (the API ignores those filters); it is now cut out
+  of the title's text.
+- `-o newdir/` and `search --save newdir` wrote a single file.
+- Bare `ecfr-md` and command groups (`ecfr-md api`) crashed.
+- `get ... | head` reported a broken pipe as an error.
+- `-v` logged every HTTP/2 header.
+- Using a closed client raised a bare `RuntimeError`.
 
 - `sync` on a tree's top folder rewrote its `index.md` with the whole text.
 - `sync` on a directory missed saves more than one folder down.
