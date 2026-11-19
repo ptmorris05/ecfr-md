@@ -100,3 +100,18 @@ def test_changes_are_never_issued_before_they_take_effect(ecfr):
     assert versions
     early = [v for v in versions if v.issue_date < v.date]
     assert early == [], early[:3]
+
+
+def test_export_a_part_in_every_format(ecfr, tmp_path):
+    from pypdf import PdfReader
+
+    files = [
+        ecfr.save("45 CFR Part 164", tmp_path / f"hipaa.{suffix}")
+        for suffix in ("txt", "html", "json", "epub", "docx", "pdf")
+    ]
+    assert all(f.stat().st_size > 50_000 for f in files)
+    reader = PdfReader(files[-1])
+    assert len(reader.pages) > 40
+    assert reader.outline[0].title == "PART 164—SECURITY AND PRIVACY"  # type: ignore[union-attr]
+    html = files[1].read_text(encoding="utf-8")
+    assert 'id="p-164.502(a)(1)(i)"' in html

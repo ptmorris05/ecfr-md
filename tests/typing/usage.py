@@ -37,6 +37,10 @@ def usage() -> None:
         file = part.save("out.md")
         files: list[Path] = ecfr.save("45 CFR Part 164", "out", tree=True)
         files = part.save(Path("out"), tree=True, front_matter=False)
+        pdf: Path = part.export("hipaa.pdf")
+        pages: list[Path] = part.export("site", "html", tree=True)
+        file = ecfr.save("45 CFR 164.502", "out", format="docx")
+        print(pdf, pages, file)
         nodes: list[Node] = ecfr.get_many(["45 CFR 164.502", "45 CFR 164.506"])
         changes: list[Change] = ecfr.changes("45 CFR Part 164", since="last year")
         outline: Outline = ecfr.outline("45 CFR Part 164")["Subpart E"]
@@ -53,6 +57,8 @@ def usage() -> None:
     quick: Node = ecfr_md.get("45 CFR 164.502")
     saved: Path = ecfr_md.save("45 CFR 164.502", "out.md")
     tree: list[Path] = ecfr_md.save("45 CFR Part 164", "out", tree=True)
+    book: Path = ecfr_md.save("45 CFR Part 164", "out.epub", format="epub")
+    print(book)
     print(quick, saved, tree, [m.citation for m in matches], [c.kind for c in changes])
     print(ecfr_md.outline(45), ecfr_md.changes(45), ecfr_md.search("x"))
     for paragraph in section.iter("paragraph"):

@@ -214,7 +214,7 @@ def test_from_saves_what_it_can(run, capsys, tmp_path):
         (("get", "45", "--from", "x.txt", "-o", "d"), "leave out the citation"),
         (("get", "--all", "--from", "x.txt", "-o", "d"), "leave out --all"),
         (("get", "--from", "x.txt", "-o", "-"), "--from requires --output"),
-        (("get", "45", "-o", "s.docx"), "use a name ending in .md"),
+        (("get", "45", "-o", "s.xyz"), "Can't tell what format"),
     ],
 )
 def test_output_usage_errors(run, capsys, tokens, message):
