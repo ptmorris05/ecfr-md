@@ -1218,9 +1218,8 @@ class Navigator:
                 ".md", _suffix(format)
             )
         if not overwrite and not tree and target.exists():
-            raise ToolError(
-                f"{target.relative_to(root)} exists; pass overwrite=true to replace it"
-            )
+            shown = target.relative_to(root).as_posix()
+            raise ToolError(f"{shown} exists; pass overwrite=true to replace it")
 
         def work() -> list[Path]:
             if tree:
@@ -1232,7 +1231,7 @@ class Navigator:
         files = await self.run(ctx, work)
         result = ExportResult(
             format=format,
-            files=[str(f.resolve().relative_to(root)) for f in files],
+            files=[f.resolve().relative_to(root).as_posix() for f in files],
             bytes=sum(f.stat().st_size for f in files),
         )
         shown = ", ".join(result.files[:5]) + (

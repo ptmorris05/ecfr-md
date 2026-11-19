@@ -1,6 +1,7 @@
 """The terminal browser, driven with Textual's Pilot against the fake API."""
 
 import asyncio
+import contextlib
 import dataclasses
 import datetime as dt
 import functools
@@ -14,6 +15,7 @@ import httpx2
 import pytest
 from conftest import PART_XML, TITLES
 from textual.widgets import Checkbox, Input, OptionList, Select, Static, Tree
+from textual.worker import WorkerCancelled
 
 from ecfr_md import load, tui
 from ecfr_md.errors import MissingDependencyError
@@ -184,7 +186,8 @@ async def settle(app, pilot) -> None:
     """Wait for the workers, and what they start, to finish."""
     for _ in range(100):
         await pilot.pause()
-        await app.workers.wait_for_complete()
+        with contextlib.suppress(WorkerCancelled):  # A newer load replaced it.
+            await app.workers.wait_for_complete()
         await pilot.pause()
         if not app._busy:
             return
