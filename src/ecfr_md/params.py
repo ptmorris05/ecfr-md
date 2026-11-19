@@ -66,7 +66,8 @@ def _convert_date(type_: type, tokens: Sequence[Token]) -> dt.date:
 
 
 # Statically a date or a string; at runtime also anything with a .date() method.
-DateLike = Annotated[
+# A ``type`` alias, so signatures and help() show "DateLike", not the validators.
+type DateLike = Annotated[
     dt.date | str, BeforeValidator(to_date), Parameter(converter=_convert_date)
 ]
 

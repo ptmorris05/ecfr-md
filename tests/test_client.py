@@ -430,7 +430,7 @@ def test_large_titles_are_fetched_part_by_part(ecfr, api, monkeypatch):
     assert title.level == "title" and title.heading == "Title 45—Public Welfare"
     subtitle = title["A"]
     assert [p.identifier for p in subtitle] == ["164", "165"]
-    assert title["164.104(a)(1)"].text == "**(1)** *First.* One."
+    assert title["164.104(a)(1)"].own_text == "**(1)** *First.* One."
     assert title["Part 165"].heading == "Part 165 [Reserved]"
     assert api.paths().count(FULL) == 1  # Only the unreserved part.
     assert dict(api.requests[-1].url.params) == {"part": "164"}

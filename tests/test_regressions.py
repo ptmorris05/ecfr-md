@@ -42,7 +42,7 @@ def test_paragraph_number_key_is_not_read_as_a_part():
         "<P>(1) One.</P><P>(2) Two.</P></DIV8>"
     )
     section = load(xml, title=45)
-    assert section["1"].text == "**(1)** One."
+    assert section["1"].own_text == "**(1)** One."
 
 
 def test_sync_survives_a_renamed_folder(ecfr, tmp_path):
@@ -217,7 +217,7 @@ def test_cross_level_reserved_ranges_and_restated_branches():
     )
     section = load(xml, title=26)
     assert [p.identifier for p in section] == list("abcdefghij")
-    assert section["(g)(1)(iii)"].text == "**(g)(1)(iii)** Real text."
+    assert section["(g)(1)(iii)"].own_text == "**(g)(1)(iii)** Real text."
     assert [p.identifier for p in section["(g)(1)"]] == ["i", "ii", "iii"]
     assert [p.identifier for p in section["g"]] == ["1", "2"]
     assert section.paragraph_issues == ()

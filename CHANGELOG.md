@@ -18,9 +18,38 @@ Install from GitHub; ecfr-md is not on PyPI.
 - `ecfr-md search --json` and `--no-phrase`; `--agency SLUG` replaces
   `--agency-slugs`.
 - A missing paragraph's error lists the paragraphs that exist there.
+- `to_dict(depth=, include_raw=)` on nodes (also `text=`), `Outline`, `Change`
+  and `Match`: JSON-ready dicts with the same keys (`citation`, `level`,
+  `identifier`, `heading`, `date`, `url`, ...). The API's response (`raw`) is
+  left out unless asked for.
+- `url` (the eCFR page) on nodes, `Outline`, `Change` and `Match`; `level` and
+  `identifier` on `Match`, `level` on `Change`; `date` on `Outline`.
+- `Node.toc(depth=)`: citations and headings down to paragraphs, without text.
+- `Node.to_markdown(max_chars=)` cuts at a paragraph break and says how many
+  characters were left out.
+- `Paragraph.own_text`: a paragraph's lead text without its subparagraphs.
+- Nodes and outlines display as Markdown in Jupyter, capped at about 20,000
+  characters.
+- `Outline.find()` and `Outline.ancestors`, as on nodes.
+- `LevelName`, the level names as a `Literal` type.
+- The module-level functions have their `ECFR` methods' full docstrings, and
+  signatures show `DateLike` instead of its validators. Node classes and
+  `Level` have docstrings.
 
 ### Changed
 
+- **Breaking:** `Paragraph.text` is the paragraph and its subparagraphs, like
+  `text` on every other node and `to_markdown()`. Its own lead text is now
+  `Paragraph.own_text`.
+- An unknown level name, as in `node.iter("sections")` or
+  `outline.iter("sectoin")`, raises `InvalidParameterError` listing the levels
+  (a `ValueError`, as before for nodes); outlines used to yield nothing. Level
+  names are case-insensitive. `iter()` checks the level when called, not when
+  iteration starts.
+- `Outline.level` is a `Level`, or the eCFR's type name for unnumbered headings
+  (`"hed1"`). `Outline.parent` is a property rather than a dataclass field, so
+  `dataclasses.asdict(outline)` no longer recurses forever; `Outline(...)` no
+  longer takes `parent`.
 - `ECFR.outline` returns an `Outline` that navigates like a node and prints as
   a table of contents, instead of the API's model (now `.raw`).
 - `ECFR.changes` returns `Change` objects (`citation`, `heading`, `issued`,
