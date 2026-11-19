@@ -296,6 +296,67 @@ def _page(title: str | None, date: dt.date, located: Hierarchy) -> str:
 
 
 @dataclass(frozen=True)
+class TitleInfo:
+    """A CFR title, and how current the eCFR's text of it is."""
+
+    number: int
+    name: str
+    """E.g. "Public Welfare"."""
+    latest: dt.date | None
+    """The latest date the eCFR has text for; None for reserved titles."""
+    amended: dt.date | None
+    """When the latest amendment took effect."""
+    reserved: bool
+    processing: bool
+    """The eCFR is applying updates, so the latest text may still change."""
+    raw: models.Title = field(repr=False)
+
+    @classmethod
+    def from_model(cls, title: models.Title) -> TitleInfo:
+        return cls(
+            number=title.number,
+            name=title.name,
+            latest=title.up_to_date_as_of,
+            amended=title.latest_amended_on,
+            reserved=title.reserved,
+            processing=title.processing_in_progress,
+            raw=title,
+        )
+
+    @property
+    def citation(self) -> str:
+        """E.g. "45 CFR"."""
+        return f"{self.number} CFR"
+
+    @property
+    def url(self) -> str:
+        """The title's eCFR page."""
+        return web_url(self.number, self.latest, as_hierarchy({}))
+
+    def to_dict(self, *, include_raw: bool = False) -> dict[str, Any]:
+        """This title as a dict ready for ``json.dumps``.
+
+        Keys: ``citation``, ``level`` ("title"), ``identifier``, ``heading``
+        (the name), ``date`` (latest, ISO format), ``url``, ``amended``,
+        ``reserved`` and ``processing``; with ``include_raw``, also ``raw``.
+        """
+        data: dict[str, Any] = {
+            "citation": self.citation,
+            "level": "title",
+            "identifier": str(self.number),
+            "heading": self.name,
+            "date": self.latest.isoformat() if self.latest else None,
+            "url": self.url,
+            "amended": self.amended.isoformat() if self.amended else None,
+            "reserved": self.reserved,
+            "processing": self.processing,
+        }
+        if include_raw:
+            data["raw"] = self.raw.model_dump(mode="json")
+        return data
+
+
+@dataclass(frozen=True)
 class Change:
     """A version of a section or appendix the eCFR issued."""
 

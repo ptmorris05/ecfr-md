@@ -46,7 +46,7 @@ from ecfr_md.errors import (
     TitleNotFoundError,
 )
 from ecfr_md.progress import Progress
-from ecfr_md.results import Change, Match, Outline
+from ecfr_md.results import Change, Match, Outline, TitleInfo
 
 ACCENT = "#5fafff"
 GOOD = "#5fd787"
@@ -493,4 +493,18 @@ def search_table(matches: Sequence[Match]) -> Table:
             excerpt = textwrap.shorten(m.excerpt, EXCERPT_WIDTH, placeholder="…")
             cell.append(f"\n{excerpt}", style=DIM)
         table.add_row(m.citation, cell)
+    return table
+
+
+def titles_table(titles: Sequence[TitleInfo]) -> Table:
+    table = Table(box=box.SIMPLE_HEAD, header_style=f"bold {ACCENT}", pad_edge=False)
+    table.add_column("Title", justify="right", no_wrap=True, style="bold")
+    table.add_column("Name")
+    table.add_column("Text as of", no_wrap=True, style=DIM)
+    for t in titles:
+        if t.reserved:
+            table.add_row(str(t.number), Text("[Reserved]", style=DIM), "")
+            continue
+        when = str(t.latest) + (" (updating)" if t.processing else "")
+        table.add_row(str(t.number), t.name, when)
     return table

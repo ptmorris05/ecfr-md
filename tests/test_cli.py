@@ -1,3 +1,4 @@
+import datetime as dt
 import io
 import json
 import logging
@@ -249,3 +250,29 @@ def test_terminals_get_panels_and_pipes_get_lines():
     pipe = Console(file=io.StringIO(), width=60)
     Terminal(pipe).error(NodeNotFoundError("No part 9 in title 45"))
     assert pipe.file.getvalue() == "✘ Not found: No part 9 in title 45\n"
+
+
+def test_titles_and_bare_outline_list_the_titles(run, capsys):
+    assert run("titles") == 0
+    out = capsys.readouterr().out
+    assert "Public Welfare" in out and "[Reserved]" in out
+    assert run("outline", "--json") == 0
+    listed = json.loads(capsys.readouterr().out)
+    assert listed[0]["citation"] == "45 CFR" and listed[1]["reserved"] is True
+
+
+def test_outline_json_has_citations_and_honours_depth(run, capsys):
+    assert run("outline", "45", "--json", "--depth", "1") == 0
+    tree = json.loads(capsys.readouterr().out)
+    assert tree["citation"] == "45 CFR"
+    assert [c["citation"] for c in tree["children"]] == ["45 CFR Subtitle A"]
+    assert "children" not in tree["children"][0]
+    assert run("outline", "45", "--depth", "-1") == 2
+
+
+def test_titles_from_python(ecfr):
+    (welfare, reserved) = ecfr.titles()
+    assert welfare.citation == "45 CFR" and welfare.latest == dt.date(2026, 10, 7)
+    assert welfare.to_dict()["url"].endswith("/on/2026-10-07/title-45")
+    assert reserved.reserved and reserved.to_dict(include_raw=True)["raw"]
+    assert reserved.url.endswith("/current/title-35")

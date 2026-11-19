@@ -79,7 +79,7 @@ from ecfr_md.params import (
     to_date,
 )
 from ecfr_md.progress import Progress
-from ecfr_md.results import Change, Match, Matches, Outline
+from ecfr_md.results import Change, Match, Matches, Outline, TitleInfo
 from ecfr_md.syncing import SyncResult, sync
 
 ADMIN = "/api/admin/v1"
@@ -452,6 +452,18 @@ class ECFR:
         if paragraph is None:
             raise NodeNotFoundError(_missing_paragraph(node, cited, date))
         return paragraph
+
+    def titles(self) -> list[TitleInfo]:
+        """Every CFR title: number, name, latest date, and whether reserved.
+
+        Uses the title list the client keeps for a few minutes, so it is
+        usually free.
+        """
+        with self._memo_lock:
+            memo = self._titles
+            if memo is None or time.monotonic() - memo[0] >= TITLES_TTL:
+                memo = self._titles = (time.monotonic(), self.api.versioner.titles())
+        return [TitleInfo.from_model(t) for t in memo[1].titles]
 
     @validated
     def outline(
@@ -912,14 +924,9 @@ class ECFR:
 
     def _title(self, title: int) -> models.Title:
         """A title's dates, from a title list kept for a few minutes."""
-        with self._memo_lock:
-            memo = self._titles
-            if memo is None or time.monotonic() - memo[0] >= TITLES_TTL:
-                memo = self._titles = (time.monotonic(), self.api.versioner.titles())
-            titles = memo[1].titles
-        for entry in titles:
+        for entry in self.titles():
             if entry.number == title:
-                return entry
+                return entry.raw
         raise TitleNotFoundError(f"Title {title} does not exist")
 
     def _snapshot(self, title: int, day: dt.date | None) -> bool:

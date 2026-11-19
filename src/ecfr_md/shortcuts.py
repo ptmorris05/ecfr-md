@@ -16,7 +16,7 @@ from typing import Literal, Unpack, overload
 from ecfr_md.client import ECFR
 from ecfr_md.document import Node
 from ecfr_md.params import DateLike, Hierarchy, SearchFilters
-from ecfr_md.results import Change, Matches, Outline
+from ecfr_md.results import Change, Matches, Outline, TitleInfo
 from ecfr_md.syncing import SyncResult
 
 _shared: ECFR | None = None
@@ -43,6 +43,11 @@ def client() -> ECFR:
             _shared = ECFR()
             atexit.register(_shared.close)
         return _shared
+
+
+@_documented_by(ECFR.titles)
+def titles() -> list[TitleInfo]:
+    return client().titles()
 
 
 @_documented_by(ECFR.get)

@@ -9,6 +9,7 @@ Common commands:
     ecfr-md get --all --tree -o cfr/           every title
     ecfr-md search "minimum necessary"         find sections
     ecfr-md outline 45 CFR Part 164            table of contents
+    ecfr-md titles                             what titles exist
 
 Run ecfr-md COMMAND --help for a command's options. The options below go
 before the command. Every eCFR API endpoint is under ecfr-md api.
@@ -48,6 +49,7 @@ from ecfr_md.ui import (
     outline_tree,
     search_table,
     size,
+    titles_table,
 )
 
 ENV_PREFIX = "ECFR_MD_"
@@ -384,6 +386,8 @@ def outline(
 ) -> None:
     """Show the table of contents of a title or any part of it, without its text.
 
+    With no citation, lists the titles.
+
     Parameters
     ----------
     citation: str
@@ -393,14 +397,41 @@ def outline(
     date: DateLike | None
         Point-in-time date. Defaults to the most recent available.
     as_json: bool
-        Print the API's JSON instead of a tree.
+        Print JSON (citation, level, heading, url, children, ...) instead
+        of a tree.
     """
+    if depth is not None and depth < 0:
+        raise InvalidParameterError("--depth must be 0 or more")
+    if not citation and not hierarchy:
+        titles(as_json=as_json, ecfr=ecfr)
+        return
     with _terminal(ecfr).live():
         entry = ecfr.outline(_citation(citation), date=date, **hierarchy)
     if as_json:
-        console.print_json(entry.raw.model_dump_json(exclude_unset=True))
+        console.print_json(json.dumps(entry.to_dict(depth=depth)))
     else:
         console.print(outline_tree(entry, depth))
+
+
+@app.command
+def titles(
+    *,
+    as_json: Annotated[bool, Parameter(name="--json")] = False,
+    ecfr: Client,
+) -> None:
+    """List the titles of the CFR and the latest date of each one's text.
+
+    Parameters
+    ----------
+    as_json: bool
+        Print JSON instead of a table.
+    """
+    with _terminal(ecfr).live():
+        found = ecfr.titles()
+    if as_json:
+        console.print_json(json.dumps([t.to_dict() for t in found]))
+    else:
+        console.print(titles_table(found))
 
 
 @app.command

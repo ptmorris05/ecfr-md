@@ -341,7 +341,7 @@ def test_get_prints_long_text_as_markdown_in_a_terminal(run, monkeypatch, capsys
     ("tokens", "message"),
     [
         (("get", "--from", "list.txt"), "--from requires --output"),
-        (("outline",), "Say which title or citation"),
+        (("changes",), "Say which title or citation"),
     ],
 )
 def test_more_usage_errors(run, capsys, tokens, message):

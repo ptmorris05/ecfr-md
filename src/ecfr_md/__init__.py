@@ -55,7 +55,7 @@ from ecfr_md.errors import (
 )
 from ecfr_md.params import Hierarchy, PaginateBy, SearchFilters, SearchOrder
 from ecfr_md.progress import Progress
-from ecfr_md.results import Change, Match, Matches, Outline
+from ecfr_md.results import Change, Match, Matches, Outline, TitleInfo
 from ecfr_md.shortcuts import (
     changes,
     get,
@@ -64,6 +64,7 @@ from ecfr_md.shortcuts import (
     save,
     search,
     sync,
+    titles,
 )
 from ecfr_md.syncing import SyncResult
 
@@ -110,6 +111,7 @@ __all__ = [
     "Subtitle",
     "SyncResult",
     "Title",
+    "TitleInfo",
     "TitleNotFoundError",
     "__version__",
     "changes",
@@ -120,4 +122,5 @@ __all__ = [
     "save",
     "search",
     "sync",
+    "titles",
 ]
