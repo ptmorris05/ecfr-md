@@ -859,3 +859,8 @@ body[data-embed] .text { margin-top: 1.4rem; }
   .foot { border-top: 0.5pt solid #999; text-align: left; color: #444; }
   .foot a::after { content: " (" attr(href) ")"; }
 }
+
+.syntax { margin: 0.5rem 0 1rem; color: var(--soft); font-size: 0.85em; }
+.syntax summary { cursor: pointer; width: max-content; }
+.syntax p { margin: 0.4rem 0 0; }
+.meta.note { font-style: italic; }

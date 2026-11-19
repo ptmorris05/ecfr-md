@@ -4,18 +4,18 @@ Fetch U.S. federal regulations (CFR) from the [eCFR API](https://www.ecfr.gov/de
 
 ## Install
 
-ecfr-md isn't on PyPI; install it from GitHub. It needs Python 3.12 or newer, and [git](https://git-scm.com/downloads). [uv](https://docs.astral.sh/uv/) installs Python for you, so it's the easiest way to start from nothing.
+ecfr-md is on [PyPI](https://pypi.org/project/ecfr-md/). It needs Python 3.12 or newer; [uv](https://docs.astral.sh/uv/) installs Python for you, so it's the easiest way to start from nothing.
 
 **With uv** (Linux and macOS):
 
 ```sh
 curl -LsSf https://astral.sh/uv/install.sh | sh   # install uv; then open a new terminal
 
-uv tool install git+https://github.com/ptmorris05/ecfr-md
+uv tool install ecfr-md
 ecfr-md get 45 CFR 164.502 -o 164.502.md
 ```
 
-To try it without installing: `uvx --from git+https://github.com/ptmorris05/ecfr-md ecfr-md get 45 CFR 164.502`.
+To try it without installing: `uvx ecfr-md get 45 CFR 164.502`.
 
 **With pipx:**
 
@@ -25,31 +25,26 @@ sudo apt install pipx          # Debian, Ubuntu
 sudo dnf install pipx          # Fedora
 pipx ensurepath                # then open a new terminal
 
-pipx install git+https://github.com/ptmorris05/ecfr-md
+pipx install ecfr-md
 ecfr-md get 45 CFR 164.502 -o 164.502.md
 ```
 
 pipx uses your system Python; if that's older than 3.12, use uv, or add `--python python3.12` if you have Python 3.12 installed.
 
-These install the latest code on `main`. For a release, add its tag (`git+https://github.com/ptmorris05/ecfr-md@v0.1.0`), or install the wheel attached to the [release](https://github.com/ptmorris05/ecfr-md/releases), which needs no git: `uv tool install https://github.com/ptmorris05/ecfr-md/releases/download/v0.1.0/ecfr_md-0.1.0-py3-none-any.whl`. Each release's files carry [build provenance](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations); check one with `gh attestation verify FILE --repo ptmorris05/ecfr-md`.
-
 To update: `uv tool upgrade ecfr-md` or `pipx upgrade ecfr-md`.
 
-For use from Python:
+For use from Python: `uv add ecfr-md` or `pip install ecfr-md`.
+
+Saving Word and PDF files needs an extra: `docx` or `pdf`. The [web navigator](#web-navigator) needs `web`, the [terminal browser](#terminal-browser) needs `tui`, the [MCP server](#ai-agents) needs `mcp`, and `all` installs every extra:
 
 ```sh
-uv add git+https://github.com/ptmorris05/ecfr-md
-pip install git+https://github.com/ptmorris05/ecfr-md
+uv tool install "ecfr-md[all]"
+uv tool install "ecfr-md[tui]"
+uv add "ecfr-md[pdf]"
+pip install "ecfr-md[docx]"
 ```
 
-Saving Word and PDF files needs an extra: `docx` or `pdf`. The [web navigator](#web-navigator) needs `web`, the [terminal browser](#terminal-browser) needs `tui`, the [MCP server](#ai-agents) needs `mcp`, and `all` installs every extra. Name it before the `@`:
-
-```sh
-uv tool install "ecfr-md[all] @ git+https://github.com/ptmorris05/ecfr-md"
-uv tool install "ecfr-md[tui] @ git+https://github.com/ptmorris05/ecfr-md"
-uv add "ecfr-md[pdf] @ git+https://github.com/ptmorris05/ecfr-md"
-pip install "ecfr-md[docx] @ git+https://github.com/ptmorris05/ecfr-md"
-```
+Every release is also on [GitHub](https://github.com/ptmorris05/ecfr-md/releases), with the wheel and source distribution attached and [build provenance](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations) you can check with `gh attestation verify FILE --repo ptmorris05/ecfr-md`. The latest code on `main`: `uv tool install "ecfr-md[all] @ git+https://github.com/ptmorris05/ecfr-md"`.
 
 PDFs are typeset by [Typst](https://typst.app/), whose Python wheels need no other software. The MCP server for AI agents needs the `mcp` extra (see [AI agents](#ai-agents)); `all` includes it.
 
@@ -69,7 +64,8 @@ ecfr-md get --all --tree -o cfr/                 # the whole CFR, every title
 
 ecfr-md titles                                   # what titles exist
 ecfr-md browse 45 CFR 164.502                    # read and navigate full screen
-ecfr-md search minimum necessary                 # sections that use the phrase
+ecfr-md search minimum necessary                 # the phrase first, then all the words
+ecfr-md search 'ethnic (slur | epithet) -sexual'  # the eCFR's operators work too
 ecfr-md search minimum necessary --in "45 CFR 164"   # only in Part 164
 ecfr-md search "minimum necessary" --save out/   # and save their text
 ecfr-md outline 45 CFR Part 164 --depth 1        # table of contents, no text
@@ -96,13 +92,13 @@ ecfr-md cache clear
 | `cited-by CITATION` | Lists sections that may cite a section or part, by searching for its number: approximate. `--limit`, `--date`, `--json`. |
 | `changes CITATION` | Lists changes to sections: when issued, when effective, and whether substantive, editorial or a removal. `--since` and `--until` take dates. Ends with the `compare` command for the latest change. |
 | `compare CITATION --since DATE` | Shows what changed in the text between `--since` and `--until` (default: latest): changed, added and removed paragraphs, with words struck out and inserted. Piped, it prints Markdown with `<del>` and `<ins>`. |
-| `search WORDS` | Lists current sections that contain the words as a phrase (quotes optional; `--no-phrase`: anywhere in the section). `--in CITATION` searches only a title or part of one. `--limit N` (default 20), `--all-versions`, `--save DIR`, `--json`, plus the API's filters (`--agency SLUG`, `--date`, `--last-modified-after`, …); an unknown agency is named, with suggestions. |
+| `search WORDS` | Lists current sections that match: plain words find the exact phrase first, then sections with all the words in any form (`--phrase` for only the phrase, `--no-phrase` for only the words). Operators work too; see [Search syntax](#search-syntax). `--in CITATION` searches only a title or part of one. `--limit N` (default 20), `--all-versions`, `--save DIR`, `--json`, plus the API's filters (`--agency SLUG`, `--date`, `--last-modified-after`, …); an unknown agency is named, with suggestions. |
 | `sync PATH` | Updates a file, tree or directory saved by `get`, `search --save` or `--from`, searching folders to any depth. Rewrites only files whose text changed, deletes files for sections that no longer exist, and leaves other files alone. Keeps snapshots saved with a past `--date` (`--include-dated` updates them) and files you edited (`--force` overwrites them). `--dry-run` shows what would change. See [Keeping files up to date](#keeping-files-up-to-date). |
 | `cache info`, `cache clear` | Shows (`--json` too) or deletes the local cache. |
 | `config show`, `config path`, `config set KEY VALUE`, `config unset KEY`, `config edit` | Shows every setting and where its value came from (`--json` too), and how text sources are chosen; shows where the config file is; sets or removes a setting in it (`headers.NAME` for a header), checking the value first; opens it in `$VISUAL` or `$EDITOR`. See [Configuration](#configuration). |
 | `api admin …`, `api search …`, `api versioner …` | One command per API endpoint, printing its JSON. See [API](#api). |
 
-`titles`, `outline`, `changes`, `compare`, `search`, `references` and `cited-by` take `--json` for JSON output (`search --json` is `{"complete", "total_versions", "results"}`). A citation can be one quoted string or separate words, and anything in [Citations and addresses](#citations-and-addresses) works, eCFR links and saved files' names included; keywords such as `--part 164` work too. Without `-o`, `get` prints formatted text in a terminal and plain Markdown when piped. When stderr isn't a terminal (a pipe, a log, CI), messages and summaries are plain whole lines you can grep.
+`titles`, `outline`, `changes`, `compare`, `search`, `references` and `cited-by` take `--json` for JSON output (`search --json` is `{"complete", "total_versions", "query", "exact", "note", "results"}`). A citation can be one quoted string or separate words, and anything in [Citations and addresses](#citations-and-addresses) works, eCFR links and saved files' names included; keywords such as `--part 164` work too. Without `-o`, `get` prints formatted text in a terminal and plain Markdown when piped. When stderr isn't a terminal (a pipe, a log, CI), messages and summaries are plain whole lines you can grep.
 
 A citation that names a subpart or appendix without its part, like `45 CFR Subpart E`, is checked against the title's table of contents: if several parts have one, the error lists them rather than guessing. A citation that doesn't exist says what does ("No subpart Z in 45 CFR Part 164. It has subparts A, B, C, D, E"). A date after the latest the eCFR has gives the latest text, with a warning, and files are labeled with the text's real date.
 
@@ -134,7 +130,7 @@ Exit codes: `0` success, `1` API, network or file error, `2` invalid usage.
 `ecfr-md browse` reads and navigates the CFR full screen: the outline on the left, the text on the right, a breadcrumb and the date of the text above, and the keys below. It needs the `tui` extra:
 
 ```sh
-uv tool install "ecfr-md[tui] @ git+https://github.com/ptmorris05/ecfr-md"
+uv tool install "ecfr-md[tui]"
 ecfr-md browse 45 CFR 164.502
 ecfr-md browse 45/164.502/a/1 --date 2020-01-01   # at a paragraph, as of a date
 ecfr-md browse                                    # the list of titles
@@ -513,7 +509,24 @@ Definitions sections are those headed "Definitions" (and similar) in the place's
 
 `changes()` returns `Change` objects, newest first: `citation`, `level`, `heading`, `url`, `issued` (when the eCFR published it), `effective` and `kind` (`"substantive"`, `"editorial"` or `"removed"`).
 
-`search()` returns `Match` objects, best first: `citation` (pass it to `get`), `level`, `identifier`, `heading`, `url`, `excerpt`, `starts_on` and `ends_on`. The list's `.total` is how many the eCFR found. Words are matched as a phrase unless `phrase=False` or the query has its own quotes; `limit`, `all_versions` and the API's filters (`agency_slugs`, `date`, `last_modified_after`, …) are keywords.
+`search()` returns `Match` objects, best first: `citation` (pass it to `get`), `level`, `identifier`, `heading`, `url`, `excerpt`, `starts_on` and `ends_on`. The list's `.total` is how many the eCFR found, `.exact` how many of the first matches have the exact phrase, and `.note` says when the search was widened. `phrase=True` finds only the exact phrase and `phrase=False` only all the words; `limit`, `all_versions` and the API's filters (`agency_slugs`, `date`, `last_modified_after`, …) are keywords.
+
+#### Search syntax
+
+Every interface searches the same way. Plain words find the exact phrase first, then sections with all the words in any form, so `ethnic slur` finds "ethnic slurs" too. A query can also use the eCFR's operators:
+
+| Query | Finds |
+| --- | --- |
+| `minimum necessary` | The exact phrase first, then sections with both words, in any form |
+| `"minimum necessary"` | Only the exact phrase, as written (if nothing matches, its words are searched instead, with a note) |
+| `privacy -marketing` | Without a word (`-"a phrase"` works too) |
+| `slur \| epithet` | Either word |
+| `ethnic (slur \| epithet)` | Grouped: "ethnic" and either word |
+| `harass*` | Words that start with "harass" |
+| `"protected information"~3` | The phrase's words within 3 words of each other |
+| `privacy AND NOT marketing`, `slur OR epithet` | `AND`, `OR` and `NOT` in capitals, read as the operators above |
+
+Unbalanced quotes or parentheses are reported, not sent.
 
 Each keeps the API's response in `.raw`.
 
@@ -554,10 +567,10 @@ ecfr-md verify "45 CFR 164.502(b)" --quote "minimum necessary"   # exit 1 unless
 `ecfr-md mcp` is an [MCP](https://modelcontextprotocol.io) server that gives agents the CFR the way an expert reads it: outlines with token estimates to plan, text sized to a budget with a cursor, full pinpoint citations, the governing definition of a term, quote checking, redlines between dates, and change notifications. Add it to Claude Code with:
 
 ```sh
-claude mcp add ecfr -- uvx --from "ecfr-md[mcp] @ git+https://github.com/ptmorris05/ecfr-md" ecfr-md mcp
+claude mcp add ecfr -- uvx --from "ecfr-md[mcp]" ecfr-md mcp
 ```
 
-Other clients take the same command in their JSON config (`"command": "uvx"`, `"args": ["--from", "ecfr-md[mcp] @ git+https://github.com/ptmorris05/ecfr-md", "ecfr-md", "mcp"]`). `--http` serves streamable HTTP instead of stdio. The tools are read-only; `export` writes only under `--export-dir` (default: the current directory; `--no-export` removes it), and agents can change settings only with `--allow-config-changes`. Python apps can serve it themselves: `ecfr_md.mcp.server(ecfr)` returns the FastMCP server.
+Other clients take the same command in their JSON config (`"command": "uvx"`, `"args": ["--from", "ecfr-md[mcp]", "ecfr-md", "mcp"]`). `--http` serves streamable HTTP instead of stdio. The tools are read-only; `export` writes only under `--export-dir` (default: the current directory; `--no-export` removes it), and agents can change settings only with `--allow-config-changes`. Python apps can serve it themselves: `ecfr_md.mcp.server(ecfr)` returns the FastMCP server.
 
 Agents with a shell can use the command line instead: [`skills/ecfr-md/SKILL.md`](https://github.com/ptmorris05/ecfr-md/blob/main/skills/ecfr-md/SKILL.md) is a skill that teaches it, and every command takes `--json`. The [AI agents guide](https://ptmorris05.github.io/ecfr-md/agents/) lists the tools, resources and prompts, and the measured cost of common tasks.
 
@@ -566,7 +579,7 @@ Agents with a shell can use the command line instead: [`skills/ecfr-md/SKILL.md`
 `ecfr-md serve` runs a web navigator on this computer: the CFR to read in a browser, fetched from the eCFR the first time a page is opened and kept in the cache, so what has been read is there next time, offline too. It needs the `web` extra.
 
 ```sh
-uv tool install "ecfr-md[web] @ git+https://github.com/ptmorris05/ecfr-md"
+uv tool install "ecfr-md[web]"
 ecfr-md serve --open                    # http://localhost:8000
 ecfr-md serve --port 8080 --save-dir ~/cfr
 ecfr-md --cache-dir ~/cfr-cache serve   # global options apply
@@ -760,7 +773,7 @@ uv run ruff format && uv run ruff check
 
 CI runs on Linux, macOS and Windows with Python 3.12–3.14. A nightly job runs the network tests and opens an issue if they fail. Changes are listed in [CHANGELOG.md](https://github.com/ptmorris05/ecfr-md/blob/main/CHANGELOG.md).
 
-The documentation site is built from this README, the changelog and the docstrings: `uv run --group docs mkdocs serve`. To release, set the version in `pyproject.toml`, move the changelog's Unreleased notes under that version, and push a tag `vX.Y.Z`; the release workflow checks, tests, builds and publishes it. See [CONTRIBUTING.md](https://github.com/ptmorris05/ecfr-md/blob/main/CONTRIBUTING.md).
+The documentation site is built from this README, the changelog and the docstrings: `uv run --group docs mkdocs serve`. To release, set the version in `pyproject.toml` and move the changelog's Unreleased notes under that version; when that reaches `main`, the release workflow tests, builds, tags and publishes it to GitHub and PyPI. See [CONTRIBUTING.md](https://github.com/ptmorris05/ecfr-md/blob/main/CONTRIBUTING.md).
 
 ## License
 

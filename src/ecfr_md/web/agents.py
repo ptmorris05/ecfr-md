@@ -8,6 +8,7 @@ import re
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
+from ecfr_md import query as queries
 from ecfr_md.config import DISCLAIMER, __version__
 from ecfr_md.output import with_front_matter
 from ecfr_md.params import as_hierarchy
@@ -60,19 +61,20 @@ def cached_titles(ecfr: ECFR) -> list[int]:
 def text_fragment(query: str) -> str:
     """A link fragment that highlights the words searched for (a text
     fragment, ``#:~:text=``), in browsers that support them."""
-    words = query.strip().strip('"')
+    words = queries.fragment(query.strip())
     if not words or len(words) > 80:
         return ""
     return "#:~:text=" + quote(words, safe="")
 
 
 def highlight(text: str, query: str) -> str:
-    """An excerpt as HTML with the words of the query marked."""
-    words = {w.casefold() for w in WORD.findall(query) if len(w) > 2}
+    """An excerpt as HTML with the words of the query marked, in any form."""
+    stems = queries.terms(query)
     out = []
     for piece in re.split(r"([\w\u2019'-]+)", text):
         escaped = html.escape(piece)
-        out.append(f"<mark>{escaped}</mark>" if piece.casefold() in words else escaped)
+        marked = piece.strip() and queries.marks(piece, stems)
+        out.append(f"<mark>{escaped}</mark>" if marked else escaped)
     return "".join(out)
 
 
@@ -120,9 +122,10 @@ def search_markdown(
     results: list[dict[str, Any]],
     total: int | None,
     error: str,
+    note: str = "",
 ) -> str:
     head = f"# Search: {query}" + (f" in {within}" if within else "")
-    lines = [head, ""]
+    lines = [head, ""] + ([f"{note}.", ""] if note else [])
     if error:
         return "\n".join([*lines, error, ""])
     if not query:
@@ -250,7 +253,8 @@ def openapi(base: str) -> dict[str, Any]:
                     _param(
                         "q",
                         "query",
-                        "Words to find; quoted for a phrase",
+                        "Words (the exact phrase first, then all the words in "
+                        "any form) or a query: " + queries.SYNTAX,
                         True,
                         "minimum necessary",
                     ),

@@ -44,6 +44,7 @@ from starlette.responses import (
 from starlette.routing import BaseRoute, Mount, Route
 from starlette.staticfiles import StaticFiles
 
+from ecfr_md import query as queries
 from ecfr_md.address import Address
 from ecfr_md.client import ECFR
 from ecfr_md.compare import aligned
@@ -470,12 +471,12 @@ def search(request: Request) -> Response:
         limit = SEARCH_LIMIT
     results: list[dict[str, Any]] = []
     total = None
-    error = ""
+    error = note = ""
     if query:
         try:
             filters: dict[str, Any] = {"within": within} if within else {}
             matches = nav.ecfr.search(query, limit=limit, **filters)
-            total = matches.total
+            total, note = matches.total, matches.note
             results = [
                 {
                     **m.to_dict(),
@@ -493,13 +494,15 @@ def search(request: Request) -> Response:
                 "query": query,
                 "within": within or None,
                 "total": total,
+                "note": note or None,
                 "results": results,
                 "error": error or None,
                 **_links("/search", params),
             }
         )
     if variant == ".md":
-        return _markdown(agents.search_markdown(query, within, results, total, error))
+        text = agents.search_markdown(query, within, results, total, error, note)
+        return _markdown(text)
     return _html(
         "search.html",
         query=query,
@@ -507,6 +510,8 @@ def search(request: Request) -> Response:
         results=results,
         total=total,
         error=error,
+        note=note,
+        syntax=queries.SYNTAX,
         page=None,
         official="https://www.ecfr.gov/search",
         alternates=_links("/search", params)["links"],

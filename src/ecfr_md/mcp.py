@@ -49,11 +49,11 @@ except ImportError as exc:  # pragma: no cover - depends on the environment
     from ecfr_md.errors import MissingDependencyError
 
     raise MissingDependencyError(
-        "The MCP server needs the mcp extra: "
-        'uv tool install "ecfr-md[mcp] @ git+https://github.com/ptmorris05/ecfr-md"'
+        'The MCP server needs the mcp extra: uv tool install "ecfr-md[mcp]"'
     ) from exc
 from pydantic import BaseModel, Field, ValidationError
 
+from ecfr_md import query as queries
 from ecfr_md.address import Address
 from ecfr_md.client import ECFR
 from ecfr_md.compare import Difference
@@ -229,8 +229,13 @@ class Hit(BaseModel):
 
 class SearchResult(BaseModel):
     query: str
+    sent: str = Field(default="", description="The query as last sent to the eCFR.")
     total: int | None = Field(description="Matching versions the eCFR counted.")
     complete: bool
+    exact: int | None = Field(
+        default=None, description="How many of the first results have the exact phrase."
+    )
+    note: str = Field(default="", description="Set when the search was widened.")
     results: list[Hit]
 
 
@@ -845,7 +850,14 @@ class Navigator:
         self,
         ctx: Context,
         query: Annotated[
-            str, Field(description="Words to find, e.g. minimum necessary.")
+            str,
+            Field(
+                description=(
+                    "Words to find, e.g. minimum necessary (the exact phrase "
+                    "first, then all the words in any form). Operators: "
+                    + queries.SYNTAX
+                )
+            ),
         ],
         within: Annotated[
             str | None,
@@ -856,8 +868,14 @@ class Navigator:
             str | None, Field(description="Text in effect on this date.")
         ] = None,
         phrase: Annotated[
-            bool, Field(description="Words in order as a phrase (else anywhere).")
-        ] = True,
+            bool | None,
+            Field(
+                description=(
+                    "For plain words: true for only the exact phrase, false for "
+                    "only all the words; default both, phrase first."
+                )
+            ),
+        ] = None,
     ) -> ToolResult:
         """Full-text search of the CFR: sections and appendices that contain
         the words, best first, with an excerpt."""
@@ -872,12 +890,18 @@ class Navigator:
         )
         result = SearchResult(
             query=query,
+            sent=found.query,
             total=found.total,
             complete=found.complete,
+            exact=found.exact,
+            note=found.note,
             results=[_hit(m) for m in found],
         )
+        text = _hits_markdown(result.results, f"Search {query!r}", result.complete)
+        if not found:
+            text += f" Search syntax: {queries.SYNTAX}"
         return ToolResult(
-            _hits_markdown(result.results, f"Search {query!r}", result.complete),
+            f"{found.note}.\n{text}" if found.note else text,
             result.model_dump(mode="json"),
         )
 

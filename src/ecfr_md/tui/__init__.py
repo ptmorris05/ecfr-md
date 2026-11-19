@@ -8,7 +8,6 @@ from __future__ import annotations
 import importlib
 from typing import TYPE_CHECKING
 
-from ecfr_md.config import PROJECT_URL
 from ecfr_md.errors import MissingDependencyError
 
 if TYPE_CHECKING:
@@ -21,7 +20,7 @@ def require() -> None:
     try:
         importlib.import_module("textual")
     except ImportError:
-        package = f'"ecfr-md[tui] @ git+{PROJECT_URL}"'
+        package = '"ecfr-md[tui]"'
         raise MissingDependencyError(
             "The terminal browser needs the optional 'tui' extra. Install it "
             f"with: uv tool install {package} (for the ecfr-md command), or "

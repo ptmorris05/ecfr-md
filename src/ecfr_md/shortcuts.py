@@ -228,7 +228,7 @@ def search(
     /,
     *,
     limit: int = 20,
-    phrase: bool = True,
+    phrase: bool | None = None,
     all_versions: bool = False,
     **filters: Unpack[SearchFilters],
 ) -> Matches:

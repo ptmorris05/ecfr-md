@@ -5,7 +5,6 @@ from pathlib import Path
 from types import ModuleType
 from typing import Literal, get_args
 
-from ecfr_md.config import PROJECT_URL
 from ecfr_md.errors import InvalidParameterError, MissingDependencyError
 
 Format = Literal["markdown", "text", "html", "json", "epub", "docx", "pdf"]
@@ -79,7 +78,7 @@ def require(format: Format) -> ModuleType | None:
     try:
         return importlib.import_module(module)
     except ImportError:
-        package = f'"ecfr-md[{extra}] @ git+{PROJECT_URL}"'
+        package = f'"ecfr-md[{extra}]"'
         raise MissingDependencyError(
             f"Saving {format.upper()} needs the optional {extra!r} extra. Install it "
             f"with: uv tool install {package} (for the ecfr-md command), or "

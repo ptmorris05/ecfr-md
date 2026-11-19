@@ -89,34 +89,93 @@ def test_missing_paragraph_lists_what_exists(ecfr, citation, message):
 # Search
 
 
-def test_search_quotes_phrases_and_pages(ecfr, api):
-    pages = [
-        {"results": [result("164.102")], "meta": {"total_count": 2, "total_pages": 2}},
-        {"results": [result("164.104")], "meta": {"total_count": 2, "total_pages": 2}},
-    ]
-    api.routes[RESULTS] = lambda request: httpx2.Response(
-        200, json=pages[int(request.url.params["page"]) - 1]
-    )
+def test_search_finds_the_phrase_then_the_words(ecfr, api):
+    def answer(request):
+        query, page = request.url.params["query"], int(request.url.params["page"])
+        if query == '"minimum necessary"':  # One exact match, on two pages.
+            found = [result("164.102")] if page == 1 else []
+            return httpx2.Response(
+                200, json={"results": found, "meta": {"total_count": 1}}
+            )
+        found = [result("164.102"), result("164.104")]
+        return httpx2.Response(200, json={"results": found, "meta": {"total_count": 2}})
+
+    api.routes[RESULTS] = answer
     matches = ecfr.search("minimum necessary", limit=5)
     assert [m.citation for m in matches] == ["45 CFR 164.102", "45 CFR 164.104"]
-    assert matches.total == 2
-    queries = [r.url.params["query"] for r in api.requests if r.url.path == RESULTS]
-    assert queries == ['"minimum necessary"'] * 2
+    assert (matches.exact, matches.total, matches.note) == (1, 2, "")
+    sent = [r.url.params["query"] for r in api.requests if r.url.path == RESULTS]
+    assert sent == ['"minimum necessary"', "minimum necessary"]
     assert matches[0].heading == "§ 164.102 Heading & more"
+    assert matches.to_dict()["query"] == "minimum necessary"
+
+
+def test_a_full_page_of_phrase_matches_is_enough(ecfr, api):
+    page = {"results": [result("164.102"), result("164.104")],
+            "meta": {"total_count": 9, "total_pages": 5}}  # fmt: skip
+    api.json(RESULTS, page)
+    matches = ecfr.search("minimum necessary", limit=2)
+    assert len(matches) == 2 and matches.exact == 2 and not matches.complete
+    assert len([r for r in api.requests if r.url.path == RESULTS]) == 1
+
+
+def test_words_without_the_phrase_say_so(ecfr, api):
+    def answer(request):
+        exact = request.url.params["query"].startswith('"')
+        found = [] if exact else [result("164.102")]
+        return httpx2.Response(200, json={"results": found, "meta": {}})
+
+    api.routes[RESULTS] = answer
+    matches = ecfr.search("ethnic slur")
+    assert [m.citation for m in matches] == ["45 CFR 164.102"]
+    assert matches.exact == 0
+    assert matches.note.startswith('No exact matches for "ethnic slur"')
+
+
+def test_a_quoted_phrase_with_no_matches_is_searched_as_words(ecfr, api):
+    def answer(request):
+        quoted = '"' in request.url.params["query"]
+        found = [] if quoted else [result("164.102")]
+        return httpx2.Response(200, json={"results": found, "meta": {}})
+
+    api.routes[RESULTS] = answer
+    matches = ecfr.search('"ethnic slur" -epithet')
+    assert matches.query == "ethnic slur -epithet" and len(matches) == 1
+    assert matches.note.startswith('Nothing matched "ethnic slur" -epithet;')
+    only = ecfr.search("ethnic slur", phrase=True)
+    assert only.query == "ethnic slur" and only.note
 
 
 @pytest.mark.parametrize(
     ("query", "phrase", "sent"),
     [
         ("minimum necessary", False, "minimum necessary"),
-        ('"minimum necessary" rule', True, '"minimum necessary" rule'),
+        ('"minimum necessary" rule', None, '"minimum necessary" rule'),
         ("minimum", True, "minimum"),
+        ("minimum   necessary", True, '"minimum necessary"'),
+        ("harass* OR slur", None, "harass* | slur"),
+        ("privacy AND NOT minimum", None, "privacy + -minimum"),
+        ("ethnic (slur | epithet)", None, "ethnic (slur | epithet)"),
     ],
 )
-def test_search_leaves_other_queries_alone(ecfr, api, query, phrase, sent):
+def test_search_queries_sent(ecfr, api, query, phrase, sent):
     api.json(RESULTS, {"results": [], "meta": {}})
     assert ecfr.search(query, phrase=phrase) == []
-    assert api.requests[-1].url.params["query"] == sent
+    assert api.requests[0].url.params["query"] == sent
+
+
+@pytest.mark.parametrize(
+    ("query", "problem"),
+    [
+        ('"minimum necessary', "Unbalanced quotes"),
+        ("(a | b", "Unbalanced paren"),
+        ("a) (b", "Unbalanced paren"),
+    ],
+)
+def test_malformed_queries_are_explained(ecfr, query, problem):
+    with pytest.raises(InvalidParameterError, match=problem) as info:
+        ecfr.search(query)
+    assert "prefix*" in str(info.value)
 
 
 def test_excerpts_end_at_a_word(ecfr, api):
@@ -239,11 +298,26 @@ def test_search_within_a_citation(ecfr, api):
     assert sent["hierarchy[part]"] == "164" and sent["hierarchy[subpart]"] == "A"
 
 
-def test_search_command_scope_and_unquoted_words(run, api):
+def test_search_command_scope_and_unquoted_words(run, api, capsys):
     api.json(RESULTS, {"results": [], "meta": {"total_count": 0}})
     assert run("search", "minimum", "necessary", "--in", "45 CFR 164") == 0
-    sent = dict(api.requests[-1].url.params)
-    assert sent["query"] == '"minimum necessary"' and sent["hierarchy[part]"] == "164"
+    first, then = (dict(r.url.params) for r in api.requests if r.url.path == RESULTS)
+    assert first["query"] == '"minimum necessary"' and first["hierarchy[part]"] == "164"
+    assert then["query"] == "minimum necessary"
+    assert "Search syntax:" in capsys.readouterr().err
+    assert run("search", "minimum", "necessary", "--no-phrase") == 0
+    assert api.requests[-1].url.params["query"] == "minimum necessary"
+
+
+def test_search_command_says_when_it_widened(run, api, capsys):
+    def answer(request):
+        exact = request.url.params["query"].startswith('"')
+        found = [] if exact else [result("164.102")]
+        return httpx2.Response(200, json={"results": found, "meta": {}})
+
+    api.routes[RESULTS] = answer
+    assert run("search", "ethnic", "slur") == 0
+    assert 'No exact matches for "ethnic slur"' in capsys.readouterr().err
 
 
 def test_unknown_agencies_are_named(ecfr, api):
@@ -273,3 +347,14 @@ def test_search_says_when_there_are_more(run, api, capsys):
     api.json(RESULTS, page)
     assert run("search", "rule", "--limit", "1") == 0
     assert "1 section shown; there are more" in capsys.readouterr().err
+
+
+def test_query_terms_to_mark():
+    from ecfr_md import query
+
+    stems = query.terms('harass* | slurs -epithet -"bad words" access processes AND x')
+    assert stems == ["harass", "slur", "access", "process"]
+    assert query.marks("Harassing", stems) and not query.marks("epithets", stems)
+    assert query.fragment("ethnic slur") == "ethnic slur"
+    assert query.fragment('"ethnic slur" -x') == "ethnic slur"
+    assert query.fragment("a | b") == ""

@@ -6,13 +6,15 @@
 <article class="text search">
   <form class="search-form" action="/search" method="get" role="search">
     <label class="sr" for="q">Words to find</label>
-    <input id="q" name="q" type="search" value="{{ query }}" placeholder="Words or “a phrase”" autocomplete="off" autofocus>
+    <input id="q" name="q" type="search" value="{{ query }}" placeholder="Words, “a phrase”, -not, a | b, prefix*" autocomplete="off" autofocus>
     <label class="within"><span>in</span> <input name="within" type="text" value="{{ within }}" placeholder="all titles" aria-label="Within a citation" autocomplete="off"></label>
     <button type="submit">Search</button>
   </form>
+  <details class="syntax"><summary>Search syntax</summary><p>{{ syntax }}</p></details>
   {% if error %}
   <p class="problem" role="alert">{{ error }}</p>
   {% elif query %}
+  {% if note %}<p class="meta note">{{ note }}.</p>{% endif %}
   <p class="meta" role="status">{% if results %}{{ results|length }} section{{ "s" if results|length != 1 }}{% if total %} · {{ "{:,}".format(total) }} matching versions{% endif %}{% else %}Nothing found{% endif %}</p>
   <ol class="results">
     {% for r in results %}

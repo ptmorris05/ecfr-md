@@ -51,12 +51,12 @@ from rich.console import Console, RenderableType
 from rich.logging import RichHandler
 from rich.text import Text
 
+from ecfr_md import query as queries
 from ecfr_md import sources, tui
 from ecfr_md.address import Address
 from ecfr_md.client import ECFR, Admin, Search, Versioner
 from ecfr_md.config import (
     ENV_PREFIX,
-    PROJECT_URL,
     Settings,
     __version__,
     read_config,
@@ -507,7 +507,7 @@ def search(
     *query: str,
     limit: int = 20,
     save: Path | None = None,
-    phrase: bool = True,
+    phrase: bool | None = None,
     all_versions: bool = False,
     as_json: Annotated[bool, Parameter(name="--json")] = False,
     ecfr: Client,
@@ -515,17 +515,22 @@ def search(
 ) -> None:
     """Find sections and appendices that mention words; with --save, save them.
 
+    Plain words find the exact phrase first, then sections with all the
+    words in any form. The eCFR's operators work too (quote the query for
+    the shell): '"exact phrase"', -exclude, 'a | b', '( )' to group,
+    'prefix*', '"phrase"~3' for words near each other, and AND, OR, NOT.
+
     Parameters
     ----------
     query: str
-        Words to search for in headings and text. Quotes are optional.
+        Words or a query to search headings and text for.
     limit: int
         Maximum number of sections to show.
     save: Path | None
         Directory to save each matching section to, as Markdown.
-    phrase: bool
-        Match the words as a phrase. With --no-phrase, they can appear
-        anywhere in a section.
+    phrase: bool | None
+        --phrase finds only the exact phrase; --no-phrase only sections with
+        all the words. By default, the phrase first, then the words.
     all_versions: bool
         Include past versions of sections, not only current text.
     as_json: bool
@@ -543,9 +548,11 @@ def search(
     if as_json:
         console.print_json(json.dumps(matches.to_dict()))
     elif not matches:
-        terminal.note("No matches")
+        terminal.note(f"No matches. Search syntax: {queries.SYNTAX}")
     else:
         console.print(search_table(matches, width=console.width))
+        if matches.note:
+            terminal.note(matches.note)
         terminal.note(_search_summary(matches, limit))
     if save is None or not matches:
         return
@@ -1096,7 +1103,7 @@ def serve(
 
         from ecfr_md.web import create_app
     except ImportError:
-        package = f'"ecfr-md[web] @ git+{PROJECT_URL}"'
+        package = '"ecfr-md[web]"'
         raise MissingDependencyError(
             "ecfr-md serve needs the optional 'web' extra. Install it with: "
             f"uv tool install {package}, or pip install {package}"

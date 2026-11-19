@@ -577,7 +577,9 @@ async def test_search_without_matches_or_without_the_eCFR(browser, site):
         assert not app.screen.query(Checkbox)  # Nothing to search within.
         await typed(app, pilot, "nothing")
         await keys(app, pilot, "enter")
-        assert str(app.screen.query_one("#status", Static).render()) == "No matches"
+        assert str(app.screen.query_one("#status", Static).render()).startswith(
+            "No matches. Search syntax:"
+        )
         site.json(SEARCH, {"error": "down"}, status=400)
         await keys(app, pilot, "enter")
         assert str(app.screen.query_one("#status", Static).render()) == ""
@@ -974,7 +976,7 @@ def test_browse_needs_a_terminal(run, capsys):
 
 def test_browse_without_the_extra(run, monkeypatch, capsys):
     monkeypatch.setitem(sys.modules, "textual", None)
-    with pytest.raises(MissingDependencyError, match=r"ecfr-md\[tui\] @ git\+"):
+    with pytest.raises(MissingDependencyError, match=r"install .ecfr-md.tui.."):
         tui.require()
     assert run("browse") == 1
     assert "Not installed" in capsys.readouterr().err
