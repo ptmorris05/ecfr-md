@@ -21,6 +21,13 @@ Install from GitHub; ecfr-md is not on PyPI.
 - `ecfr-md search --json` and `--no-phrase`; `--agency SLUG` replaces
   `--agency-slugs`.
 - A missing paragraph's error lists the paragraphs that exist there.
+- Citations are accepted as people paste them: surrounding quotes and
+  invisible characters are ignored, `Supp. I` and `app. J` are completed from
+  the part (`12 CFR pt. 1026, app. J`), `et seq.` is ignored, and
+  `Subpart E of Part 164` and `Part 164 of Title 45` work. A trailing year
+  such as `(2023)`, `CRF` for `CFR`, unbalanced parentheses, and ranges or
+  lists of sections are rejected with what to do instead.
+  `Citation.parse_many` splits a list such as `45 CFR §§ 164.502, 164.506`.
 
 ### Changed
 

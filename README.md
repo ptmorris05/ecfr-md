@@ -142,7 +142,16 @@ with ECFR(Settings(user_agent="my-app/1.0 (me@example.com)")) as ecfr:
 | `45 CFR 164.502(a)(1)(i)(A)` | Paragraph |
 | `45 CFR Appendix A to Subpart C of Part 164`, `12 CFR Supplement I to Part 1026` | Appendix, supplement, table, exhibit, etc. |
 
-Case, `§`, commas and periods in "C.F.R." don't matter. Keywords also work, alone or with a citation:
+Case, `§`, commas and periods in "C.F.R." don't matter, and citations can be pasted as found:
+
+- Surrounding quotes and invisible characters are ignored.
+- `Supp.` and `app.` are completed from the part: `12 CFR pt. 1026, Supp. I` is `Supplement I to Part 1026`, and `12 C.F.R. pt. 1026, app. J` is `Appendix J to Part 1026`.
+- `45 CFR 164.500 et seq.` is § 164.500.
+- `45 CFR Subpart E of Part 164` and `Part 164 of Title 45` work.
+
+A citation names one place, so a range (`164.500-164.534`, `164.500 through 164.534`) or a list (`§§ 164.502, 164.506`) is an error: cite the part or subpart, or put one citation per line and use `--from`. In Python, `Citation.parse_many("45 CFR §§ 164.502, 164.506")` splits a list into citations. A trailing year such as `45 CFR 164.502 (2023)` is also an error: use `--date 2023` (`date="2023"` in Python).
+
+Keywords also work, alone or with a citation:
 
 ```python
 ecfr_md.get(45, part="164", subpart="E")
