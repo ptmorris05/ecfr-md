@@ -17,6 +17,7 @@ from ecfr_md.client import ECFR
 from ecfr_md.compare import Comparison
 from ecfr_md.document import Node
 from ecfr_md.params import DateLike, Hierarchy, SearchFilters
+from ecfr_md.render.formats import Format
 from ecfr_md.results import Change, Matches, Outline, TitleInfo
 from ecfr_md.syncing import SyncResult
 
@@ -78,6 +79,7 @@ def save(
     tree: Literal[False] = False,
     front_matter: bool = True,
     date: DateLike | None = None,
+    format: Format | None = None,
     **hierarchy: Unpack[Hierarchy],
 ) -> Path: ...
 
@@ -91,6 +93,7 @@ def save(
     tree: Literal[True],
     front_matter: bool = True,
     date: DateLike | None = None,
+    format: Format | None = None,
     **hierarchy: Unpack[Hierarchy],
 ) -> list[Path]: ...
 
@@ -104,15 +107,22 @@ def save(
     tree: bool = False,
     front_matter: bool = True,
     date: DateLike | None = None,
+    format: Format | None = None,
     **hierarchy: Unpack[Hierarchy],
 ) -> Path | list[Path]:
     shared = client()
     if tree:
         return shared.save(
-            citation, path, tree=True, front_matter=front_matter, date=date, **hierarchy
+            citation,
+            path,
+            tree=True,
+            front_matter=front_matter,
+            date=date,
+            format=format,
+            **hierarchy,
         )
     return shared.save(
-        citation, path, front_matter=front_matter, date=date, **hierarchy
+        citation, path, front_matter=front_matter, date=date, format=format, **hierarchy
     )
 
 
