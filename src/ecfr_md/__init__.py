@@ -57,9 +57,11 @@ from ecfr_md.errors import (
 )
 from ecfr_md.params import Hierarchy, PaginateBy, SearchFilters, SearchOrder
 from ecfr_md.progress import Progress
+from ecfr_md.references import Reference, find_references
 from ecfr_md.results import Change, Match, Matches, Outline, TitleInfo
 from ecfr_md.shortcuts import (
     changes,
+    cited_by,
     compare,
     get,
     get_many,
@@ -105,6 +107,7 @@ __all__ = [
     "Part",
     "Progress",
     "RateLimitError",
+    "Reference",
     "ResponseFormatError",
     "SearchFilters",
     "SearchOrder",
@@ -121,7 +124,9 @@ __all__ = [
     "TitleNotFoundError",
     "__version__",
     "changes",
+    "cited_by",
     "compare",
+    "find_references",
     "get",
     "get_many",
     "load",
