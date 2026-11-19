@@ -43,10 +43,10 @@ from ecfr_md.output import (
     file_name,
     page_path,
     provenance,
-    render_front_matter,
     save_events,
     subject_group_citation,
     subject_group_url,
+    with_front_matter,
     write_text,
 )
 from ecfr_md.params import Hierarchy, as_hierarchy
@@ -305,9 +305,10 @@ class Node(ABC):
         """
         target = Path(path)
         if target.is_dir() or str(path).endswith(("/", "\\")):
-            target = target / file_name(self.citation)
-        header = render_front_matter(self.provenance) if front_matter else ""
-        written = write_text(target, header + self.to_markdown())
+            target = target / file_name(self.citation, self.source)
+        body = self.to_markdown()
+        text = with_front_matter(self.provenance, body) if front_matter else body
+        written = write_text(target, text)
         return [written] if tree else written
 
     @property
@@ -805,16 +806,19 @@ def load(
     hierarchy: Hierarchy | None = None,
     url: str | None = None,
     retrieved: dt.datetime | None = None,
+    pinned: bool = False,
 ) -> Division:
     """Build a navigable document from eCFR XML (e.g. ``versioner.full``).
 
     ``url`` and ``retrieved`` record where and when the XML was fetched; they
-    appear in saved files' front matter.
+    appear in saved files' front matter. ``pinned`` marks text as of a date
+    older than the latest, which ``sync`` keeps at that date.
     """
     divisions = markdown.outer_divisions(markdown.parse(xml))
     if not divisions:
         raise ResponseFormatError("The eCFR XML contains no CFR content")
-    source = Source(title, date, hierarchy or as_hierarchy({}), url, retrieved)
+    hierarchy = hierarchy or as_hierarchy({})
+    source = Source(title, date, hierarchy, url, retrieved, pinned)
     return _division(divisions[0], None, source)
 
 

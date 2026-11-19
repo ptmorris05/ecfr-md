@@ -431,6 +431,7 @@ class ECFR:
             the most recent available.
         """
         cited = Citation.parse(citation).with_hierarchy(hierarchy)
+        pinned = self._snapshot(cited.title, _day(date))
         date = self._when(cited.title, date)
         cited = self._complete(cited, date)
         with self._full_text(cited, date) as download:
@@ -441,6 +442,7 @@ class ECFR:
                 hierarchy=cited.hierarchy,
                 url=download.url,
                 retrieved=download.retrieved,
+                pinned=pinned,
             )
         if not cited.paragraph:
             return node
@@ -578,14 +580,39 @@ class ECFR:
             page += 1
         return Matches(matches[:limit], found.meta.total_count)
 
-    def sync(self, path: str | Path) -> SyncResult:
+    def sync(
+        self,
+        path: str | Path,
+        *,
+        dry_run: bool = False,
+        include_dated: bool = False,
+        force: bool = False,
+    ) -> SyncResult:
         """Update Markdown saved by ecfr-md to the latest eCFR text.
 
-        ``path`` is a saved file, a saved tree, or a directory of them. Only
-        files whose text changed are rewritten; files for sections that no
-        longer exist are deleted. See :mod:`ecfr_md.syncing`.
+        ``path`` is a saved file, a saved tree, or a directory of them,
+        searched to any depth. Only files whose text changed are rewritten;
+        files for sections that no longer exist are deleted. See
+        :mod:`ecfr_md.syncing`.
+
+        Parameters
+        ----------
+        dry_run: bool
+            Report what would change without writing anything.
+        include_dated: bool
+            Also move snapshots saved with a past date to the latest text;
+            by default they are kept (``SyncResult.kept``).
+        force: bool
+            Also overwrite or delete files edited since they were saved; by
+            default they are left alone (``SyncResult.modified``).
         """
-        return sync(self, Path(path))
+        return sync(
+            self,
+            Path(path),
+            dry_run=dry_run,
+            include_dated=include_dated,
+            force=force,
+        )
 
     @overload
     def get_many(
@@ -722,11 +749,17 @@ class ECFR:
             node = self.get(citation, date=date, **hierarchy)
             written = node.save(path, front_matter=front_matter)
             return [written] if tree else written
+        pinned = self._snapshot(cited.title, _day(date))
         date = self._when(cited.title, date)
         cited = self._complete(cited, date)
         with self._full_text(cited, date) as download, download.path.open("rb") as f:
             source = Source(
-                cited.title, date, cited.hierarchy, download.url, download.retrieved
+                cited.title,
+                date,
+                cited.hierarchy,
+                download.url,
+                download.retrieved,
+                pinned,
             )
             files = save_events(
                 file_events(f),
@@ -863,6 +896,13 @@ class ECFR:
             if entry.number == title:
                 return entry
         raise TitleNotFoundError(f"Title {title} does not exist")
+
+    def _snapshot(self, title: int, day: dt.date | None) -> bool:
+        """Whether a requested date is older than the latest text: a snapshot."""
+        if day is None:
+            return False
+        latest = self._title(title).up_to_date_as_of
+        return latest is not None and day < latest
 
     def _outline(self, title: int, date: dt.date) -> models.Node:
         """A title's structure, kept for the session."""

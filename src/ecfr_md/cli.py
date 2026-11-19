@@ -366,22 +366,45 @@ def changes(
 
 
 @app.command(name="sync")
-def sync_command(path: Path, *, ecfr: Client) -> None:
+def sync_command(
+    path: Path,
+    *,
+    dry_run: bool = False,
+    include_dated: bool = False,
+    force: bool = False,
+    ecfr: Client,
+) -> None:
     """Update Markdown saved by ecfr-md to the latest text.
 
-    PATH is a file or directory written by ecfr-md get -o. Only files whose
-    text changed are rewritten; files for sections that no longer exist are
-    deleted.
+    PATH is a file or directory written by ecfr-md get -o; folders are
+    searched to any depth. Only files whose text changed are rewritten; files
+    for sections that no longer exist are deleted. Files saved with a past
+    --date are kept at that date, and files edited since they were saved are
+    left as they are.
 
     Parameters
     ----------
     path: Path
         A saved file, a saved tree, or a directory containing them.
+    dry_run: bool
+        Show what would change without writing anything.
+    include_dated: bool
+        Also update files saved with a past --date to the latest text.
+    force: bool
+        Also overwrite or delete files edited since they were saved.
     """
     terminal = _terminal(ecfr)
     with terminal.live():
-        result = ecfr.sync(path)
-    if not (result.added or result.changed or result.removed):
+        result = ecfr.sync(
+            path, dry_run=dry_run, include_dated=include_dated, force=force
+        )
+    if not (
+        result.added
+        or result.changed
+        or result.removed
+        or result.kept
+        or result.modified
+    ):
         checked = len(result.unchanged)
         terminal.done(
             f"{path} is up to date",
@@ -392,17 +415,25 @@ def sync_command(path: Path, *, ecfr: Client) -> None:
         ("+", result.added),
         ("~", result.changed),
         ("-", result.removed),
+        ("=", result.kept),
+        ("!", result.modified),
     ):
         for file in files[:20]:
             terminal.note(f"{kind} {file}")
+    if result.kept:
+        terminal.note("= kept at saved date; use --include-dated to update them")
+    if result.modified:
+        terminal.note("! modified locally, left as is; use --force to overwrite them")
     terminal.summary(
-        "Synced",
+        "Would sync" if dry_run else "Synced",
         {
             "Path": str(path),
             "Changed": f"{len(result.changed):,}",
             "Added": f"{len(result.added):,}",
             "Removed": f"{len(result.removed):,}",
             "Unchanged": f"{len(result.unchanged):,}",
+            "Kept at saved date": f"{len(result.kept):,}",
+            "Modified locally": f"{len(result.modified):,}",
         },
     )
 

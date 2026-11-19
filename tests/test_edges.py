@@ -372,7 +372,8 @@ def test_sync_lists_what_changed(run, capsys, tmp_path):
     text = edited.read_text(encoding="utf-8")
     edited.write_text(text.replace("\n\n", "\n\nEdited.\n\n", 1), encoding="utf-8")
     capsys.readouterr()
-    assert run("sync", str(tmp_path)) == 0
+    # Edited files are kept (see test_sync.py) unless forced.
+    assert run("sync", str(tmp_path), "--force") == 0
     assert "~ " in capsys.readouterr().err
     assert edited.read_text(encoding="utf-8") == text
 

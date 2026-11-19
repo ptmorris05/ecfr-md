@@ -45,6 +45,15 @@ Install from GitHub; ecfr-md is not on PyPI.
 - The module-level functions have their `ECFR` methods' full docstrings, and
   signatures show `DateLike` instead of its validators. Node classes and
   `Level` have docstrings.
+- `sync(dry_run=True)` (`ecfr-md sync --dry-run`) reports what would change
+  without writing anything.
+- Saved files record a `digest` of their text in the front matter. `sync`
+  keeps files edited since they were saved and lists them in
+  `SyncResult.modified` ("modified locally"); `force=True` (`--force`)
+  overwrites or deletes them. Files without a digest sync as before.
+- Text saved as of a past date records `pinned: "<date>"` in the front matter.
+  `sync` keeps it at that date and lists it in `SyncResult.kept`;
+  `include_dated=True` (`--include-dated`) updates it.
 
 ### Changed
 
@@ -79,6 +88,19 @@ Install from GitHub; ecfr-md is not on PyPI.
 - `outline --depth` counts what's below the last level shown ("12 sections");
   `changes` shows a single section's heading once; search excerpts end at a
   whole word.
+- Default file names for text as of a past date include the date, e.g.
+  `45-cfr-part-164@2018-01-01.md`, so snapshots don't overwrite each other.
+- Saving a tree over an earlier save of the same tree removes files ecfr-md
+  wrote for sections the new save doesn't have, so a tree never mixes dates.
+- Telling a past date from the latest uses the title list (kept for a few
+  minutes), so a dated request without the cache makes one more small request.
+
+### Fixed
+
+- `sync` on a tree's top folder rewrote its `index.md` with the whole text.
+- `sync` on a directory missed saves more than one folder down.
+- `sync` moved snapshots saved with a past date to the latest text, and
+  silently reverted local edits.
 
 ## [0.1.0]
 

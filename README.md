@@ -69,7 +69,7 @@ ecfr-md cache clear
 | `outline CITATION` | Prints the table of contents. `--depth N` limits levels and counts what's below. Part sizes are shown. |
 | `changes CITATION` | Lists changes to sections: when issued, when effective, and whether substantive, editorial or a removal. `--since` and `--until` take dates. |
 | `search QUERY` | Lists current sections that contain the words as a phrase (`--no-phrase`: anywhere in the section). `--limit N` (default 20), `--all-versions`, `--save DIR`, `--json`, plus the API's filters (`--agency SLUG`, `--date`, `--last-modified-after`, …). |
-| `sync PATH` | Updates a file, tree or directory saved by `get`, `search --save` or `--from`. Rewrites only files whose text changed, deletes files for sections that no longer exist, and leaves other files alone. |
+| `sync PATH` | Updates a file, tree or directory saved by `get`, `search --save` or `--from`, searching folders to any depth. Rewrites only files whose text changed, deletes files for sections that no longer exist, and leaves other files alone. Keeps snapshots saved with a past `--date` (`--include-dated` updates them) and files you edited (`--force` overwrites them). `--dry-run` shows what would change. See [Keeping files up to date](#keeping-files-up-to-date). |
 | `cache info`, `cache clear` | Shows or deletes the local cache. |
 | `api admin …`, `api search …`, `api versioner …` | One command per API endpoint, printing its JSON. See [API](#api). |
 
@@ -179,8 +179,8 @@ ecfr-md get 45 CFR Part 164 -o hipaa.md
 ecfr-md get 45 CFR Part 164 --tree -o hipaa/
 ```
 
-- One file: headings follow the hierarchy, starting at `#` for what you asked for. If the path is an existing directory, the file is named after the citation, e.g. `45-cfr-164.502.md`.
-- Tree: a directory per level, each with an `index.md` (heading, notes, links to children), and one file per section or appendix.
+- One file: headings follow the hierarchy, starting at `#` for what you asked for. If the path is an existing directory, the file is named after the citation, e.g. `45-cfr-164.502.md`. Text as of a past date is named with its date too, e.g. `45-cfr-part-164@2018-01-01.md`, so snapshots saved into one directory don't overwrite each other. A file name you give is used as is.
+- Tree: a directory per level, each with an `index.md` (heading, notes, links to children), and one file per section or appendix. Saving a tree over an earlier save of the same tree (another date, say) removes the files ecfr-md wrote for sections that are no longer there, so the tree never mixes dates. Files ecfr-md didn't write, and files you edited, are kept.
 
 Each file starts with YAML front matter. Turn it off with `front_matter=False` or `--no-front-matter`.
 
@@ -194,8 +194,32 @@ api: "https://www.ecfr.gov/api/versioner/v1/full/2026-10-07/title-45.xml?section
 retrieved: "2026-10-09T17:02:11+00:00"
 generator: "ecfr-md 0.1.0"
 disclaimer: "The eCFR is an editorial compilation of CFR material and Federal Register amendments. It is not an official legal edition of the CFR."
+digest: "sha256:3f1c…"
 ---
 ```
+
+- `pinned` (only for text as of a past date) repeats the date you asked for, e.g. `pinned: "2018-01-01"`. `sync` keeps such files at that date.
+- `digest` is the SHA-256 of everything after the front matter. `sync` uses it to tell whether you edited the file. Files saved by earlier versions have no digest and are synced as before.
+
+### Keeping files up to date
+
+`sync` brings saved files to the latest text. It reads the citation from each file's front matter (or a tree's top `index.md`), so it works on a single file, a tree's top folder, or any folder holding saves at any depth.
+
+```sh
+ecfr-md sync notes/ --dry-run   # show what would change, write nothing
+ecfr-md sync notes/             # update
+```
+
+```python
+result = ecfr_md.sync("notes/", dry_run=True)
+result.changed, result.added, result.removed, result.unchanged
+result.kept  # snapshots saved with a past date, left at that date
+result.modified  # files edited since they were saved, left as they are
+```
+
+- Snapshots saved with a past date (`pinned` in the front matter) are kept and reported as "kept at saved date". `include_dated=True` (`--include-dated`) moves them to the latest text.
+- Files whose text no longer matches their `digest` are kept and reported as "modified locally", including files for sections that no longer exist. `force=True` (`--force`) overwrites or deletes them.
+- Files ecfr-md didn't write are never touched.
 
 `save` processes the XML as it reads it from disk, so large titles don't need to fit in memory. The API times out on the largest titles (e.g. Title 40), so text above the part level over 50 MB is fetched one part at a time and joined. Files are written to a temporary name and renamed.
 

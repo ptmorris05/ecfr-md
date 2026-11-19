@@ -147,5 +147,13 @@ def search(
 
 
 @_documented_by(ECFR.sync)
-def sync(path: str | Path) -> SyncResult:
-    return client().sync(path)
+def sync(
+    path: str | Path,
+    *,
+    dry_run: bool = False,
+    include_dated: bool = False,
+    force: bool = False,
+) -> SyncResult:
+    return client().sync(
+        path, dry_run=dry_run, include_dated=include_dated, force=force
+    )
