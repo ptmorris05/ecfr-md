@@ -27,6 +27,7 @@ from ecfr_md import (
 
 FULL = "/api/versioner/v1/full/2026-10-07/title-45.xml"
 TITLES = "/api/versioner/v1/titles.json"
+STRUCTURE = "/api/versioner/v1/structure/2026-10-07/title-45.json"
 
 
 def test_sends_configured_headers(api):
@@ -50,7 +51,7 @@ def test_get_resolves_latest_date(ecfr, api):
 def test_get_accepts_citations(ecfr, api):
     section = ecfr.get("45 CFR 164.104")
     assert isinstance(section, Section)
-    assert dict(api.requests[1].url.params) == {"section": "164.104"}
+    assert dict(api.requests[-1].url.params) == {"section": "164.104"}
 
 
 def test_get_paragraph_navigates_the_response(ecfr, api):
@@ -168,7 +169,8 @@ def test_store_skips_titles_being_processed(api, tmp_path):
 
 def test_without_cache_no_extra_requests(ecfr, api):
     ecfr.get("45 CFR 164.104", date="2026-10-07")
-    assert api.paths() == [TITLES, FULL]
+    # The structure says whether the part is small enough to fetch whole.
+    assert api.paths() == [TITLES, STRUCTURE, FULL]
 
 
 def test_cache_max_age(api, tmp_path):

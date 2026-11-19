@@ -3,6 +3,8 @@ name = "ecfr-md"
 version = "0.1.0"
 description = "Code of Federal Regulations text from the eCFR API as navigable Python objects and Markdown."
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.12"
 keywords = ["cfr", "ecfr", "regulations", "federal register", "markdown", "law"]
 classifiers = [
@@ -21,6 +23,7 @@ dependencies = [
     "cyclopts>=5.2.0",
     "dateparser>=1.4.3",
     "httpx2[http2]>=2.13.1",
+    "markdown-it-py>=4.3.0",
     "pydantic>=2.14.0",
     "rich>=15.0.0",
     "tenacity>=9.2.1",
@@ -28,7 +31,7 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://github.com/ptmorris05/ecfr-md"
-Documentation = "https://github.com/ptmorris05/ecfr-md#readme"
+Documentation = "https://ptmorris05.github.io/ecfr-md/"
 Repository = "https://github.com/ptmorris05/ecfr-md"
 Issues = "https://github.com/ptmorris05/ecfr-md/issues"
 Changelog = "https://github.com/ptmorris05/ecfr-md/blob/main/CHANGELOG.md"
@@ -36,9 +39,20 @@ Changelog = "https://github.com/ptmorris05/ecfr-md/blob/main/CHANGELOG.md"
 [project.scripts]
 ecfr-md = "ecfr_md.cli:main"
 
+[project.optional-dependencies]
+docx = [
+    "python-docx>=1.2.0",
+]
+pdf = [
+    "typst>=0.15.2",
+]
+all = [
+    "ecfr-md[docx,pdf]",
+]
+
 [tool.uv.build-backend]
-# Also ship the changelog, the license once added, and the tests, which
-# distribution packagers run against the source distribution.
+# Also ship the changelog, the license and the tests, which distribution
+# packagers run against the source distribution.
 source-include = ["CHANGELOG.md", "LICENSE*", "tests/**"]
 
 [build-system]
@@ -47,10 +61,18 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "pypdf>=7.1.1",
     "pyright>=1.1.414",
     "pytest>=9.1.1",
     "pytest-cov>=7.1.0",
+    "python-docx>=1.2.0",
     "ruff>=0.17.0",
+    "typst>=0.15.2",
+]
+
+docs = [
+    "mkdocs-material>=9.7.0",
+    "mkdocstrings[python]>=1.0.0",
 ]
 
 [tool.ruff.lint]

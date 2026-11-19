@@ -57,7 +57,7 @@ from ecfr_md.address import (
     walk,
 )
 from ecfr_md.bulk import normalize
-from ecfr_md.cache import Store, default_directory
+from ecfr_md.cache import Entry, Store, default_directory
 from ecfr_md.citation import Citation
 from ecfr_md.compare import Comparison
 from ecfr_md.compare import compare as compare_texts
@@ -94,6 +94,8 @@ from ecfr_md.params import (
     to_date,
 )
 from ecfr_md.progress import Progress
+from ecfr_md.render import export
+from ecfr_md.render.formats import PER_SECTION, Format, format_for, require
 from ecfr_md.results import Change, Match, Matches, Outline, TitleInfo
 from ecfr_md.syncing import SyncResult, sync
 
@@ -129,7 +131,11 @@ ABOVE_PART = ("subtitle", "chapter", "subchapter", "part")
 MAX_PER_PAGE = 1000  # Search results per request.
 OUTLINES = 8  # Title outlines kept in memory; a large one takes about 10 MB.
 CHANGE_LISTS = 64  # Lists of changes since a date, kept to check the cache.
+TREES = 4  # Outlines of the whole CFR at a date.
 MAX_SLOW_DOWNS = 10  # 429s waited out for one request before giving up.
+# Failures that mean the eCFR can't be reached, so cached text is used.
+OFFLINE = (ECFRConnectionError, ECFRTimeoutError, ServerError)
+TITLES_FILE = "titles.json"  # The last title list, for use offline.
 
 # Structure node types above the part level, as XML division tags.
 DIVISIONS = {
@@ -153,6 +159,14 @@ XML_TYPES = {
 }
 LEVEL_TYPES = frozenset(XML_TYPES.values())
 TAG = re.compile(r"<[^>]+>")  # Some structure labels contain raw markup.
+
+
+def _offline(error: ECFRError, using: str) -> None:
+    warnings.warn(
+        f"Couldn't reach the eCFR ({error}); using {using}, which may be out of date",
+        ECFRWarning,
+        stacklevel=5,
+    )
 
 
 def _reserved(node: models.Structure) -> bool:
@@ -524,6 +538,8 @@ class ECFR:
             CHANGE_LISTS
         )
         self._modified: dict[int, tuple[float, dt.date | None]] = {}
+        # The outline of the whole CFR, by date (None: each title's latest).
+        self._trees: Memo[dt.date | None, Outline] = Memo(TREES)
         self._memo_lock = threading.Lock()
         self._retrying = Retrying(
             stop=self._stop,
@@ -585,20 +601,25 @@ class ECFR:
         pinned = self._snapshot(cited.title, _day(date))
         date = self._when(cited.title, date)
         cited = self._complete(cited, date)
-        with self._full_text(cited, date) as download:
+        whole = self._small_part(cited, date)
+        fetched = whole or cited
+        with self._full_text(fetched, date) as download:
             node = load_file(
                 download.path,
                 title=cited.title,
                 date=date,
-                hierarchy=cited.hierarchy,
+                hierarchy=fetched.hierarchy,
                 url=download.url,
                 retrieved=download.retrieved,
                 pinned=pinned,
                 # Above the part, each part is read when needed.
-                lazy=_above_part(cited),
+                lazy=_above_part(fetched),
                 images=self.settings.images,
                 site=self.settings.site_url,
             )
+        node._ecfr = self
+        if whole is not None:  # The section or appendix, out of its part.
+            node = node[replace(address, hierarchy=cited.hierarchy, paragraph=())]
         if not cited.paragraph and address.group is None:
             return node
         # Paragraphs and subject groups are found in the text of what holds them.
@@ -610,6 +631,21 @@ class ECFR:
                 raise
             raise NodeNotFoundError(_missing_paragraph(node, cited, date)) from None
 
+    def _small_part(self, cited: Citation, date: dt.date) -> Citation | None:
+        """For a section or appendix in a part of up to ``GROUP_BELOW``
+        bytes, the part: fetched whole, it's one request whichever of its
+        sections are read next, and cached for all of them."""
+        if not cited.hierarchy.keys() & {"section", "appendix"}:
+            return None
+        try:
+            path = _path(self._outline(cited.title, date), cited)
+        except ECFRError:
+            return None  # Explained, if need be, when the text is fetched.
+        part = next((n for n in reversed(path) if n.type == "part"), None)
+        if part is None or part.size is None or part.size > GROUP_BELOW:
+            return None
+        return Citation(cited.title, as_hierarchy({"part": part.identifier}))
+
     def titles(self) -> list[TitleInfo]:
         """Every CFR title: number, name, latest date, and whether reserved.
 
@@ -619,14 +655,27 @@ class ECFR:
         with self._memo_lock:
             memo = self._titles
             if memo is None or time.monotonic() - memo[0] >= TITLES_TTL:
-                memo = self._titles = (time.monotonic(), self.api.versioner.titles())
+                memo = self._titles = (time.monotonic(), self._title_list())
         site = self.settings.site_url
         return [TitleInfo.from_model(t, site) for t in memo[1].titles]
+
+    def _title_list(self) -> models.Titles:
+        """The title list, or offline the one saved last time, with a warning."""
+        try:
+            found = self.api.versioner.titles()
+        except OFFLINE as exc:
+            saved = self._store.kept(TITLES_FILE)
+            if saved is None:
+                raise
+            _offline(exc, "the list of titles")
+            return models.Titles.model_validate_json(saved)
+        self._store.keep(TITLES_FILE, found.model_dump_json().encode())
+        return found
 
     @validated
     def outline(
         self,
-        citation: str | int,
+        citation: str | int | None = None,
         /,
         *,
         date: DateLike | None = None,
@@ -636,12 +685,15 @@ class ECFR:
 
         Index it like a node (``outline["Subpart E"]``) or print it. Uses the
         structure endpoint, which is much smaller than the text and is kept in
-        the cache.
+        the cache. Move with ``.next``, ``.previous``, ``.up`` and
+        ``.siblings``, and fetch the text with ``.read()``.
 
         Parameters
         ----------
-        citation: str | int
-            A title number, citation or address, as for :meth:`get`.
+        citation: str | int | None
+            A title number, citation or address, as for :meth:`get`. Leave
+            it out for the whole CFR: one entry per title, each title's
+            structure loaded the first time it's opened.
         date: DateLike | None
             Point-in-time date. Defaults to the date in the citation, else the
             most recent available.
@@ -649,6 +701,13 @@ class ECFR:
             Levels that refine the citation: subtitle, chapter, subchapter,
             part, subpart, section or appendix, e.g. ``part="164"``.
         """
+        if citation is None:
+            if hierarchy:
+                raise InvalidParameterError(
+                    "Give a title with the hierarchy options, e.g. "
+                    "outline(45, part='164')"
+                )
+            return self._cfr(_day(date))
         address, cited, date = _cite(citation, hierarchy, date)
         date = self._when(cited.title, date)
         try:
@@ -661,9 +720,30 @@ class ECFR:
         entry = Outline.build(
             path[-1], cited.title, _levels(path), date=date, site=self.settings.site_url
         )
+        entry._client = self
         if address.group is None:
             return entry
         return walk(entry, replace(address, hierarchy={}, paragraph=()), {})
+
+    def _cfr(self, date: dt.date | None) -> Outline:
+        """The outline of the whole CFR, kept for the session; ``date`` None
+        is each title's latest text."""
+        with self._memo_lock:
+            root = self._trees.get(date)
+        if root is None:
+            site = self.settings.site_url
+            root = Outline.whole(self.titles(), date, self._outline, site)
+            root._client = self
+            with self._memo_lock:
+                self._trees.put(date, root)
+        return root
+
+    def _place(self, address: str, date: dt.date | None) -> Outline:
+        """An entry in the outline of the whole CFR at a date."""
+        place = Address.parse(address)
+        latest = self._title(place.title).up_to_date_as_of
+        current = date is None or latest is None or date >= latest
+        return self._cfr(None if current else date)[place]
 
     @validated
     def compare(
@@ -818,6 +898,53 @@ class ECFR:
         complete = page >= pages and len(matches) <= limit
         return Matches(matches[:limit], found.meta.total_count, complete=complete)
 
+    @validated
+    def cited_by(
+        self,
+        citation: str | int,
+        /,
+        *,
+        limit: Annotated[int, Field(ge=1)] = 20,
+        date: DateLike | None = None,
+    ) -> Matches:
+        """Sections and appendices that may cite a section or part.
+
+        Approximate: this searches the eCFR for the section number (or "part
+        N"), so it finds citations written that way, in the same title or
+        naming the title ("45 CFR 164.502"), but not "paragraph (a) of this
+        section" and the like. A paragraph counts as its section.
+
+        Parameters
+        ----------
+        citation: str | int
+            A section or part (or anything in one), as for :meth:`get`.
+        limit: int
+            Maximum number of matches to return.
+        date: DateLike | None
+            Only text in effect on this date. Defaults to the current text.
+        """
+        place = Address.parse(citation)
+        h = place.hierarchy
+        if "section" in h:
+            number = h["section"]
+        elif "part" in h:
+            number = f"part {h['part']}"
+        else:
+            raise InvalidParameterError(
+                f"cited_by finds what cites a section or part; {place} is neither"
+            )
+        filters: SearchFilters = {"date": date} if date else {}
+        found = self.search(f'"{number}"', limit=limit * 3, **filters)
+        named = f"{place.title} CFR"
+        itself = f"{named} {h['section']}" if "section" in h else None
+        matches = [
+            m
+            for m in found
+            if m.citation != itself
+            and (m.raw.hierarchy.title == str(place.title) or named in m.excerpt)
+        ]
+        return Matches(matches[:limit], found.total, complete=found.complete)
+
     def _check_agencies(self, slugs: list[str]) -> None:
         """Say which agency slugs don't exist; the API just finds nothing."""
         known: set[str] = set()
@@ -963,6 +1090,8 @@ class ECFR:
         tree: Literal[False] = False,
         front_matter: bool = True,
         date: DateLike | None = None,
+        format: Format | None = None,
+        links: bool | None = None,
         **hierarchy: Unpack[Hierarchy],
     ) -> Path: ...
 
@@ -976,6 +1105,8 @@ class ECFR:
         tree: Literal[True],
         front_matter: bool = True,
         date: DateLike | None = None,
+        format: Format | None = None,
+        links: bool | None = None,
         **hierarchy: Unpack[Hierarchy],
     ) -> list[Path]: ...
 
@@ -989,9 +1120,12 @@ class ECFR:
         tree: bool = False,
         front_matter: bool = True,
         date: DateLike | None = None,
+        format: Format | None = None,
+        links: bool | None = None,
         **hierarchy: Unpack[Hierarchy],
     ) -> Path | list[Path]:
-        """Save regulation text as Markdown.
+        """Save regulation text as Markdown, or as text, HTML, JSON, EPUB,
+        Word or PDF.
 
         Returns the file written, or with ``tree=True`` the list of files.
 
@@ -1012,6 +1146,16 @@ class ECFR:
         date: DateLike | None
             Point-in-time date. Defaults to the date in the citation, else the
             most recent available.
+        format: Format | None
+            ``"markdown"``, ``"text"``, ``"html"``, ``"json"``, ``"epub"``,
+            ``"docx"`` or ``"pdf"``. Defaults to the file's suffix
+            (``hipaa.pdf``), or Markdown. In a tree, text and HTML get a file
+            per section like Markdown, and the others a file per part. Word
+            and PDF need the ``docx`` and ``pdf`` extras.
+        links: bool | None
+            Make cross-references links: in a tree, relative links to the
+            files that hold them, and links to the eCFR for anything outside
+            it. Defaults to on for trees, off for single files.
         **hierarchy: Hierarchy
             Levels that refine the citation: subtitle, chapter, subchapter,
             part, subpart, section or appendix, e.g. ``part="164"``.
@@ -1023,6 +1167,8 @@ class ECFR:
             front_matter=front_matter,
             date=date,
             hierarchy=hierarchy,
+            format=format,
+            links=links,
         )
 
     def _save(
@@ -1035,25 +1181,34 @@ class ECFR:
         date: DateLike | None = None,
         hierarchy: Hierarchy | None = None,
         layout: int = LAYOUT,
+        format: Format | None = None,
+        links: bool | None = None,
     ) -> Path | list[Path]:
         """``save``, plus the file layout: 1 writes a tree with ecfr-md 0.x's
         names, which ``sync`` uses for trees saved that way."""
         hierarchy = hierarchy or Hierarchy()
+        links = tree if links is None else links
         address, cited, date = _cite(citation, hierarchy, date)
+        kind = format_for(path, format, tree=tree)
+        require(kind)  # Before downloading anything.
         if str(path).endswith(("/", "\\")):  # Path() would drop this: a directory.
             Path(path).mkdir(parents=True, exist_ok=True)
         if cited.paragraph or address.group is not None:
             node = self.get(citation, date=date, **hierarchy)
-            written = node.save(path, front_matter=front_matter)
+            written = node.save(
+                path, front_matter=front_matter, format=kind, links=links
+            )
             return [written] if tree else written
         pinned = self._snapshot(cited.title, _day(date))
         date = self._when(cited.title, date)
         cited = self._complete(cited, date)
         with self._full_text(cited, date) as download, download.path.open("rb") as f:
-            names = None
-            if tree:  # Names first: a later sibling can change an earlier one's.
+            names, index = None, {}
+            if tree and kind in PER_SECTION:
+                # Names first: a later sibling can change an earlier one's.
                 with download.path.open("rb") as first:
-                    names = tree_names(file_events(first), layout=layout, free=True)
+                    events = file_events(first)
+                    names = tree_names(events, layout=layout, free=True, index=index)
             source = Source(
                 cited.title,
                 date,
@@ -1063,17 +1218,33 @@ class ECFR:
                 pinned,
                 site=self.settings.site_url,
             )
-            files = save_events(
-                images_on(file_events(f), self.settings.images),
-                source,
-                Path(path),
-                tree=tree,
-                front_matter=front_matter,
-                free=True,
-                on_file=self.progress.file_written,
-                names=names,
-                layout=layout,
-            )
+            events = images_on(file_events(f), self.settings.images)
+            if kind == "markdown":
+                files = save_events(
+                    events,
+                    source,
+                    Path(path),
+                    tree=tree,
+                    front_matter=front_matter,
+                    free=True,
+                    on_file=self.progress.file_written,
+                    names=names,
+                    layout=layout,
+                    links=links,
+                    index=index,
+                )
+            else:
+                files = export.save_events(
+                    events,
+                    source,
+                    Path(path),
+                    kind,
+                    tree=tree,
+                    front_matter=front_matter,
+                    free=True,
+                    on_file=self.progress.file_written,
+                    names=names,
+                )
         return files if tree else files[0]
 
     @contextmanager
@@ -1133,6 +1304,47 @@ class ECFR:
             return
         state = self._title(title)
         token = state.latest_issue_date
+        try:
+            entry = self._current(kind, title, hierarchy, date, token)
+        except OFFLINE as exc:
+            entry = self._stale(kind, title, hierarchy, date, exc)
+        if entry is not None:
+            logger.debug("%s from the cache", entry.url)
+            self.progress.finished(entry.url, entry.path.stat().st_size, cached=True)
+            yield Download(entry.path, entry.url, entry.retrieved)
+            return
+        with ExitStack() as stack:
+            try:
+                fresh = stack.enter_context(download())
+            except OFFLINE as exc:
+                stale = self._stale(kind, title, hierarchy, date, exc)
+                fresh = Download(stale.path, stale.url, stale.retrieved)
+            else:
+                if token is not None and not state.processing_in_progress:
+                    self._store.put(
+                        kind,
+                        title,
+                        as_hierarchy(hierarchy),
+                        fresh.path,
+                        date=date,
+                        token=token,
+                        latest=date == state.up_to_date_as_of,
+                        url=fresh.url,
+                        retrieved=fresh.retrieved,
+                        host=host,
+                    )
+            yield fresh
+
+    def _current(
+        self,
+        kind: str,
+        title: int,
+        hierarchy: Mapping[str, object],
+        date: dt.date,
+        token: dt.date | None,
+    ) -> Entry | None:
+        """A stored copy the eCFR hasn't changed since, if there is one."""
+        host = self._host(kind)
         for entry in self._store.find(kind, title, as_hierarchy(hierarchy), date, host):
             reusable = entry.date == date or entry.token <= entry.date <= date
             if not reusable or token is None or entry.token > token:
@@ -1141,25 +1353,31 @@ class ECFR:
                 if self._changed(title, entry.token, hierarchy):
                     continue
                 entry = self._store.refresh(entry, token)
-            logger.debug("%s from the cache", entry.url)
-            self.progress.finished(entry.url, entry.path.stat().st_size, cached=True)
-            yield Download(entry.path, entry.url, entry.retrieved)
-            return
-        with download() as fresh:
-            if token is not None and not state.processing_in_progress:
-                self._store.put(
-                    kind,
-                    title,
-                    as_hierarchy(hierarchy),
-                    fresh.path,
-                    date=date,
-                    token=token,
-                    latest=date == state.up_to_date_as_of,
-                    url=fresh.url,
-                    retrieved=fresh.retrieved,
-                    host=host,
-                )
-            yield fresh
+            return entry
+        return None
+
+    def _stale(
+        self,
+        kind: str,
+        title: int,
+        hierarchy: Mapping[str, object],
+        date: dt.date,
+        error: ECFRError,
+    ) -> Entry:
+        """Offline, the newest stored copy that may still be current, with a
+        warning; else the error."""
+        found = [
+            entry
+            for entry in self._store.find(
+                kind, title, as_hierarchy(hierarchy), date, self._host(kind)
+            )
+            if entry.date <= date
+        ]
+        if not found:
+            raise error
+        entry = max(found, key=lambda e: (e.date, e.retrieved))
+        _offline(error, f"text cached on {entry.retrieved:%Y-%m-%d}")
+        return entry
 
     def _host(self, kind: str) -> str:
         return self.sources["bulk" if kind == "bulk" else "api"].host

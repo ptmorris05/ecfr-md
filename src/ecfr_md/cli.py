@@ -9,6 +9,8 @@ Common commands:
     ecfr-md get --all --tree -o cfr/           every title
     ecfr-md search "minimum necessary"         find sections
     ecfr-md outline 45 CFR Part 164            table of contents
+    ecfr-md references 45 CFR 164.502          what a section cites
+    ecfr-md cited-by 45 CFR 164.502            what cites it
     ecfr-md compare 45 CFR 164.502 --since 2024-01-01   what changed
     ecfr-md titles                             what titles exist
     ecfr-md config show                        settings, and where each is from
@@ -54,13 +56,16 @@ from ecfr_md.config import (
 )
 from ecfr_md.errors import ECFRError, InvalidCitationError, InvalidParameterError
 from ecfr_md.params import DateLike, Hierarchy, SearchFilters, to_date
-from ecfr_md.results import Matches
+from ecfr_md.render.export import render
+from ecfr_md.render.formats import BINARY, SUFFIXES, Format, format_for
+from ecfr_md.results import LEAVES, Matches
 from ecfr_md.ui import (
     Terminal,
     changes_table,
     outline_tree,
     reading,
     redline,
+    references_table,
     search_table,
     size,
     titles_table,
@@ -70,7 +75,6 @@ EXIT_ERROR = 1
 EXIT_USAGE = 2
 FORMAT_BELOW = 2_000_000  # Larger text is printed as plain Markdown.
 HELP_FLAGS = frozenset({"--help", "-h"})
-MARKDOWN_SUFFIXES = frozenset({".md", ".markdown", ".txt", ""})
 KINDS = ("changed", "added", "removed")
 PARTIAL = re.compile(r"\.(.+?)(?:\.[0-9a-f]{32})?\.part")  # write_text's temp name.
 CITED = re.compile(r"\d|§|title\b", re.IGNORECASE)  # How a citation starts.
@@ -112,11 +116,13 @@ def get(
         str | None, Parameter(name="--from", allow_leading_hyphen=True)
     ] = None,
     all_titles: Annotated[bool, Parameter(name="--all")] = False,
+    format: Format | None = None,
     pager: bool = True,
+    links: bool | None = None,
     ecfr: Client,
     **hierarchy: Unpack[Hierarchy],
 ) -> None:
-    """Download regulation text as Markdown.
+    """Download regulation text as Markdown, text, HTML, JSON, EPUB, Word or PDF.
 
     Parameters
     ----------
@@ -127,12 +133,15 @@ def get(
         directory. Asked for if left out in a terminal. The hierarchy
         options below refine it.
     output: str | None
-        File to write; "-" for stdout. A name ending in "/" or an existing
-        directory gets a file named after the citation. With --tree, --from
-        or --all, the directory to write to. Prints to stdout if omitted.
+        File to write; "-" for stdout. Its suffix picks the format: .md,
+        .txt, .html, .json, .epub, .docx or .pdf. A name ending in "/" or an
+        existing directory gets a file named after the citation. With
+        --tree, --from or --all, the directory to write to. Prints to stdout
+        if omitted.
     tree: bool
-        Write nested directories with one file per section or appendix,
-        instead of a single file.
+        Write nested directories with one file per section or appendix
+        (Markdown, text, HTML) or per part (JSON, EPUB, Word, PDF), instead
+        of a single file.
     front_matter: bool
         Start saved files with YAML metadata: citation, date, source URL,
         retrieval time and a note that the eCFR is not an official edition.
@@ -146,9 +155,15 @@ def get(
     all_titles: bool
         Every title of the CFR, each saved to the --output directory. Large
         titles are fetched part by part, so this takes a while.
+    format: Format | None
+        Save or print in this format instead of the one the --output suffix
+        names (Markdown if none). Word and PDF need the docx and pdf extras.
     pager: bool
         In a terminal, page through text longer than the screen ($PAGER,
         or less).
+    links: bool | None
+        Make cross-references Markdown links: in a --tree, between its
+        files, else to the eCFR. On for trees, off otherwise.
     """
     if from_file is not None:
         if citation or all_titles:
@@ -156,14 +171,17 @@ def get(
                 "--from reads the citations from a file; leave out "
                 + ("--all" if all_titles else "the citation")
             )
-        _get_many(ecfr, from_file, _directory(output, "--from"), front_matter, date)
+        directory = _directory(output, "--from")
+        _get_many(ecfr, from_file, directory, front_matter, date, format, links)
         return
     if all_titles:
         if citation:
             raise InvalidParameterError(
                 "--all gets every title; leave out the citation"
             )
-        _get_all(ecfr, _directory(output, "--all"), tree, front_matter, date)
+        _get_all(
+            ecfr, _directory(output, "--all"), tree, front_matter, date, format, links
+        )
         return
     if not citation and sys.stdin.isatty() and err_console.is_terminal:
         citation = (err_console.input("Citation or address: "),)
@@ -173,16 +191,23 @@ def get(
         )
     places = _places(citation)
     if len(places) > 1:
-        _get_listed(ecfr, places, output, tree, front_matter, date)
+        _get_listed(ecfr, places, output, tree, front_matter, date, format, links)
         return
-    target = _directory(output, "--tree") if tree else _file(output)
+    target = _directory(output, "--tree") if tree else _file(output, format)
     cited = places[0]
     terminal = _terminal(ecfr)
     if target is None:
+        if format in BINARY:
+            raise InvalidParameterError(
+                f"Save {format.upper()} to a file: -o FILE{SUFFIXES[format]}"
+            )
         with terminal.live():
             node = ecfr.get(cited, date=date, **hierarchy)
-        text = node.to_markdown()
-        if console.is_terminal and len(text) <= FORMAT_BELOW:
+        if format not in (None, "markdown"):
+            _print_markdown(render(node, format, front_matter=False))
+            return
+        text = node.to_markdown(links=bool(links))
+        if console.is_terminal and len(text) <= FORMAT_BELOW and not links:
             _show(reading(node), pager)  # Formatted for reading.
         else:
             _print_markdown(text)
@@ -198,11 +223,19 @@ def get(
                 tree=True,
                 front_matter=front_matter,
                 date=date,
+                format=format,
+                links=links,
                 **hierarchy,
             )
         else:
             file = ecfr.save(
-                cited, target, front_matter=front_matter, date=date, **hierarchy
+                cited,
+                target,
+                front_matter=front_matter,
+                date=date,
+                format=format,
+                links=links,
+                **hierarchy,
             )
             files = [file]
     if not tree:
@@ -251,7 +284,7 @@ def _directory(output: str | None, option: str) -> Path:
     return path
 
 
-def _file(output: str | None) -> Path | None:
+def _file(output: str | None, format: Format | None = None) -> Path | None:
     """Where to save one file; None for stdout."""
     if output is None or output == "-":
         return None
@@ -259,11 +292,7 @@ def _file(output: str | None) -> Path | None:
     if output.endswith(("/", "\\")) or path.is_dir():
         path.mkdir(parents=True, exist_ok=True)  # Named after the citation.
         return path
-    if path.suffix.lower() not in MARKDOWN_SUFFIXES:
-        raise InvalidParameterError(
-            f"ecfr-md saves Markdown, so {output} wouldn't be a real "
-            f"{path.suffix} file; use a name ending in .md"
-        )
+    format_for(path, format)  # A suffix that names no format is a mistake.
     return path
 
 
@@ -293,17 +322,26 @@ def _get_listed(
     tree: bool,
     front_matter: bool,
     date: DateLike | None,
+    format: Format | None = None,
+    links: bool | None = None,
 ) -> None:
     """Several citations: printed one after another, or each saved."""
     if output is None or output == "-":
+        if format in BINARY or format == "html":
+            raise InvalidParameterError(
+                f"Save several citations as {format.upper()} with -o DIRECTORY/"
+            )
         with _terminal(ecfr).live():
             nodes = ecfr.get_many(places, date=date)
-        _print_markdown("\n".join(node.to_markdown() for node in nodes))
+        if format in (None, "markdown"):
+            texts = [node.to_markdown(links=bool(links)) for node in nodes]
+        else:
+            texts = [render(n, format, front_matter=False) for n in nodes]
+        _print_markdown("\n".join(texts))
         return
     if not tree:
-        _save_many(
-            ecfr, places, _directory(output, "Several citations"), front_matter, date
-        )
+        directory = _directory(output, "Several citations")
+        _save_many(ecfr, places, directory, front_matter, date, format, links)
         return
     directory = _directory(output, "--tree")
     terminal = _terminal(ecfr)
@@ -311,7 +349,13 @@ def _get_listed(
     with terminal.live():
         for place in places:
             files += ecfr.save(
-                place, directory, tree=True, front_matter=front_matter, date=date
+                place,
+                directory,
+                tree=True,
+                front_matter=front_matter,
+                date=date,
+                format=format,
+                links=links,
             )
     terminal.summary(
         "Saved",
@@ -351,12 +395,14 @@ def _get_many(
     output: Path,
     front_matter: bool,
     date: DateLike | None,
+    format: Format | None = None,
+    links: bool | None = None,
 ) -> None:
     # utf-8-sig also accepts the byte-order mark Windows editors add.
     data = sys.stdin.buffer.read() if source == "-" else Path(source).read_bytes()
     name = "stdin" if source == "-" else source
     citations = _read_citations(data.decode("utf-8-sig"), name)
-    _save_many(ecfr, citations, output, front_matter, date)
+    _save_many(ecfr, citations, output, front_matter, date, format, links)
 
 
 def _save_many(
@@ -365,6 +411,8 @@ def _save_many(
     output: Path,
     front_matter: bool,
     date: DateLike | None,
+    format: Format | None = None,
+    links: bool | None = None,
 ) -> None:
     terminal = _terminal(ecfr)
     with terminal.live():
@@ -374,7 +422,10 @@ def _save_many(
             if isinstance(result, ECFRError):
                 failed.append(f"{cited}: {result}")
             else:
-                files.append(result.save(output, front_matter=front_matter))
+                saved = result.save(
+                    output, front_matter=front_matter, format=format, links=links
+                )
+                files.append(saved)
     terminal.summary(
         "Saved",
         {
@@ -398,6 +449,8 @@ def _get_all(
     tree: bool,
     front_matter: bool,
     date: DateLike | None,
+    format: Format | None = None,
+    links: bool | None = None,
 ) -> None:
     titles = [t.number for t in ecfr.api.versioner.titles().titles if not t.reserved]
     terminal = _terminal(ecfr)
@@ -405,7 +458,13 @@ def _get_all(
     with terminal.live():
         for title in titles:
             saved = ecfr.save(
-                title, output, tree=tree, front_matter=front_matter, date=date
+                title,
+                output,
+                tree=tree,
+                front_matter=front_matter,
+                date=date,
+                format=format,
+                links=links,
             )
             files += saved if isinstance(saved, list) else [saved]
     terminal.summary(
@@ -495,7 +554,8 @@ def outline(
 ) -> None:
     """Show the table of contents of a title or any part of it, without its text.
 
-    With no citation, lists the titles.
+    With no citation, lists the titles. A section or appendix is followed by
+    the ones before and after it.
 
     Parameters
     ----------
@@ -518,8 +578,81 @@ def outline(
         entry = ecfr.outline(_citation(citation), date=date, **hierarchy)
     if as_json:
         console.print_json(json.dumps(entry.to_dict(depth=depth)))
+        return
+    console.print(outline_tree(entry, depth))
+    if entry.level in LEAVES:
+        terminal = _terminal(ecfr)
+        with terminal.live():
+            around = [entry.previous, entry.next]
+        before, after = (e.citation if e else "none" for e in around)
+        terminal.note(f"Previous: {before} · Next: {after}")
+
+
+@app.command
+def references(
+    *citation: str,
+    date: DateLike | None = None,
+    as_json: Annotated[bool, Parameter(name="--json")] = False,
+    ecfr: Client,
+    **hierarchy: Unpack[Hierarchy],
+) -> None:
+    """List the cross-references in a section or any other text, and what
+    each refers to.
+
+    Parameters
+    ----------
+    citation: str
+        A citation, e.g. 45 CFR 164.502.
+    date: DateLike | None
+        Point-in-time date. Defaults to the most recent available.
+    as_json: bool
+        Print JSON (text, citation, address, url, ...) instead of a table.
+    """
+    terminal = _terminal(ecfr)
+    with terminal.live():
+        node = ecfr.get(_citation(citation), date=date, **hierarchy)
+    found = node.references
+    if as_json:
+        console.print_json(json.dumps([r.to_dict() for r in found]))
+        return
+    if found:
+        console.print(references_table(found))
+    count = len(found)
+    terminal.note(f"{count:,} {'reference' if count == 1 else 'references'}")
+
+
+@app.command(name="cited-by")
+def cited_by(
+    *citation: str,
+    limit: int = 20,
+    date: DateLike | None = None,
+    as_json: Annotated[bool, Parameter(name="--json")] = False,
+    ecfr: Client,
+) -> None:
+    """Find sections that may cite a section or part. Approximate: it
+    searches the eCFR for the section number or "part N".
+
+    Parameters
+    ----------
+    citation: str
+        A section or part, e.g. 45 CFR 164.502.
+    limit: int
+        Maximum number of sections to show.
+    date: DateLike | None
+        Only text in effect on this date. Defaults to the current text.
+    as_json: bool
+        Print JSON instead of a table.
+    """
+    terminal = _terminal(ecfr)
+    with terminal.live():
+        matches = ecfr.cited_by(_citation(citation), limit=limit, date=date)
+    if as_json:
+        console.print_json(json.dumps(matches.to_dict()))
+    elif not matches:
+        terminal.note("Nothing found that cites it")
     else:
-        console.print(outline_tree(entry, depth))
+        console.print(search_table(matches, width=console.width))
+        terminal.note(_search_summary(matches, limit))
 
 
 @app.command

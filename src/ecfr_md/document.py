@@ -33,7 +33,7 @@ from dataclasses import dataclass, replace
 from enum import StrEnum
 from functools import cached_property
 from pathlib import Path, PurePosixPath
-from typing import Any, BinaryIO, ClassVar, Literal, overload
+from typing import TYPE_CHECKING, Any, BinaryIO, ClassVar, Literal, overload
 from xml.parsers import expat
 from xml.sax.saxutils import quoteattr
 
@@ -42,6 +42,7 @@ from ecfr_md.address import POSITIONS, Address, marker_at, relative, walk
 from ecfr_md.citation import KEYWORDS, PARAGRAPH, Citation
 from ecfr_md.errors import (
     AmbiguousNodeError,
+    ECFRError,
     InvalidCitationError,
     InvalidParameterError,
     NodeNotFoundError,
@@ -50,6 +51,7 @@ from ecfr_md.errors import (
 from ecfr_md.output import (
     Source,
     file_name,
+    linker,
     page_path,
     provenance,
     save_events,
@@ -59,6 +61,12 @@ from ecfr_md.output import (
     write_text,
 )
 from ecfr_md.params import Hierarchy, as_hierarchy
+from ecfr_md.references import Reference, find_references, link_markdown
+from ecfr_md.render.formats import Format, format_for
+
+if TYPE_CHECKING:
+    from ecfr_md.client import ECFR
+    from ecfr_md.results import Outline
 
 
 class Level(StrEnum):
@@ -155,6 +163,7 @@ class Node(ABC):
     """
 
     level: ClassVar[Level]
+    _ecfr: ECFR | None = None  # The client that loaded it, set on the root.
 
     def __init__(self, identifier: str, parent: Node | None, source: Source) -> None:
         self.identifier = identifier
@@ -171,13 +180,18 @@ class Node(ABC):
     def children(self) -> tuple[Node, ...]:
         """Child nodes in document order."""
 
-    def to_markdown(self, max_chars: int | None = None) -> str:
+    def to_markdown(self, max_chars: int | None = None, *, links: bool = False) -> str:
         """This node and everything inside it as one Markdown document.
 
         With ``max_chars``, the text is cut at a paragraph boundary to fit,
-        and ends with a note of how many characters were left out.
+        and ends with a note of how many characters were left out. With
+        ``links``, cross-references (see :attr:`references`) link to the eCFR.
         """
-        return truncate(self._markdown(), max_chars)
+        return truncate(self._linked() if links else self._markdown(), max_chars)
+
+    def _linked(self) -> str:
+        """The Markdown with its cross-references as links."""
+        return link_markdown(self._markdown(), self._context())
 
     @abstractmethod
     def _markdown(self) -> str:
@@ -258,33 +272,105 @@ class Node(ABC):
         *,
         tree: Literal[False] = False,
         front_matter: bool = True,
+        format: Format | None = None,
+        links: bool | None = None,
     ) -> Path: ...
 
     @overload
     def save(
-        self, path: str | Path, *, tree: Literal[True], front_matter: bool = True
+        self,
+        path: str | Path,
+        *,
+        tree: Literal[True],
+        front_matter: bool = True,
+        format: Format | None = None,
+        links: bool | None = None,
     ) -> list[Path]: ...
 
     def save(
-        self, path: str | Path, *, tree: bool = False, front_matter: bool = True
+        self,
+        path: str | Path,
+        *,
+        tree: bool = False,
+        front_matter: bool = True,
+        format: Format | None = None,
+        links: bool | None = None,
     ) -> Path | list[Path]:
-        """Write Markdown to ``path``.
+        """Write this node to ``path``: Markdown, or another ``format``.
 
         Returns the file written, or with ``tree=True`` the list of files.
         By default this writes one file; an existing directory receives a file
         named after the address, e.g. ``45_164.502.md``. With
         ``tree=True``, ``path`` is a directory that gets one folder per
         hierarchy level and one file per section or appendix. Each
-        file starts with YAML front matter (see :attr:`provenance`) unless
-        ``front_matter`` is false. Files are replaced atomically.
+        Markdown file starts with YAML front matter (see :attr:`provenance`)
+        unless ``front_matter`` is false. Files are replaced atomically.
+
+        ``format`` is ``"markdown"``, ``"text"``, ``"html"``, ``"json"``,
+        ``"epub"``, ``"docx"`` or ``"pdf"``; by default the file's suffix
+        decides (``hipaa.pdf``), and Markdown is the default for directories
+        and names without one. See :meth:`export`.
+
+        With ``links`` (the default for Markdown trees), cross-references
+        become links: in a tree, relative links to the files that hold them;
+        to the eCFR for anything else.
         """
+        kind = format_for(path, format, tree=tree)
+        if kind != "markdown":
+            from ecfr_md.render.export import export
+
+            return export(self, path, kind, tree=tree, front_matter=front_matter)
+        links = tree if links is None else links
         target = Path(path)
         if target.is_dir() or str(path).endswith(("/", "\\")):
             target = target / file_name(self._address(), self.source)
-        body = self.to_markdown()
-        text = with_front_matter(self.provenance, body) if front_matter else body
+        body = self.to_markdown(links=links)
+        fields = self.provenance | ({"links": True} if links else {})
+        text = with_front_matter(fields, body) if front_matter else body
         written = write_text(target, text)
         return [written] if tree else written
+
+    @overload
+    def export(
+        self,
+        path: str | Path,
+        format: Format | None = None,
+        *,
+        tree: Literal[False] = False,
+        front_matter: bool = True,
+    ) -> Path: ...
+
+    @overload
+    def export(
+        self,
+        path: str | Path,
+        format: Format | None = None,
+        *,
+        tree: Literal[True],
+        front_matter: bool = True,
+    ) -> list[Path]: ...
+
+    def export(
+        self,
+        path: str | Path,
+        format: Format | None = None,
+        *,
+        tree: bool = False,
+        front_matter: bool = True,
+    ) -> Path | list[Path]:
+        """Save this node as Markdown, text, HTML, JSON, EPUB, Word or PDF.
+
+        The format is ``format``, or else the file's suffix: ``.md``,
+        ``.txt``, ``.html``, ``.json``, ``.epub``, ``.docx`` or ``.pdf``.
+        Word and PDF need the ``docx`` and ``pdf`` extras. With ``tree``,
+        ``path`` is a directory: text and HTML get a file per section or
+        appendix and an index page per level, like Markdown; JSON, EPUB,
+        Word and PDF get a file per part.
+
+        >>> part.export("hipaa.pdf")
+        >>> part.export("site/", format="html", tree=True)
+        """
+        return self.save(path, tree=tree, front_matter=front_matter, format=format)
 
     @property
     def text(self) -> str:
@@ -305,6 +391,82 @@ class Node(ABC):
         """The section this node is in, or itself if it is one."""
         chain = (self, *self.ancestors)
         return next((n for n in chain if n.level is Level.SECTION), None)
+
+    @property
+    def anchor(self) -> str | None:
+        """The id the eCFR gives this node on its pages, for deep links and
+        HTML anchors: "p-164.502(a)(1)" for a paragraph, "164.502" for a
+        section, "subpart-E", "part-164", "Appendix-A-to-Part-164"; None for
+        other levels. eCFR ids of paragraphs under defined terms include
+        the term, which the text doesn't mark, so those can differ."""
+        return None
+
+    @property
+    def references(self) -> list[Reference]:
+        """Cross-references in :attr:`text`: "§ 164.501", "paragraph (a)(1)
+        of this section", "42 U.S.C. 1320d", ... with what each points to.
+        See :func:`~ecfr_md.references.find_references`."""
+        return find_references(self.text, self._context(), markdown=True)
+
+    def _context(self) -> Address:
+        """Where this node's text is, for resolving relative references."""
+        date = self.date if self.source.pinned else None
+        return replace(self._address(), date=date)
+
+    @property
+    def outline(self) -> Outline:
+        """This node's entry in the outline of the whole CFR (a paragraph's
+        section). Needs a node from a client, as do ``next``, ``previous``
+        and ``up``."""
+        node = self.section if self.level is Level.PARAGRAPH else self
+        assert node is not None  # A paragraph is always in a section.
+        return self._client()._place(node.address, self.date)
+
+    @property
+    def next(self) -> Node | None:
+        """The text of the next section or appendix, crossing into the next
+        part or title; None at the end of the CFR. From the text already
+        loaded when it holds it, so stepping through a part costs nothing."""
+        return self._near(self.outline.next)
+
+    @property
+    def previous(self) -> Node | None:
+        """The text of the section or appendix before this node."""
+        return self._near(self.outline.previous)
+
+    @property
+    def up(self) -> Node | None:
+        """The node this one is in: its parent, or above the text loaded,
+        the division that holds it (fetched); None for a title."""
+        if self.parent is not None:
+            return self.parent
+        return self._near(self.outline.up)
+
+    def _client(self) -> ECFR:
+        root = self.ancestors[-1] if self.ancestors else self
+        if root._ecfr is None:
+            raise ECFRError(
+                f"{self.citation} was loaded without a client, so it can't fetch "
+                "what's around it; get it with ecfr_md.get() or ECFR().get() to "
+                "use .outline, .next, .previous and .up"
+            )
+        return root._ecfr
+
+    def _near(self, entry: Outline | None) -> Node | None:
+        """The text of an outline entry, from this node's tree if it's there."""
+        if entry is None or entry.level not in Level:
+            return None
+        root = self.ancestors[-1] if self.ancestors else self
+        place = Address.parse(entry.address)
+        if place.title == self.cfr_title:
+            try:
+                found = walk(root, place, root.source.hierarchy)
+            except (NodeNotFoundError, AmbiguousNodeError):
+                found = None
+            # A level the request named, but above the text, isn't in it.
+            if found is not None and found.level == entry.level:
+                return found
+        return entry.read()
 
     @property
     def provenance(self) -> dict[str, Any]:
@@ -619,10 +781,18 @@ class Division(Node):
             return markdown.element_events(self.element)
         return self._parts.events(self.element)
 
-    def _markdown(self) -> str:
+    def _markdown(self, link: markdown.Linker | None = None) -> str:
         blocks: list[str] = []
-        markdown.write_document(self._events(), blocks.append)
+        markdown.write_document(self._events(), blocks.append, link=link)
         return markdown.join(blocks)
+
+    def _linked(self) -> str:
+        return self._markdown(link=linker(self.source, self._base, None))
+
+    @property
+    def _base(self) -> Hierarchy:
+        """The hierarchy of what this division is in."""
+        return self.parent.hierarchy if self.parent else self.source.hierarchy
 
     def to_markdown_tree(self) -> dict[PurePosixPath, str]:
         files: dict[PurePosixPath, str] = {}
@@ -640,27 +810,46 @@ class Division(Node):
         *,
         tree: Literal[False] = False,
         front_matter: bool = True,
+        format: Format | None = None,
+        links: bool | None = None,
     ) -> Path: ...
 
     @overload
     def save(
-        self, path: str | Path, *, tree: Literal[True], front_matter: bool = True
+        self,
+        path: str | Path,
+        *,
+        tree: Literal[True],
+        front_matter: bool = True,
+        format: Format | None = None,
+        links: bool | None = None,
     ) -> list[Path]: ...
 
     def save(
-        self, path: str | Path, *, tree: bool = False, front_matter: bool = True
+        self,
+        path: str | Path,
+        *,
+        tree: bool = False,
+        front_matter: bool = True,
+        format: Format | None = None,
+        links: bool | None = None,
     ) -> Path | list[Path]:
-        if not tree:
-            return super().save(path, front_matter=front_matter)
-        base = self.parent.hierarchy if self.parent else self.source.hierarchy
+        if not tree or format_for(path, format, tree=True) != "markdown":
+            return super().save(
+                path, tree=tree, front_matter=front_matter, format=format, links=links
+            )
+        index: dict[str, str] = {}
+        names = markdown.tree_names(self._events(), index=index)
         return save_events(
             self._events(),
             self.source,
             Path(path),
             tree=True,
             front_matter=front_matter,
-            base=base,
-            names=markdown.tree_names(self._events()),
+            base=self._base,
+            names=names,
+            links=links is not False,
+            index=index,
         )
 
 
@@ -693,11 +882,19 @@ class Part(Division):
 
     level = Level.PART
 
+    @property
+    def anchor(self) -> str:
+        return f"part-{self.identifier}"
+
 
 class Subpart(Division):
     """A subpart of a part, e.g. 45 CFR Part 164 Subpart E."""
 
     level = Level.SUBPART
+
+    @property
+    def anchor(self) -> str:
+        return f"subpart-{self.identifier}"
 
 
 class SubjectGroup(Division):
@@ -728,11 +925,19 @@ class Appendix(Division):
 
     level = Level.APPENDIX
 
+    @property
+    def anchor(self) -> str:
+        return "-".join(self.identifier.split())
+
 
 class Section(Division):
     """A section, e.g. 45 CFR 164.502; its children are its top paragraphs."""
 
     level = Level.SECTION
+
+    @property
+    def anchor(self) -> str:
+        return self.identifier
 
     @cached_property
     def _parsed(self) -> tuple[tuple[Paragraph, ...], tuple[str, ...]]:
@@ -769,6 +974,8 @@ class Paragraph(Node):
         self.depth = depth
         self.blocks: list[str] = []
         self._children: list[Paragraph] = []
+        # The XML element whose text starts this paragraph, for exports.
+        self._element: ET.Element | None = None
 
     @property
     def children(self) -> tuple[Node, ...]:
@@ -777,6 +984,12 @@ class Paragraph(Node):
     @property
     def label(self) -> str:
         return f"({self.identifier})"
+
+    @property
+    def anchor(self) -> str:
+        section = self.section
+        assert section is not None  # Paragraphs are in sections.
+        return f"p-{section.identifier}{_markers(self.path)}"
 
     @property
     def path(self) -> tuple[str, ...]:
@@ -1258,6 +1471,7 @@ def _paragraphs(section: Section) -> list[Paragraph]:
                     open_.pop()
                 parent = open_[-1] if open_ else section
                 paragraph = Paragraph(marker, depth, parent)
+                paragraph._element = element
                 (open_[-1]._children if open_ else roots).append(paragraph)
                 open_.append(paragraph)
             assert match is not None  # _leading found markers, so it matched.

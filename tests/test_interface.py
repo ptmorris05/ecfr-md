@@ -203,6 +203,7 @@ def test_module_functions_share_one_client(api, monkeypatch, tmp_path):
     assert ecfr_md.outline("45 CFR Part 164").identifier == "164"
     assert ecfr_md.changes("45 CFR Part 164") == []
     assert ecfr_md.search("rule")[0].citation == "45 CFR 164.104"
+    assert ecfr_md.cited_by("45 CFR 164.102")[0].citation == "45 CFR 164.104"
     assert ecfr_md.sync(tmp_path / "tree").changed == []
     assert ecfr_md.titles()[0].number == 45
 

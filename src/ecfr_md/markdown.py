@@ -17,11 +17,19 @@ from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import BinaryIO
 
-from ecfr_md.address import appendix_key, appendix_subpart, encode_id, encode_section
+from ecfr_md.address import (
+    Address,
+    appendix_key,
+    appendix_subpart,
+    encode_id,
+    encode_section,
+)
 from ecfr_md.config import SITE_URL
 from ecfr_md.errors import ResponseFormatError
 
 Events = Iterable[tuple[str, ET.Element]]
+# Rewrites a block of Markdown, given the divisions it's in.
+Linker = Callable[[str, list[ET.Element]], str]
 
 MAX_HEADING_LEVEL = 6
 INDEX_FILE = "index.md"
@@ -110,10 +118,10 @@ def file_events(source: BinaryIO) -> Iterator[tuple[str, ET.Element]]:
         raise ResponseFormatError(f"Invalid eCFR XML: {exc}") from exc
 
 
-def render(el: ET.Element) -> str:
+def render(el: ET.Element, *, link: Linker | None = None) -> str:
     """One Markdown document for an element and everything inside it."""
     blocks: list[str] = []
-    write_document(element_events(el), blocks.append)
+    write_document(element_events(el), blocks.append, link=link)
     return join(blocks)
 
 
@@ -123,12 +131,15 @@ def write_document(
     *,
     on_heading: Callable[[str, ET.Element], object] | None = None,
     free: bool = False,
+    link: Linker | None = None,
 ) -> None:
     """Emit the Markdown blocks of a document, in order, as events arrive.
 
     ``on_heading`` receives the top-level heading as plain text, and its
     division element, before the first block. With ``free``, processed
-    elements are discarded as they are written.
+    elements are discarded as they are written. ``link(block, divisions)``
+    rewrites each block of text, given the divisions it's in, e.g. to
+    link its cross-references.
     """
     # Open elements, each with whether its heading has been emitted. The flag
     # lives with the element: ids can't be used, since freed elements' ids are
@@ -164,8 +175,9 @@ def write_document(
             if not parent[1]:
                 heading(parent, el, level)
         elif not is_division(el):
+            chain = [e for e, _ in stack if is_division(e)] if link else []
             for block in _blocks(el, level + 1):
-                emit(block)
+                emit(link(block, chain) if link else block)
         if free:
             parent[0].remove(el)
 
@@ -184,7 +196,11 @@ class _Folder:
 
 
 def tree_names(
-    events: Events, *, layout: int = LAYOUT, free: bool = False
+    events: Events,
+    *,
+    layout: int = LAYOUT,
+    free: bool = False,
+    index: dict[str, str] | None = None,
 ) -> list[str]:
     """The name of each folder or file :func:`write_tree` makes, in order.
 
@@ -198,11 +214,17 @@ def tree_names(
 
     Names are worked out before writing, since a later sibling can change an
     earlier one's name. With ``free``, elements are cleared as they are read.
+    ``index``, if given, receives the relative path of each section,
+    appendix, part and subpart's file, by :func:`tree_key`.
     """
     names: list[str] = []
     siblings: list[list[int]] = [[]]  # Indexes of each open folder's entries.
     folders: list[bool] = []  # Whether each open division has its own folder.
     subparts: list[str | None] = []  # The subpart each open division is in.
+    parts: list[str | None] = []  # The part each open division is in.
+    opened: list[int] = []  # The names of the open divisions.
+    parents: list[int | None] = []  # Each name's enclosing division's name.
+    keys: list[tuple[str, int, bool]] = []  # Index key, name, whether a file.
     leaf: ET.Element | None = None
     for event, el in events:
         if event == "end":
@@ -210,6 +232,8 @@ def tree_names(
                 leaf = None
                 if is_division(el):
                     subparts.pop()
+                    parts.pop()
+                    opened.pop()
                     if folders.pop():
                         _distinguish(names, siblings.pop(), layout)
             if free:
@@ -221,6 +245,12 @@ def tree_names(
         flat = layout >= LAYOUT and kind == "SUBJGRP" and bool(folders)
         name = "" if flat else segment(el, layout)
         within = subparts[-1] if subparts else None
+        part = el.get("N") if kind == "PART" else (parts[-1] if parts else None)
+        if key := _key(kind, el.get("N", ""), part, within):
+            keys.append((key, len(names), kind in LEAF_TYPES))
+        parents.append(opened[-1] if opened else None)
+        opened.append(len(names))
+        parts.append(part)
         subparts.append(el.get("N") if kind == "SUBPART" else within)
         if kind == "APPENDIX" and layout >= LAYOUT:
             # "Appendix A to Subpart C" can sit beside subpart C, in the part;
@@ -238,7 +268,41 @@ def tree_names(
         if own:
             siblings.append([])
     _distinguish(names, siblings.pop(), layout)
+    if index is not None:
+        for key, i, file in keys:
+            path, at = PurePosixPath(names[i] + ".md" if file else names[i]), i
+            while (at := parents[at]) is not None:
+                path = names[at] / path
+            index.setdefault(key, str(path if file else path / INDEX_FILE))
     return names
+
+
+def tree_key(address: Address) -> str | None:
+    """The key :func:`tree_names` files a place's path under, if it files it:
+    sections (and their paragraphs), appendices, parts and subparts."""
+    h = address.hierarchy
+    if "section" in h:
+        return _key("SECTION", h["section"], None, None)
+    if "appendix" in h:
+        return _key("APPENDIX", h["appendix"], h.get("part"), h.get("subpart"))
+    if address.level == "subpart":
+        return _key("SUBPART", h.get("subpart", ""), h.get("part"), None)
+    if address.level == "part":
+        return _key("PART", h.get("part", ""), None, None)
+    return None
+
+
+def _key(kind: str | None, n: str, part: str | None, subpart: str | None) -> str | None:
+    if kind == "SECTION":
+        return f"section:{encode_section(n)}"
+    if kind == "APPENDIX":
+        within = appendix_subpart(n, subpart) or ""
+        return f"appendix:{encode_id(part or '')}:{within}:{appendix_key(n)}"
+    if kind == "PART":
+        return f"part:{encode_id(n)}"
+    if kind == "SUBPART":
+        return f"subpart:{encode_id(part or '')}:{encode_id(n)}"
+    return None
 
 
 def _distinguish(names: list[str], entries: list[int], layout: int) -> None:

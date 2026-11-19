@@ -4,7 +4,7 @@ import re
 
 import pytest
 
-from ecfr_md import ECFR, NotFoundError, Settings
+from ecfr_md import ECFR, ECFRError, NotFoundError, Settings
 
 pytestmark = pytest.mark.network
 
@@ -100,3 +100,49 @@ def test_changes_are_never_issued_before_they_take_effect(ecfr):
     assert versions
     early = [v for v in versions if v.issue_date < v.date]
     assert early == [], early[:3]
+
+
+def test_export_a_part_in_every_format(ecfr, tmp_path):
+    from pypdf import PdfReader
+
+    files = [
+        ecfr.save("45 CFR Part 164", tmp_path / f"hipaa.{suffix}")
+        for suffix in ("txt", "html", "json", "epub", "docx", "pdf")
+    ]
+    assert all(f.stat().st_size > 50_000 for f in files)
+    reader = PdfReader(files[-1])
+    assert len(reader.pages) > 40
+    assert reader.outline[0].title == "PART 164—SECURITY AND PRIVACY"  # type: ignore[union-attr]
+    html = files[1].read_text(encoding="utf-8")
+    assert 'id="p-164.502(a)(1)(i)"' in html
+
+
+def test_cross_references_resolve_to_places_that_exist(ecfr):
+    """Contract test: references in a large part name real sections, parts,
+    subparts and appendices (99.9% measured; allow a few for amendments)."""
+    part = ecfr.get("45 CFR Part 164")
+    targets = {
+        str(ref.target.undated())
+        for leaf in part.iter("section")
+        for ref in leaf.references
+        if ref.target is not None
+    }
+    assert len(targets) > 200
+    missing = []
+    for target in sorted(targets):
+        try:
+            ecfr.outline(target)
+        except ECFRError:
+            missing.append(target)
+    assert len(missing) <= len(targets) // 50, missing
+
+
+def test_next_and_previous_cross_parts_and_titles(ecfr):
+    section = ecfr.get("45 CFR 164.502")
+    assert section.next.citation == "45 CFR 164.504"
+    assert section.previous.citation == "45 CFR 164.501"
+    title = ecfr.outline()["45"]
+    last = [e for e in title.iter() if e.level in ("section", "appendix")][-1]
+    following = last.next
+    assert following is not None and following.address.startswith("46/")
+    assert following.previous.address == last.address

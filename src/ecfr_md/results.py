@@ -9,11 +9,12 @@ citations and clean headings. The API's response is in ``.raw``.
 from __future__ import annotations
 
 import datetime as dt
+import functools
 import html
 import re
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from ecfr_md import models
 from ecfr_md.address import Address, relative, walk
@@ -27,9 +28,18 @@ from ecfr_md.document import (
     check_depth,
     truncate,
 )
-from ecfr_md.errors import AmbiguousNodeError, InvalidParameterError, NodeNotFoundError
+from ecfr_md.errors import (
+    AmbiguousNodeError,
+    ECFRError,
+    InvalidParameterError,
+    NodeNotFoundError,
+)
 from ecfr_md.output import Source, subject_group_url, web_url
-from ecfr_md.params import Hierarchy, as_hierarchy
+from ecfr_md.params import DateLike, Hierarchy, as_hierarchy
+
+if TYPE_CHECKING:
+    from ecfr_md.client import ECFR
+    from ecfr_md.document import Node
 
 TAG = re.compile(r"<[^>]+>")
 CITED = re.compile(r"\d+\s*C\.?\s*F\.?\s*R\b", re.IGNORECASE)
@@ -37,6 +47,9 @@ CITED = re.compile(r"\d+\s*C\.?\s*F\.?\s*R\b", re.IGNORECASE)
 CITED_LEVELS = ("appendix", "section", "subpart", "part", "subchapter", "chapter")
 SENTENCE_END = ".;:!?)\"”'"
 MARKDOWN_SPECIAL = re.compile(r"([\\`*_\[\]<>#|])")
+# What next and previous step through: the levels that hold text.
+LEAVES = frozenset({Level.SECTION, Level.APPENDIX})
+CFR_LEVEL = "cfr"  # The level of the outline of the whole CFR.
 
 
 @dataclass(eq=False)
@@ -46,6 +59,11 @@ class Outline:
     Iterate over it for its children; index it like a node, by position or
     identifier at any depth: ``outline["Subpart E"]``, ``outline["164.512"]``.
     ``str(outline)`` is the indented table of contents.
+
+    Outlines from a client can look beyond themselves: ``next`` and
+    ``previous`` are the neighbouring sections or appendices, across parts,
+    chapters and titles; ``up`` and ``siblings`` work at the top of the
+    outline too; ``read()`` fetches the text.
     """
 
     level: Level | str
@@ -59,7 +77,8 @@ class Outline:
     size: int | None
     """Size of the full text in bytes, where the eCFR gives it (parts)."""
     _structure: models.Structure = field(repr=False)
-    children: tuple[Outline, ...] = field(default=(), repr=False)
+    # None until a title of the whole-CFR outline is first opened.
+    _children: tuple[Outline, ...] | None = field(default=(), repr=False)
     date: dt.date | None = None
     """The point-in-time date of the outline, if known."""
     url: str = field(default="", repr=False)
@@ -70,6 +89,16 @@ class Outline:
     def __post_init__(self) -> None:
         # Not a dataclass field, so dataclasses.asdict() doesn't loop forever.
         self._parent: Outline | None = None
+        self._client: ECFR | None = None  # Set on the top entry by the client.
+        self._load: Callable[[], tuple[Outline, ...]] | None = None
+
+    @property
+    def children(self) -> tuple[Outline, ...]:
+        """The entries inside this one, in document order."""
+        if self._children is None:
+            assert self._load is not None  # Set along with _children = None.
+            self._children = self._load()
+        return self._children
 
     @property
     def parent(self) -> Outline | None:
@@ -117,11 +146,149 @@ class Outline:
             address=str(Address(title, located, group=group)),
         )
         entry._parent = parent
-        entry.children = tuple(
+        entry._children = tuple(
             cls.build(child, title, levels, entry, date=date, site=site)
             for child in node.children
         )
         return entry
+
+    @classmethod
+    def whole(
+        cls,
+        titles: Iterable[TitleInfo],
+        date: dt.date | None,
+        load: Callable[[int, dt.date], models.Structure],
+        site: str = SITE_URL,
+    ) -> Outline:
+        """The outline of the whole CFR: one entry per title, each opened
+        (its structure loaded with ``load``) the first time it's used.
+
+        ``date`` is the point in time, or None for each title's latest text.
+        """
+        root = cls(
+            level=CFR_LEVEL,
+            identifier=None,
+            heading="Code of Federal Regulations",
+            citation="CFR",
+            reserved=False,
+            size=None,
+            _structure=_lean(
+                models.Node(type=CFR_LEVEL, label="Code of Federal Regulations")
+            ),
+            date=date,
+            url=f"{site.rstrip('/')}/{f'on/{date}' if date else 'current'}",
+        )
+        entries = []
+        for info in titles:
+            when = info.latest if date is None or info.latest is None else date
+            if when and info.latest:
+                when = min(when, info.latest)  # No text after the latest date.
+            raw = models.Node(
+                type="title",
+                identifier=str(info.number),
+                label=f"Title {info.number}—{info.name}",
+                reserved=info.reserved,
+            )
+            entry = cls(
+                level=Level.TITLE,
+                identifier=str(info.number),
+                heading=raw.label,
+                citation=info.citation,
+                reserved=info.reserved,
+                size=None,
+                _structure=_lean(raw),
+                date=when,
+                url=web_url(info.number, when, as_hierarchy({}), site=site),
+                address=info.address,
+            )
+            entry._parent = root
+            if not info.reserved and when is not None:
+                entry._children = None
+                entry._load = functools.partial(_open_title, entry, load, site)
+            entries.append(entry)
+        root._children = tuple(entries)
+        return root
+
+    @property
+    def up(self) -> Outline | None:
+        """The entry this one is in, even at the top of this outline (a
+        part's chapter, a title's CFR); None for the whole CFR."""
+        return self._placed().parent
+
+    @property
+    def siblings(self) -> tuple[Outline, ...]:
+        """The other entries in the same parent, in document order."""
+        me = self._placed()
+        return tuple(c for c in me.parent.children if c is not me) if me.parent else ()
+
+    @property
+    def next(self) -> Outline | None:
+        """The next section or appendix after this entry, in document order,
+        crossing into the next part, chapter or title; None at the end.
+        Reserved sections are skipped."""
+        return self._step(forward=True)
+
+    @property
+    def previous(self) -> Outline | None:
+        """The section or appendix before this entry, in document order."""
+        return self._step(forward=False)
+
+    def read(self, date: DateLike | None = None) -> Node:
+        """The text of this entry, as of ``date`` (default: the outline's date)."""
+        if self.level == CFR_LEVEL:
+            raise InvalidParameterError(
+                "The whole CFR is too large to read at once; read a title, "
+                'e.g. outline["45"].read()'
+            )
+        return self._navigator().get(self.address, date=date or self.date)
+
+    def _top(self) -> Outline:
+        return self.ancestors[-1] if self.ancestors else self
+
+    def _navigator(self) -> ECFR:
+        client = self._top()._client
+        if client is None:
+            raise ECFRError(
+                f"The outline of {self.citation} wasn't loaded by a client, so it "
+                "can't fetch text or look beyond itself; use ecfr_md.outline() "
+                "or ECFR().outline()"
+            )
+        return client
+
+    def _placed(self) -> Outline:
+        """This entry in the client's outline of the whole CFR, which knows
+        what's around it; the entry itself if it's there already or has no
+        client."""
+        top = self._top()
+        if self.parent is not None or top.level == CFR_LEVEL or top._client is None:
+            return self
+        return top._client._place(self.address, self.date)
+
+    def _step(self, forward: bool) -> Outline | None:
+        entry = self
+        while True:
+            if entry.parent is None:
+                placed = entry._placed()
+                if placed is entry:
+                    return None
+                entry = placed
+                continue
+            siblings = entry.parent.children
+            index = next(i for i, s in enumerate(siblings) if s is entry)
+            later = siblings[index + 1 :] if forward else siblings[:index][::-1]
+            for sibling in later:
+                if (leaf := sibling._leaf(forward)) is not None:
+                    return leaf
+            entry = entry.parent
+
+    def _leaf(self, forward: bool) -> Outline | None:
+        """The first (or last) section or appendix in this entry."""
+        if self.level in LEAVES:
+            return None if self.reserved else self
+        for child in self.children if forward else self.children[::-1]:
+            if (leaf := child._leaf(forward)) is not None:
+                return leaf
+        return None
 
     @property
     def ancestors(self) -> tuple[Outline, ...]:
@@ -156,6 +323,8 @@ class Outline:
         """
         if isinstance(key, int):
             return self.children[key]
+        if self.level == CFR_LEVEL:
+            return self._in_title(Address.parse(key))
         title = int(self.address.split("/")[0])
         if isinstance(key, str):
             key = relative(key, title, in_section=False) or key
@@ -174,6 +343,16 @@ class Outline:
                 matches,
             )
         raise NodeNotFoundError(f"No {key!r} in {self.citation}")
+
+    def _in_title(self, address: Address) -> Outline:
+        """In the whole CFR, the entry an address names."""
+        wanted = str(address.title)
+        title = next((t for t in self.children if t.address == wanted), None)
+        if title is None:
+            raise NodeNotFoundError(f"Title {address.title} does not exist")
+        if address.level == "title":
+            return title
+        return walk(title, address.undated(), {})
 
     def get(
         self, key: str | int | Address, default: Outline | None = None
@@ -313,9 +492,27 @@ def _lookup(key: str) -> tuple[str | None, str]:
 
 
 def _entries(entry: Outline, depth: int) -> Iterator[tuple[int, str]]:
+    """Headings to print; titles of the whole CFR not yet opened stay shut."""
     yield depth, entry.heading
-    for child in entry.children:
+    for child in entry._children or ():
         yield from _entries(child, depth + 1)
+
+
+def _open_title(
+    entry: Outline, load: Callable[[int, dt.date], models.Structure], site: str
+) -> tuple[Outline, ...]:
+    """The entries of a title in the whole-CFR outline, from its structure."""
+    assert entry.date is not None  # Titles with text have a date.
+    title = int(entry.address)
+    structure = load(title, entry.date)
+    return tuple(
+        Outline.build(child, title, {}, entry, date=entry.date, site=site)
+        for child in structure.children
+    )
+
+
+def _lean(node: models.Node) -> models.Structure:
+    return models.Structure.of(node)
 
 
 def _level_or_type(kind: str) -> Level | str:

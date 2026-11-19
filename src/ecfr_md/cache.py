@@ -112,6 +112,25 @@ class Store:
         _write_meta(refreshed)
         return refreshed
 
+    def keep(self, name: str, data: bytes) -> None:
+        """Save a small response under ``name``, to fall back on offline."""
+        if self.directory is None:
+            return
+        path = self.directory / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        partial = path.with_name(f"{path.name}.{uuid.uuid4().hex}.part")
+        partial.write_bytes(data)
+        os.replace(partial, path)
+
+    def kept(self, name: str) -> bytes | None:
+        """What :meth:`keep` saved under ``name``, if anything."""
+        if self.directory is None:
+            return None
+        try:
+            return (self.directory / name).read_bytes()
+        except FileNotFoundError:
+            return None
+
     def info(self) -> tuple[int, int]:
         """Number of entries and their total size in bytes."""
         if self.directory is None or not self.directory.exists():

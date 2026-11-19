@@ -214,7 +214,7 @@ def test_from_saves_what_it_can(run, capsys, tmp_path):
         (("get", "45", "--from", "x.txt", "-o", "d"), "leave out the citation"),
         (("get", "--all", "--from", "x.txt", "-o", "d"), "leave out --all"),
         (("get", "--from", "x.txt", "-o", "-"), "--from requires --output"),
-        (("get", "45", "-o", "s.docx"), "use a name ending in .md"),
+        (("get", "45", "-o", "s.xyz"), "Can't tell what format"),
     ],
 )
 def test_output_usage_errors(run, capsys, tokens, message):
@@ -245,7 +245,7 @@ def test_terminals_get_panels_and_pipes_get_lines():
     screen = Console(file=io.StringIO(), force_terminal=True, width=60, no_color=True)
     Terminal(screen).error(NodeNotFoundError("No part 9 in title 45"))
     Terminal(screen).summary("Saved", {"Files": "3"}, network=False)
-    assert "✘ Not found" in screen.file.getvalue() and "╭" in screen.file.getvalue()
+    assert "✘ Not found" in screen.file.getvalue() and "─" in screen.file.getvalue()
     pipe = Console(file=io.StringIO(), width=60)
     Terminal(pipe).error(NodeNotFoundError("No part 9 in title 45"))
     assert pipe.file.getvalue() == "✘ Not found: No part 9 in title 45\n"
@@ -375,3 +375,6 @@ def test_tables_become_lists_when_narrow():
     middling = Console(file=io.StringIO(), width=70)
     middling.print(changes_table([change], width=70))
     assert "Effective" not in middling.file.getvalue()  # The first to go.
+    wide = Console(file=io.StringIO(), width=100)
+    wide.print(changes_table([change], width=100))
+    assert "Effective" in wide.file.getvalue()
