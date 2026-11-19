@@ -204,12 +204,17 @@ def tree_link(
     """Where a file of a saved tree links a reference: the file in the tree
     that holds it, relative to ``file``, or None if it's outside the tree."""
 
+    here = file.parent.as_posix()
+    relative: dict[str, str] = {}  # A file cites the same few places often.
+
     def href(reference: Reference) -> str | None:
         target = reference.target
         if target is None or target.title != source.title:
             return None
         path = index.get(markdown.tree_key(target) or "")
-        return posixpath.relpath(path, file.parent.as_posix()) if path else None
+        if path and path not in relative:
+            relative[path] = posixpath.relpath(path, here)
+        return relative.get(path) if path else None
 
     return href
 

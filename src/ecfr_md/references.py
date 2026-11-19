@@ -156,7 +156,9 @@ def find_references(
     templates = {"usc": USC_URL, "fr": FR_URL, "public_law": PUBLIC_LAW_URL}
     templates |= dict(urls or {})
     found: list[Reference] = []
-    taken = [m.span() for m in PROTECTED.finditer(text)] if markdown else []
+    taken = bytearray(len(text))  # 1 where text is already a reference.
+    for m in PROTECTED.finditer(text) if markdown else ():
+        _take(taken, *m.span())
     for finder in (_paragraphs, _sections, _titled, _appendices, _subparts, _parts):
         for start, end, target in finder(text, where):
             _add(found, taken, text, start, end, target, site)
@@ -164,7 +166,7 @@ def find_references(
         _add(found, taken, text, start, end, target, site)
     for kind, start, end, url in _external(text, templates):
         if not _overlaps(taken, start, end):
-            taken.append((start, end))
+            _take(taken, start, end)
             found.append(Reference(start, end, text[start:end], None, url, kind))
     return sorted(found, key=lambda r: r.start)
 
@@ -208,7 +210,7 @@ def _where(context: Address | str | int | None) -> _Where:
 
 def _add(
     found: list[Reference],
-    taken: list[tuple[int, int]],
+    taken: bytearray,
     text: str,
     start: int,
     end: int,
@@ -217,12 +219,16 @@ def _add(
 ) -> None:
     if target is None or _overlaps(taken, start, end):
         return
-    taken.append((start, end))
+    _take(taken, start, end)
     found.append(Reference(start, end, text[start:end], target, target.url(site)))
 
 
-def _overlaps(spans: list[tuple[int, int]], start: int, end: int) -> bool:
-    return any(start < b and a < end for a, b in spans)
+def _overlaps(taken: bytearray, start: int, end: int) -> bool:
+    return taken.find(1, start, end) != -1
+
+
+def _take(taken: bytearray, start: int, end: int) -> None:
+    taken[start:end] = b"\x01" * (end - start)
 
 
 Found = Iterator[tuple[int, int, Address | None]]
