@@ -91,7 +91,7 @@ def terms(query: str) -> list[str]:
     for token in _tokens(QUOTED_MINUS.sub("", query)):
         if token.startswith("-") or token in WORD_OPERATORS:
             continue
-        for word in re.findall(r"\w[\w'-]*", token):
+        for word in re.findall(r"\w[\w'-]*\*?", token):
             stem = _stem(word.casefold())
             if len(stem) > 2 and stem not in found:
                 found.append(stem)
