@@ -181,7 +181,7 @@ def _migrate(new: Path, old: Path, result: SyncResult, options: _Options) -> Non
     if options.dry_run:
         return
     remove_files(removed, old)
-    if root != old:
+    if root.name != old.name:  # Windows paths compare without case.
         old.rename(root)
     for file, destination in arriving:
         destination.parent.mkdir(parents=True, exist_ok=True)

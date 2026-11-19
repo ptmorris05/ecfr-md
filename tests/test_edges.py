@@ -382,9 +382,12 @@ def test_sync_lists_what_changed(run, capsys, tmp_path):
 def test_sync_rewrites_files_saved_in_another_encoding(run, tmp_path):
     # Editors on Windows may re-save a file as cp1252, where "—" is not UTF-8.
     assert run("get", "45", "CFR", "164", "--tree", "-o", str(tmp_path)) == 0
-    edited = next(p for p in tmp_path.rglob("*.md") if p.name != "index.md")
+    edited = next(
+        p
+        for p in sorted(tmp_path.rglob("*.md"))
+        if p.name != "index.md" and "—" in p.read_text("utf-8")
+    )
     text = edited.read_text(encoding="utf-8")
-    assert "—" in text
     edited.write_text(text, encoding="cp1252")
     assert run("sync", str(tmp_path)) == 0
     assert edited.read_text(encoding="utf-8") == text

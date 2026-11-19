@@ -278,7 +278,7 @@ def test_new_files_record_their_address_and_layout(ecfr, tmp_path):
     meta = read_front_matter(file) or {}
     assert (meta["address"], meta["layout"]) == ("45/164.104", 2)
     files = ecfr.save("45/part-164", tmp_path / "tree", tree=True)
-    names = sorted(str(f.relative_to(tmp_path / "tree")) for f in files)
+    names = sorted(f.relative_to(tmp_path / "tree").as_posix() for f in files)
     assert "part-164/subpart-A/164.104.md" in names
     assert "part-164/subpart-C/appendix-A.md" in names
 

@@ -245,7 +245,7 @@ def test_terminals_get_panels_and_pipes_get_lines():
     screen = Console(file=io.StringIO(), force_terminal=True, width=60, no_color=True)
     Terminal(screen).error(NodeNotFoundError("No part 9 in title 45"))
     Terminal(screen).summary("Saved", {"Files": "3"}, network=False)
-    assert "✘ Not found" in screen.file.getvalue() and "╭" in screen.file.getvalue()
+    assert "✘ Not found" in screen.file.getvalue() and "─" in screen.file.getvalue()
     pipe = Console(file=io.StringIO(), width=60)
     Terminal(pipe).error(NodeNotFoundError("No part 9 in title 45"))
     assert pipe.file.getvalue() == "✘ Not found: No part 9 in title 45\n"
