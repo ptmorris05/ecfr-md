@@ -42,7 +42,7 @@ uv add git+https://github.com/ptmorris05/ecfr-md
 pip install git+https://github.com/ptmorris05/ecfr-md
 ```
 
-Saving Word and PDF files needs an extra: `docx`, `pdf`, or `all` for both. Name it before the `@`:
+Saving Word and PDF files needs an extra: `docx` or `pdf`; the web navigator (`ecfr-md serve`) needs `web`; `all` installs every one. Name it before the `@`:
 
 ```sh
 uv tool install "ecfr-md[all] @ git+https://github.com/ptmorris05/ecfr-md"
@@ -76,6 +76,7 @@ ecfr-md references 45 CFR 164.502                # what a section cites
 ecfr-md cited-by 45 CFR 164.502                  # what cites it (approximate)
 ecfr-md changes 45 CFR Part 164 --since 2024-01-01
 ecfr-md compare 45 CFR 164.502 --since 2024-04-25    # what changed, as a redline
+ecfr-md serve --open                             # read in a web browser (web extra)
 ecfr-md sync hipaa/                              # update saved files
 ecfr-md sync old/ --migrate                      # and rename to today's layout
 
@@ -453,6 +454,18 @@ Resolution is by pattern. Measured in November 2026 on six parts (45 CFR 160 and
 
 `ecfr_md.cited_by("45 CFR 164.502")` finds sections that may cite a section or part by searching the eCFR for its number. It's approximate: it finds "§ 164.502" and "45 CFR 164.502", not "paragraph (a) of this section" or text that cites the part as "this part".
 
+### Defined terms
+
+`ecfr.define(term, citation)` finds what a term means where it is used, from the definitions section that governs that place, and `ecfr.definitions(citation)` lists every defined term that applies there, nearest scope first:
+
+```python
+d = ecfr_md.define("covered entities", "45 CFR 164.502")
+d.term, d.citation, d.scope  # ('Covered entity', '45 CFR 160.103', 'subchapter')
+d.text  # '*Covered entity* means:\n\n**(1)** A health plan. ...'
+```
+
+Definitions sections are those headed "Definitions" (and similar) in the place's part, and in the first part of its subchapter or chapter. Each applies to the scope its opening words name ("As used in this subpart", "apply to this subchapter"), or its part if they name none; a subpart's definition wins over its part's, and the part's over the subchapter's. Terms are read by pattern: an italic term opening a paragraph, or a quoted one ("The term “person” means"). Plurals find the singular. A term with no definition there raises `NodeNotFoundError`, naming similar terms.
+
 ### Anchors
 
 `node.anchor` is the id the eCFR gives the node on its pages, for deep links and HTML anchors: `p-164.502(a)(1)` for a paragraph, `164.502` for a section, `subpart-E`, `part-164`, `Appendix-A-to-Part-164`. The eCFR includes the defined term in the ids of paragraphs numbered under definitions (`p-164.501(Health care operations)(1)`), which the text doesn't mark, so those differ.
@@ -476,6 +489,36 @@ The XML lists a section's paragraphs flat. They are nested by marker: (a), (1), 
 - worked examples (`Example 1. (i) Facts…`), which restart numbering and are kept with the paragraph they belong to
 
 Some sections don't follow the numbering rules, such as definitions that number items under each term, and the vehicle safety standards in 49 CFR Part 571, which number paragraphs S1, S4.1 and so on (these aren't split into paragraphs). `Section.paragraph_issues` lists repeats and gaps. `Section.to_markdown()` renders the source as-is either way.
+
+## Web navigator
+
+`ecfr-md serve` runs a web navigator on this computer: the CFR to read in a browser, fetched from the eCFR the first time a page is opened and kept in the cache, so what has been read is there next time, offline too. It needs the `web` extra.
+
+```sh
+uv tool install "ecfr-md[web] @ git+https://github.com/ptmorris05/ecfr-md"
+ecfr-md serve --open                    # http://localhost:8000
+ecfr-md serve --port 8080 --save-dir ~/cfr
+ecfr-md --cache-dir ~/cfr-cache serve   # global options apply
+```
+
+It listens on 127.0.0.1 and answers only to local host names; `--host 0.0.0.0` opens it to the network, with a warning, since anyone who can reach it can read through it and change its settings. Requests that change something (settings, saving files) are refused from other sites.
+
+Paths are ecfr.gov's, so a link moves between the two by changing the host: `/current/title-45/part-164/subpart-E`, `/on/2020-01-01/title-45/section-164.502#p-164.502(a)(1)`. `/go?cite=` takes any citation, address or eCFR, LII or GovInfo link and goes to its page.
+
+- **Pages.** Home lists the titles with the date of their text (and size, once downloaded). Titles and divisions show their contents, opened level by level, with the number of sections and the size of their text. Parts and everything below are text; a part over 1.5 MB shows its contents, and its text with `?full=1`.
+- **Reading.** The text in one column, with nothing over it but a breadcrumb. Paragraph markers link to themselves (`#p-164.502(a)(1)`), and a range links to several (`#p-164.502(a)(1)-(3)`; shift-click a second marker). Cross-references are links, with a preview of the target on hover and "Open beside" to read two provisions side by side. Terms defined for the place are underlined faintly; hovering shows the definition and where it is. Authority, source and editorial notes are set apart as quiet marginalia. Selecting text offers "Copy with citation": the quote, its pinpoint citation (`45 CFR 164.502(a)(1)`, or Bluebook, chosen in the menu) and the ecfr.gov link.
+- **Time.** The date button opens the versions of the page on a line: read any of them, see what changed, or compare two. A comparison is a redline in place, word by word (`/compare/2024-06-25/to/2024-06-24/title-45/section-164.502`). Sections changed in the year before the text's date have a faint mark in the margin that links to the change. History lists every change to a place.
+- **Finding.** `⌘K` (or `/`) opens one box for everything: a citation (`164.502(a)(1)`, `45/164.502`), a heading, a known name (`hipaa privacy rule`, `reg z`), words to search the text for, a date (`as of 2019`, `164.502 on 2020-03-01`) or an action (`export as pdf`, `dark`, `history`). Headings appear at once from the outlines already downloaded; full-text results follow from the eCFR. Search is the same search as a page.
+- **Export** in every format from the menu, downloaded or saved to `--save-dir`.
+- **Settings** shows every client setting and where its value came from; changes apply at once, and can be written to the config file.
+- **Keyboard:** `j`/`k` paragraph by paragraph, `]`/`[` next and previous section, `u` up, `y` copy the paragraph's citation, `o` outline, `f` focus, `d` date, `?` the list.
+- **Reading aids**, all off until wanted: an outline that follows the scroll, focus (everything but the paragraph you're on fades), text size and density, light and dark (or the system's).
+
+It uses the web platform as it is now, with no framework and nothing to build: pages stream as their text arrives, with a hairline under the breadcrumb showing progress; the next and previous sections, and links you hover, are prerendered (Speculation Rules), so they open at once; moving between pages is a view transition; a service worker keeps pages you've read readable without the server; previews are popovers placed with CSS anchor positioning. Text is set in Source Serif 4 (SIL Open Font License, shipped with ecfr-md), everything else in the system's sans-serif. Printing gives a clean, cited copy. Motion follows `prefers-reduced-motion`, colours meet WCAG 2.2 AA contrast, and every control works from the keyboard.
+
+**For programs**, every page is also Markdown and JSON at the same path with `.md` or `.json` (`/current/title-45/section-164.502.json`), with `/llms.txt` describing the site for language models and `/openapi.json` describing the JSON. `/api/terms?address=45/164.502` lists the defined terms that apply to a place.
+
+From Python, `ecfr_md.web.create_app(ECFR(...))` is the same navigator as an ASGI app.
 
 ## API
 
