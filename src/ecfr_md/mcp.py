@@ -49,8 +49,7 @@ except ImportError as exc:  # pragma: no cover - depends on the environment
     from ecfr_md.errors import MissingDependencyError
 
     raise MissingDependencyError(
-        "The MCP server needs the mcp extra: "
-        'uv tool install "ecfr-md[mcp] @ git+https://github.com/ptmorris05/ecfr-md"'
+        'The MCP server needs the mcp extra: uv tool install "ecfr-md[mcp]"'
     ) from exc
 from pydantic import BaseModel, Field, ValidationError
 

@@ -22,14 +22,14 @@ installing.
 **Claude Code:**
 
 ```sh
-claude mcp add ecfr -- uvx --from "ecfr-md[mcp] @ git+https://github.com/ptmorris05/ecfr-md" ecfr-md mcp
+claude mcp add ecfr -- uvx --from "ecfr-md[mcp]" ecfr-md mcp
 ```
 
 Settings go before `mcp`, or in `ECFR_MD_*` variables:
 
 ```sh
 claude mcp add ecfr -e ECFR_MD_CACHE_DIR=/data/ecfr -- \
-  uvx --from "ecfr-md[mcp] @ git+https://github.com/ptmorris05/ecfr-md" \
+  uvx --from "ecfr-md[mcp]" \
   ecfr-md --rate-limit 0.5 mcp --export-dir ~/regulations
 ```
 
@@ -42,7 +42,7 @@ claude mcp add ecfr -e ECFR_MD_CACHE_DIR=/data/ecfr -- \
     "ecfr": {
       "command": "uvx",
       "args": [
-        "--from", "ecfr-md[mcp] @ git+https://github.com/ptmorris05/ecfr-md",
+        "--from", "ecfr-md[mcp]",
         "ecfr-md", "mcp"
       ]
     }
@@ -50,7 +50,7 @@ claude mcp add ecfr -e ECFR_MD_CACHE_DIR=/data/ecfr -- \
 }
 ```
 
-If ecfr-md is installed (`uv tool install "ecfr-md[mcp] @ git+https://github.com/ptmorris05/ecfr-md"`),
+If ecfr-md is installed (`uv tool install "ecfr-md[mcp]"`),
 the command is just `ecfr-md` with the argument `mcp`.
 
 **Over HTTP**, for clients that connect to a URL or for several clients at

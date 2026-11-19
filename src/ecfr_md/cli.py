@@ -57,7 +57,6 @@ from ecfr_md.address import Address
 from ecfr_md.client import ECFR, Admin, Search, Versioner
 from ecfr_md.config import (
     ENV_PREFIX,
-    PROJECT_URL,
     Settings,
     __version__,
     read_config,
@@ -1104,7 +1103,7 @@ def serve(
 
         from ecfr_md.web import create_app
     except ImportError:
-        package = f'"ecfr-md[web] @ git+{PROJECT_URL}"'
+        package = '"ecfr-md[web]"'
         raise MissingDependencyError(
             "ecfr-md serve needs the optional 'web' extra. Install it with: "
             f"uv tool install {package}, or pip install {package}"

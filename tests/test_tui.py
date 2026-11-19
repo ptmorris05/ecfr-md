@@ -976,7 +976,7 @@ def test_browse_needs_a_terminal(run, capsys):
 
 def test_browse_without_the_extra(run, monkeypatch, capsys):
     monkeypatch.setitem(sys.modules, "textual", None)
-    with pytest.raises(MissingDependencyError, match=r"ecfr-md\[tui\] @ git\+"):
+    with pytest.raises(MissingDependencyError, match=r"install .ecfr-md.tui.."):
         tui.require()
     assert run("browse") == 1
     assert "Not installed" in capsys.readouterr().err

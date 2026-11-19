@@ -93,9 +93,7 @@ def test_missing_extra_says_how_to_install(monkeypatch):
     with pytest.raises(MissingDependencyError) as raised:
         require("pdf")
     message = str(raised.value)
-    assert (
-        'uv tool install "ecfr-md[pdf] @ git+https://github.com/ptmorris05/' in message
-    )
+    assert 'uv tool install "ecfr-md[pdf]"' in message
     assert isinstance(raised.value, ImportError)
 
 

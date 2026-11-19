@@ -10,7 +10,7 @@ Markdown, or JSON with `--json` on every command. It caches what it
 downloads, so repeating a command is free.
 
 If `ecfr-md` isn't installed, run it with uvx:
-`uvx --from git+https://github.com/ptmorris05/ecfr-md ecfr-md ...`
+`uvx ecfr-md ...`
 
 ## How the CFR is organized
 

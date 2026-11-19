@@ -4,18 +4,18 @@ Fetch U.S. federal regulations (CFR) from the [eCFR API](https://www.ecfr.gov/de
 
 ## Install
 
-ecfr-md isn't on PyPI; install it from GitHub. It needs Python 3.12 or newer, and [git](https://git-scm.com/downloads). [uv](https://docs.astral.sh/uv/) installs Python for you, so it's the easiest way to start from nothing.
+ecfr-md is on [PyPI](https://pypi.org/project/ecfr-md/). It needs Python 3.12 or newer; [uv](https://docs.astral.sh/uv/) installs Python for you, so it's the easiest way to start from nothing.
 
 **With uv** (Linux and macOS):
 
 ```sh
 curl -LsSf https://astral.sh/uv/install.sh | sh   # install uv; then open a new terminal
 
-uv tool install git+https://github.com/ptmorris05/ecfr-md
+uv tool install ecfr-md
 ecfr-md get 45 CFR 164.502 -o 164.502.md
 ```
 
-To try it without installing: `uvx --from git+https://github.com/ptmorris05/ecfr-md ecfr-md get 45 CFR 164.502`.
+To try it without installing: `uvx ecfr-md get 45 CFR 164.502`.
 
 **With pipx:**
 
@@ -25,31 +25,26 @@ sudo apt install pipx          # Debian, Ubuntu
 sudo dnf install pipx          # Fedora
 pipx ensurepath                # then open a new terminal
 
-pipx install git+https://github.com/ptmorris05/ecfr-md
+pipx install ecfr-md
 ecfr-md get 45 CFR 164.502 -o 164.502.md
 ```
 
 pipx uses your system Python; if that's older than 3.12, use uv, or add `--python python3.12` if you have Python 3.12 installed.
 
-These install the latest code on `main`. For a release, add its tag (`git+https://github.com/ptmorris05/ecfr-md@v0.1.0`), or install the wheel attached to the [release](https://github.com/ptmorris05/ecfr-md/releases), which needs no git: `uv tool install https://github.com/ptmorris05/ecfr-md/releases/download/v0.1.0/ecfr_md-0.1.0-py3-none-any.whl`. Each release's files carry [build provenance](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations); check one with `gh attestation verify FILE --repo ptmorris05/ecfr-md`.
-
 To update: `uv tool upgrade ecfr-md` or `pipx upgrade ecfr-md`.
 
-For use from Python:
+For use from Python: `uv add ecfr-md` or `pip install ecfr-md`.
+
+Saving Word and PDF files needs an extra: `docx` or `pdf`. The [web navigator](#web-navigator) needs `web`, the [terminal browser](#terminal-browser) needs `tui`, the [MCP server](#ai-agents) needs `mcp`, and `all` installs every extra:
 
 ```sh
-uv add git+https://github.com/ptmorris05/ecfr-md
-pip install git+https://github.com/ptmorris05/ecfr-md
+uv tool install "ecfr-md[all]"
+uv tool install "ecfr-md[tui]"
+uv add "ecfr-md[pdf]"
+pip install "ecfr-md[docx]"
 ```
 
-Saving Word and PDF files needs an extra: `docx` or `pdf`. The [web navigator](#web-navigator) needs `web`, the [terminal browser](#terminal-browser) needs `tui`, the [MCP server](#ai-agents) needs `mcp`, and `all` installs every extra. Name it before the `@`:
-
-```sh
-uv tool install "ecfr-md[all] @ git+https://github.com/ptmorris05/ecfr-md"
-uv tool install "ecfr-md[tui] @ git+https://github.com/ptmorris05/ecfr-md"
-uv add "ecfr-md[pdf] @ git+https://github.com/ptmorris05/ecfr-md"
-pip install "ecfr-md[docx] @ git+https://github.com/ptmorris05/ecfr-md"
-```
+Every release is also on [GitHub](https://github.com/ptmorris05/ecfr-md/releases), with the wheel and source distribution attached and [build provenance](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations) you can check with `gh attestation verify FILE --repo ptmorris05/ecfr-md`. The latest code on `main`: `uv tool install "ecfr-md[all] @ git+https://github.com/ptmorris05/ecfr-md"`.
 
 PDFs are typeset by [Typst](https://typst.app/), whose Python wheels need no other software. The MCP server for AI agents needs the `mcp` extra (see [AI agents](#ai-agents)); `all` includes it.
 
@@ -135,7 +130,7 @@ Exit codes: `0` success, `1` API, network or file error, `2` invalid usage.
 `ecfr-md browse` reads and navigates the CFR full screen: the outline on the left, the text on the right, a breadcrumb and the date of the text above, and the keys below. It needs the `tui` extra:
 
 ```sh
-uv tool install "ecfr-md[tui] @ git+https://github.com/ptmorris05/ecfr-md"
+uv tool install "ecfr-md[tui]"
 ecfr-md browse 45 CFR 164.502
 ecfr-md browse 45/164.502/a/1 --date 2020-01-01   # at a paragraph, as of a date
 ecfr-md browse                                    # the list of titles
@@ -572,10 +567,10 @@ ecfr-md verify "45 CFR 164.502(b)" --quote "minimum necessary"   # exit 1 unless
 `ecfr-md mcp` is an [MCP](https://modelcontextprotocol.io) server that gives agents the CFR the way an expert reads it: outlines with token estimates to plan, text sized to a budget with a cursor, full pinpoint citations, the governing definition of a term, quote checking, redlines between dates, and change notifications. Add it to Claude Code with:
 
 ```sh
-claude mcp add ecfr -- uvx --from "ecfr-md[mcp] @ git+https://github.com/ptmorris05/ecfr-md" ecfr-md mcp
+claude mcp add ecfr -- uvx --from "ecfr-md[mcp]" ecfr-md mcp
 ```
 
-Other clients take the same command in their JSON config (`"command": "uvx"`, `"args": ["--from", "ecfr-md[mcp] @ git+https://github.com/ptmorris05/ecfr-md", "ecfr-md", "mcp"]`). `--http` serves streamable HTTP instead of stdio. The tools are read-only; `export` writes only under `--export-dir` (default: the current directory; `--no-export` removes it), and agents can change settings only with `--allow-config-changes`. Python apps can serve it themselves: `ecfr_md.mcp.server(ecfr)` returns the FastMCP server.
+Other clients take the same command in their JSON config (`"command": "uvx"`, `"args": ["--from", "ecfr-md[mcp]", "ecfr-md", "mcp"]`). `--http` serves streamable HTTP instead of stdio. The tools are read-only; `export` writes only under `--export-dir` (default: the current directory; `--no-export` removes it), and agents can change settings only with `--allow-config-changes`. Python apps can serve it themselves: `ecfr_md.mcp.server(ecfr)` returns the FastMCP server.
 
 Agents with a shell can use the command line instead: [`skills/ecfr-md/SKILL.md`](https://github.com/ptmorris05/ecfr-md/blob/main/skills/ecfr-md/SKILL.md) is a skill that teaches it, and every command takes `--json`. The [AI agents guide](https://ptmorris05.github.io/ecfr-md/agents/) lists the tools, resources and prompts, and the measured cost of common tasks.
 
@@ -584,7 +579,7 @@ Agents with a shell can use the command line instead: [`skills/ecfr-md/SKILL.md`
 `ecfr-md serve` runs a web navigator on this computer: the CFR to read in a browser, fetched from the eCFR the first time a page is opened and kept in the cache, so what has been read is there next time, offline too. It needs the `web` extra.
 
 ```sh
-uv tool install "ecfr-md[web] @ git+https://github.com/ptmorris05/ecfr-md"
+uv tool install "ecfr-md[web]"
 ecfr-md serve --open                    # http://localhost:8000
 ecfr-md serve --port 8080 --save-dir ~/cfr
 ecfr-md --cache-dir ~/cfr-cache serve   # global options apply
@@ -778,7 +773,7 @@ uv run ruff format && uv run ruff check
 
 CI runs on Linux, macOS and Windows with Python 3.12–3.14. A nightly job runs the network tests and opens an issue if they fail. Changes are listed in [CHANGELOG.md](https://github.com/ptmorris05/ecfr-md/blob/main/CHANGELOG.md).
 
-The documentation site is built from this README, the changelog and the docstrings: `uv run --group docs mkdocs serve`. To release, set the version in `pyproject.toml`, move the changelog's Unreleased notes under that version, and push a tag `vX.Y.Z`; the release workflow checks, tests, builds and publishes it. See [CONTRIBUTING.md](https://github.com/ptmorris05/ecfr-md/blob/main/CONTRIBUTING.md).
+The documentation site is built from this README, the changelog and the docstrings: `uv run --group docs mkdocs serve`. To release, set the version in `pyproject.toml` and move the changelog's Unreleased notes under that version; when that reaches `main`, the release workflow tests, builds, tags and publishes it to GitHub and PyPI. See [CONTRIBUTING.md](https://github.com/ptmorris05/ecfr-md/blob/main/CONTRIBUTING.md).
 
 ## License
 
