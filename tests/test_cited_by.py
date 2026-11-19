@@ -55,7 +55,7 @@ def test_sync_adds_links_once_to_trees_saved_before_them(ecfr, tmp_path):
     assert not ecfr.sync(tmp_path).changed  # Saved without links: kept so.
     for file in tmp_path.rglob("*.md"):  # As saved before links existed.
         text = file.read_text(encoding="utf-8")
-        file.write_text(text.replace("links: false\n", ""), encoding="utf-8")
+        file.write_bytes(text.replace("links: false\n", "").encode())
     result = ecfr.sync(tmp_path)
     index = tmp_path / "part-164/index.md"
     assert index in result.changed
