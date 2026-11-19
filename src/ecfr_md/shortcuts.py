@@ -15,8 +15,10 @@ from typing import Literal, Unpack, overload
 
 from ecfr_md.client import ECFR
 from ecfr_md.compare import Comparison
+from ecfr_md.definitions import Definitions
 from ecfr_md.document import Node
 from ecfr_md.params import DateLike, Hierarchy, SearchFilters
+from ecfr_md.passages import QuoteCheck
 from ecfr_md.render.formats import Format
 from ecfr_md.results import Change, Matches, Outline, TitleInfo
 from ecfr_md.syncing import SyncResult
@@ -175,6 +177,20 @@ def cited_by(
     citation: str | int, /, *, limit: int = 20, date: DateLike | None = None
 ) -> Matches:
     return client().cited_by(citation, limit=limit, date=date)
+
+
+@_documented_by(ECFR.define)
+def define(
+    term: str, citation: str | int, /, *, date: DateLike | None = None
+) -> Definitions:
+    return client().define(term, citation, date=date)
+
+
+@_documented_by(ECFR.verify_quote)
+def verify_quote(
+    citation: str | int, /, text: str, *, date: DateLike | None = None
+) -> QuoteCheck:
+    return client().verify_quote(citation, text, date=date)
 
 
 @_documented_by(ECFR.search)

@@ -5,6 +5,7 @@ the common tasks. The three API services map onto ``ECFR.api.admin``,
 ``ECFR.api.search`` and ``ECFR.api.versioner``; each method calls one endpoint.
 """
 
+import contextvars
 import datetime as dt
 import difflib
 import functools
@@ -56,7 +57,8 @@ from ecfr_md.citation import Citation
 from ecfr_md.compare import Comparison
 from ecfr_md.compare import compare as compare_texts
 from ecfr_md.config import RETRY_STATUS_CODES, SPLIT_ABOVE, Settings
-from ecfr_md.document import Node, Source, load, save_events
+from ecfr_md.definitions import Definitions, define
+from ecfr_md.document import Level, Node, Source, load, save_events
 from ecfr_md.errors import (
     AmbiguousNodeError,
     APIError,
@@ -87,6 +89,7 @@ from ecfr_md.params import (
     as_hierarchy,
     to_date,
 )
+from ecfr_md.passages import QuoteCheck, check_quote
 from ecfr_md.progress import Progress
 from ecfr_md.render import export
 from ecfr_md.render.formats import PER_SECTION, Format, format_for, require
@@ -344,8 +347,16 @@ def _not_there(
             else f"{existing[0]} to {existing[-1]} ({len(existing)} in all)"
         )
         plural = "sections" if level == "section" else f"{level}s"
-        return f"{message}. It has {plural} {named}"
+        return f"{message}. It has {plural} {named}{_did_you_mean(wanted, existing)}"
     return message
+
+
+def _did_you_mean(wanted: str, existing: Sequence[str]) -> str:
+    """ "; did you mean 164.502?" for near misses (a typo, a digit too many),
+    else nothing."""
+    exact = [e for e in existing if e.casefold() == wanted.casefold()]
+    close = exact or difflib.get_close_matches(wanted, existing, n=3, cutoff=0.75)
+    return f"; did you mean {' or '.join(close)}?" if close else ""
 
 
 def _find_part(outline: models.Node, part: str) -> models.Node | None:
@@ -829,6 +840,65 @@ class ECFR:
             self._check_agencies(slugs)
         complete = page >= pages and len(matches) <= limit
         return Matches(matches[:limit], found.meta.total_count, complete=complete)
+
+    @validated
+    def define(
+        self, term: str, citation: str | int, /, *, date: DateLike | None = None
+    ) -> Definitions:
+        """The definitions of a term that govern a place in the CFR.
+
+        Looks in the place's own text (for a section), then in the
+        definitions sections of each division it's in, nearest first, and
+        keeps the definitions that apply to it: for 45 CFR 164.502,
+        "covered entity" is defined in 45 CFR 160.103, whose definitions
+        apply to the whole subchapter. Each :class:`Definition
+        <ecfr_md.definitions.Definition>` has the text, its pinpoint
+        citation and what it applies to. If none is found,
+        ``suggestions`` has similar terms that are defined, and
+        ``mentions`` sections that may define it, found by search.
+
+        Parameters
+        ----------
+        term: str
+            The term, e.g. "covered entity"; case and plurals don't matter.
+        citation: str | int
+            Where the term is used: a section, part or other division.
+        date: DateLike | None
+            Point-in-time date. Defaults to the most recent available.
+        """
+        return define(self, term, citation, date)
+
+    @validated
+    def verify_quote(
+        self, citation: str | int, /, text: str, *, date: DateLike | None = None
+    ) -> QuoteCheck:
+        """Check that ``text`` is in the text of ``citation``, word for word.
+
+        Formatting, whitespace, curly quotes, dashes and paragraph labels
+        don't count. If it isn't there, the result has the nearest passage
+        and how alike they are; if it's somewhere else in the text fetched
+        (another paragraph or section of the part), it is ``found`` but not
+        at the citation (``verified`` is false either way).
+
+        Parameters
+        ----------
+        citation: str | int
+            The pinpoint the quote is attributed to, e.g. 45 CFR 164.502(a)(1).
+        text: str
+            The quoted words.
+        date: DateLike | None
+            Point-in-time date. Defaults to the most recent available.
+        """
+        node = self.get(citation, date=date)
+        scope = node.section if node.level is Level.PARAGRAPH else node
+        assert scope is not None  # Paragraphs are in sections.
+        check = check_quote(scope, text, cited=node)
+        root = node.ancestors[-1] if node.ancestors else node
+        if not check.found and root is not scope:  # Elsewhere in what was fetched?
+            wider = check_quote(root, text, cited=node)
+            if wider.found:
+                return wider
+        return check
 
     @validated
     def cited_by(
@@ -1516,7 +1586,9 @@ class ECFR:
                 for done, i in enumerate([*jobs, None]):
                     for j in jobs[done : done + ahead]:
                         if j not in futures and isinstance(job := pieces[j], dict):
-                            futures[j] = pool.submit(fetch, job)
+                            # Progress may depend on context, e.g. which call it is.
+                            run = contextvars.copy_context().run
+                            futures[j] = pool.submit(run, fetch, job)
                     start = jobs[done - 1] + 1 if done else 0
                     for piece in pieces[start : len(pieces) if i is None else i]:
                         if isinstance(piece, bytes):
@@ -2067,7 +2139,9 @@ def _missing_paragraph(section: Node, cited: Citation, date: dt.date) -> str:
     listed = (
         ", ".join(markers) if len(markers) <= 6 else f"{markers[0]} to {markers[-1]}"
     )
-    return f"{cited} does not exist on {date}; {parent.citation} has {listed}"
+    wanted = f"({cited.paragraph[-1]})"
+    hint = _did_you_mean(wanted, markers)
+    return f"{cited} does not exist on {date}; {parent.citation} has {listed}{hint}"
 
 
 def _is_transient(exc: BaseException) -> bool:
