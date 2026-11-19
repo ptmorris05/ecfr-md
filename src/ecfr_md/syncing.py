@@ -17,6 +17,11 @@ lowercase names ("subpart-e/section-164.502.md", "45-cfr-164.502.md"). They
 are updated in place, under those names, unless ``migrate`` is given: then
 they are renamed to today's layout ("subpart-E/164.502.md", "45_164.502.md").
 Files the user named are never renamed.
+
+Trees are saved with cross-references as links between their files (front
+matter ``links``). A tree saved before that has no ``links`` field, so its
+next sync rewrites every file once, adding the links; one saved with
+``links=False`` stays without.
 """
 
 from __future__ import annotations
@@ -106,12 +111,13 @@ def sync(
                 result.kept.append(root)
             continue
         layout = LAYOUT if migrate or not old else 1
+        links = meta.get("links")  # Not recorded before: the default.
         with tempfile.TemporaryDirectory(prefix="ecfr-md-sync-") as tmp:
             target = Path(tmp) / root.name
             if tree:
-                ecfr._save(citation, tmp, tree=True, layout=layout)
+                ecfr._save(citation, tmp, tree=True, layout=layout, links=links)
             else:
-                ecfr._save(citation, target, tree=False, layout=layout)
+                ecfr._save(citation, target, tree=False, layout=layout, links=links)
             # The fresh copy's top folder may be named differently from a
             # folder the user renamed; compare by content, not by name.
             fresh = next(Path(tmp).iterdir()) if tree else target
