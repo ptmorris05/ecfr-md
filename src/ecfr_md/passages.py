@@ -411,14 +411,18 @@ def _nearest(text: str, wanted: str) -> tuple[int, int, float]:
     n = len(want)
     target = Counter(want)
     lowered = [_stem(text[s:e]) for s, e in words]
+    # Words shared by the quote and each window of n words, kept up to date
+    # as the window slides, so a whole part is scanned in linear time.
     window = Counter(lowered[:n])
-    scores: list[tuple[int, int]] = []
-    for i in range(max(len(words) - n + 1, 1)):
-        if i:
-            window[lowered[i - 1]] -= 1
-            if i + n - 1 < len(lowered):
-                window[lowered[i + n - 1]] += 1
-        scores.append((sum((window & target).values()), i))
+    shared = sum((window & target).values())
+    scores = [(shared, 0)]
+    for i in range(1, max(len(words) - n + 1, 1)):
+        gone, new = lowered[i - 1], lowered[i + n - 1]
+        shared -= window[gone] <= target[gone]
+        window[gone] -= 1
+        window[new] += 1
+        shared += window[new] <= target[new]
+        scores.append((shared, i))
     best = (0, 0, 0.0)
     tried: set[tuple[int, int]] = set()
     for _, first in sorted(scores, key=lambda s: (-s[0], s[1]))[:NEAREST_CANDIDATES]:

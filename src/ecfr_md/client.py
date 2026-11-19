@@ -356,6 +356,8 @@ def _did_you_mean(wanted: str, existing: Sequence[str]) -> str:
     else nothing."""
     exact = [e for e in existing if e.casefold() == wanted.casefold()]
     close = exact or difflib.get_close_matches(wanted, existing, n=3, cutoff=0.75)
+    # A digit too many or too few is the likeliest slip: 164.5122 for 164.512.
+    close.sort(key=lambda c: not (wanted.startswith(c) or c.startswith(wanted)))
     return f"; did you mean {' or '.join(close)}?" if close else ""
 
 
