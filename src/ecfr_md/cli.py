@@ -13,6 +13,9 @@ Common commands:
     ecfr-md cited-by 45 CFR 164.502            what cites it
     ecfr-md compare 45 CFR 164.502 --since 2024-01-01   what changed
     ecfr-md titles                             what titles exist
+    ecfr-md define "covered entity" 45 CFR 164.502   a defined term
+    ecfr-md verify 45 CFR 164.502(a) --quote "..."      check a quotation
+    ecfr-md mcp                                serve AI agents (MCP)
 
 Run ecfr-md COMMAND --help for a command's options. The options below go
 before the command. Every eCFR API endpoint is under ecfr-md api.
@@ -44,8 +47,14 @@ from rich.text import Text
 from ecfr_md.address import Address
 from ecfr_md.client import ECFR, Admin, Search, Versioner
 from ecfr_md.config import Settings, __version__
-from ecfr_md.errors import ECFRError, InvalidCitationError, InvalidParameterError
+from ecfr_md.errors import (
+    ECFRError,
+    ECFRWarning,
+    InvalidCitationError,
+    InvalidParameterError,
+)
 from ecfr_md.params import DateLike, Hierarchy, SearchFilters, to_date
+from ecfr_md.progress import Progress
 from ecfr_md.render.export import render
 from ecfr_md.render.formats import BINARY, SUFFIXES, Format, format_for
 from ecfr_md.results import LEAVES, Matches
@@ -65,6 +74,7 @@ ENV_PREFIX = "ECFR_MD_"
 EXIT_ERROR = 1
 EXIT_USAGE = 2
 FORMAT_BELOW = 2_000_000  # Larger text is printed as plain Markdown.
+LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 HELP_FLAGS = frozenset({"--help", "-h"})
 KINDS = ("changed", "added", "removed")
 PARTIAL = re.compile(r"\.(.+?)(?:\.[0-9a-f]{32})?\.part")  # write_text's temp name.
@@ -111,6 +121,7 @@ def get(
     format: Format | None = None,
     pager: bool = True,
     links: bool | None = None,
+    as_json: Annotated[bool, Parameter(name="--json")] = False,
     ecfr: Client,
     **hierarchy: Unpack[Hierarchy],
 ) -> None:
@@ -156,7 +167,13 @@ def get(
     links: bool | None
         Make cross-references Markdown links: in a --tree, between its
         files, else to the eCFR. On for trees, off otherwise.
+    as_json: bool
+        JSON: the same as --format json.
     """
+    if as_json:
+        if format not in (None, "json"):
+            raise InvalidParameterError(f"--json is --format json; not with {format}")
+        format = "json"
     if from_file is not None:
         if citation or all_titles:
             raise InvalidParameterError(
@@ -752,6 +769,160 @@ def compare(
     )
 
 
+@app.command
+def define(
+    term: str,
+    *citation: str,
+    date: DateLike | None = None,
+    as_json: Annotated[bool, Parameter(name="--json")] = False,
+    ecfr: Client,
+) -> None:
+    """Show the definition of a term that governs a place in the CFR.
+
+    Looks in the place's text, then in the definitions sections of each
+    division it's in, nearest first: ecfr-md define "covered entity"
+    45 CFR 164.502 finds 45 CFR 160.103.
+
+    Parameters
+    ----------
+    term: str
+        The term, quoted if it's several words. Case and plurals don't
+        matter.
+    citation: str
+        Where the term is used: a section, part or other division.
+    date: DateLike | None
+        Point-in-time date. Defaults to the most recent available.
+    as_json: bool
+        Print JSON (each definition with its citation and text).
+    """
+    terminal = _terminal(ecfr)
+    with terminal.live():
+        found = ecfr.define(term, _citation(citation), date=date)
+    if as_json:
+        console.print_json(json.dumps(found.to_dict()))
+        return
+    for definition in found:
+        applies = definition.applies_to
+        terminal.note(definition.cite() + (f"; for {applies}" if applies else ""))
+        _print_markdown(definition.text + "\n")
+    if found:
+        return
+    terminal.note(f"No definition of {found.term!r} found for {found.scope}")
+    if found.suggestions:
+        terminal.note(f"Defined terms like it: {', '.join(found.suggestions)}")
+    for match in found.mentions:
+        terminal.note(f"May be defined in {match.citation}: {match.excerpt}")
+
+
+@app.command
+def verify(
+    *citation: str,
+    quote: str,
+    date: DateLike | None = None,
+    as_json: Annotated[bool, Parameter(name="--json")] = False,
+    ecfr: Client,
+) -> None:
+    """Check that a quotation is word for word at a citation.
+
+    Formatting, whitespace, quote marks and dashes don't count. If it isn't
+    there, shows where it is, or the nearest text and how alike it is.
+    Exits with 1 unless verified.
+
+    Parameters
+    ----------
+    citation: str
+        The pinpoint quoted, e.g. 45 CFR 164.502(a)(1).
+    quote: str
+        The quoted words.
+    date: DateLike | None
+        Point-in-time date. Defaults to the most recent available.
+    as_json: bool
+        Print JSON (verified, found, citation, similarity, ...).
+    """
+    cited = _citation(citation)
+    terminal = _terminal(ecfr)
+    with terminal.live():
+        check = ecfr.verify_quote(cited, quote, date=date)
+    if as_json:
+        console.print_json(json.dumps(check.to_dict()))
+    elif check.verified:
+        terminal.done(f"Verified: in {check.citation}", f"as of {check.date}")
+    elif check.found:
+        terminal.note(f"Not in {cited}, but word for word in {check.citation}")
+    elif check.matched:
+        terminal.note(
+            f"Not found in {cited}; nearest is {check.citation} "
+            f"({check.similarity:.0%} alike): {check.matched}"
+        )
+    else:
+        terminal.note(f"Not found in {cited}, nor anything like it")
+    if not check.verified:
+        raise NotVerified
+
+
+class NotVerified(Exception):
+    """``verify`` found no exact match at the citation (exit status 1)."""
+
+
+@app.command
+def mcp(
+    *,
+    http: bool = False,
+    host: str = "127.0.0.1",
+    port: int = 8000,
+    allow_config_changes: bool = False,
+    export_dir: Path | None = None,
+    export: bool = True,
+    watch_interval: float = 3600.0,
+    ecfr: Client,
+) -> None:
+    """Serve the CFR to AI agents over MCP: stdio, or HTTP with --http.
+
+    Agents get tools to outline, read (sized to a token budget), search,
+    compare, define terms and verify quotes, plus cfr: resources. The
+    options before mcp (or ECFR_MD_* variables) configure it. Needs the mcp
+    extra.
+
+    Parameters
+    ----------
+    http: bool
+        Serve streamable HTTP at http://HOST:PORT/mcp instead of stdio.
+    host: str
+        Address to listen on with --http. Anything but 127.0.0.1 or
+        localhost lets other machines connect.
+    port: int
+        Port to listen on with --http.
+    allow_config_changes: bool
+        Let agents change the settings (hosts, cache, ...) with a configure
+        tool. Off: they can only read them.
+    export_dir: Path | None
+        Where the export tool may save files (default: the current
+        directory). It refuses paths outside it.
+    export: bool
+        Offer the export tool. With --no-export, agents can't write files.
+    watch_interval: float
+        Seconds between checks of the eCFR for changes to subscribed text.
+    """
+    from ecfr_md.mcp import server
+
+    ecfr.progress = Progress()  # Standard output is the protocol: stay quiet.
+    root = (export_dir or Path.cwd()) if export else None
+    agents = server(
+        ecfr,
+        allow_config_changes=allow_config_changes,
+        export_root=root,
+        watch_interval=watch_interval,
+    )
+    if not http:
+        agents.run(show_banner=False)
+        return
+    if host not in LOCAL_HOSTS:
+        warnings.warn(
+            f"Serving on {host}: other machines can connect", ECFRWarning, stacklevel=1
+        )
+    agents.run("http", show_banner=False, host=host, port=port)
+
+
 @app.command(name="sync")
 def sync_command(
     path: Path,
@@ -760,6 +931,7 @@ def sync_command(
     include_dated: bool = False,
     force: bool = False,
     migrate: bool = False,
+    as_json: Annotated[bool, Parameter(name="--json")] = False,
     ecfr: Client,
 ) -> None:
     """Update Markdown saved by ecfr-md to the latest text.
@@ -784,6 +956,8 @@ def sync_command(
         Rename files and folders saved by ecfr-md 0.x (45-cfr-164.502.md,
         subpart-e/section-164.502.md) to today's names (45_164.502.md,
         subpart-E/164.502.md). Without it they keep their names.
+    as_json: bool
+        Print JSON (the files in each group) instead of a summary.
     """
     terminal = _terminal(ecfr)
     with terminal.live():
@@ -794,6 +968,14 @@ def sync_command(
             force=force,
             migrate=migrate,
         )
+    if as_json:
+        groups = {
+            name: [str(f) for f in getattr(result, name)]
+            for name in ("added", "changed", "removed", "unchanged", "kept", "modified")
+        }
+        moved = [[str(old), str(new)] for old, new in result.moved]
+        console.print_json(json.dumps({"dry_run": dry_run, **groups, "moved": moved}))
+        return
     if not (
         result.added
         or result.changed
@@ -874,10 +1056,21 @@ def info(
 
 
 @cache_app.command
-def clear(*, ecfr: Client) -> None:
-    """Delete everything in the cache."""
+def clear(
+    *, as_json: Annotated[bool, Parameter(name="--json")] = False, ecfr: Client
+) -> None:
+    """Delete everything in the cache.
+
+    Parameters
+    ----------
+    as_json: bool
+        Print JSON (entries and bytes deleted) instead of a line.
+    """
     entries, used = ecfr._store.info()
     ecfr._store.clear()
+    if as_json:
+        console.print_json(json.dumps({"entries": entries, "bytes": used}))
+        return
     _terminal(ecfr).done(
         "Cache cleared", f"{entries:,} entries, {size(used)}", network=False
     )
@@ -990,6 +1183,8 @@ def launcher(
     try:
         with ECFR(settings, progress=terminal) as ecfr:
             command(*bound.args, **bound.kwargs, ecfr=ecfr)
+    except NotVerified:
+        return EXIT_ERROR
     except BrokenPipeError:
         # The reader stopped early, as `| head` does; that isn't an error.
         os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
