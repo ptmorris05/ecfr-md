@@ -222,6 +222,8 @@ def test_go_resolves_anything(client):
         "/go?cite=45/164.104/a&date=2020-01-01", follow_redirects=False
     )
     assert dated_paragraph.headers["location"].endswith("164.104#p-164.104(a)")
+    as_of = client.get("/go?cite=45 CFR 164.104 as of 2020", follow_redirects=False)
+    assert as_of.headers["location"] == f"/on/{EARLIER}/title-45/section-164.104"
     words = client.get("/go?cite=minimum necessary", follow_redirects=False)
     assert words.headers["location"] == "/search?q=minimum+necessary"
     assert client.get("/go", follow_redirects=False).headers["location"] == "/"
@@ -278,6 +280,8 @@ def test_history_and_compare(client, api):
     markdown = client.get("/history/title-45/section-164.102.md").text
     assert "[what changed](/compare/2026-01-01/to/2025-12-31/" in markdown
     api.json(VERSIONS, {"content_versions": [], "meta": {}})
+    assert "What changed" in client.get("/history/title-45/part-164").text  # Kept.
+    client.app.state.navigator._changes.clear()
     assert "records no changes" in client.get("/history/title-45/part-164").text
     assert "No changes recorded." in client.get("/history/title-45/part-164.md").text
     assert client.get("/history/title-45/nonsense").status_code == 404

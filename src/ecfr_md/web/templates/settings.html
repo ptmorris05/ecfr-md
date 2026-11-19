@@ -11,7 +11,7 @@
   {% if problems %}<p class="problem" role="alert">Not applied: {{ problems|length }} setting{{ "s" if problems|length != 1 }} need{{ "s" if problems|length == 1 }} a change.</p>{% endif %}
   <form method="post" action="/settings" class="fields">
     {% for f in fields %}
-    <div class="field {{ f.kind }}{% if problems[f.name] %} invalid{% endif %}">
+    <div class="field kind-{{ f.kind }}{% if problems[f.name] %} invalid{% endif %}">
       <label for="s-{{ f.name }}"><code>{{ f.name }}</code><span class="origin {{ f.origin|replace(' ', '-') }}">{{ f.origin }}</span></label>
       {% if f.kind == "bool" %}
       <input id="s-{{ f.name }}" name="{{ f.name }}" type="checkbox"{% if f.checked %} checked{% endif %}>

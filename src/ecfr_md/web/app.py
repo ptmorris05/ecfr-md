@@ -15,6 +15,7 @@ import re
 import shutil
 import tempfile
 import threading
+import time
 from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager
 from dataclasses import replace
@@ -64,6 +65,7 @@ from ecfr_md.params import to_date
 from ecfr_md.render import json_writer
 from ecfr_md.render.blocks import node_blocks
 from ecfr_md.render.formats import EXTRAS, FORMATS, SUFFIXES, Format, as_format, require
+from ecfr_md.results import Change
 from ecfr_md.web import agents, pages, prefs, reader
 from ecfr_md.web.progress import Relay
 
@@ -75,8 +77,11 @@ LOCAL_HOSTS = ("127.0.0.1", "localhost", "::1", "[::1]")
 SAFE_FETCH_SITES = frozenset({"same-origin", "none"})
 OFFLINE = (ECFRConnectionError, ECFRTimeoutError, ServerError)
 DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+# A citation with a date after it: "45 CFR 164.502 as of 2019", "... on 2020-01-01".
+AS_OF = re.compile(r"(?P<cite>.*\d.*?)\s+(?:as\s+of|on)\s+(?P<date>.+)", re.I)
 SEARCH_LIMIT = 25
 PREVIEW_CHARS = 900
+CHANGES_TTL = 600  # Seconds a place's list of changes is reused.
 FORMAT_NAMES = {
     "markdown": "Markdown",
     "text": "Plain text",
@@ -107,6 +112,7 @@ class Navigator:
         self.retired: list[ECFR] = []  # Clients replaced by new settings.
         self._terms: dict[tuple[str, dt.date | None], list[dict[str, Any]]] = {}
         self._lock = threading.Lock()
+        self._changes: dict[str, tuple[float, list[Change]]] = {}
         self._owned: list[ECFR] = []  # Clients this navigator made, to close.
 
     def apply(self, settings: Settings, changed: frozenset[str]) -> None:
@@ -120,6 +126,16 @@ class Navigator:
             self._owned.append(fresh)
             self.changed = self.changed | changed
             self._terms.clear()
+            self._changes.clear()
+
+    def changes(self, address: str) -> list[Change]:
+        """The changes to a place, kept for a few minutes: every page asks
+        for its own, and they change at most daily."""
+        now = time.monotonic()
+        kept = self._changes.get(address)
+        if kept is None or now - kept[0] > CHANGES_TTL:
+            kept = self._changes[address] = (now, self.ecfr.changes(address))
+        return kept[1]
 
     def terms(self, address: str, date: dt.date | None) -> list[dict[str, Any]]:
         """The defined terms that apply to a place, kept for the session."""
@@ -418,6 +434,9 @@ def go(request: Request) -> Response:
     cite = request.query_params.get("cite", "").strip()
     variant = request.path_params.get("variant", "")
     date = request.query_params.get("date", "").strip()
+    dated = AS_OF.fullmatch(cite)
+    if dated and not date:  # "164.502 as of 2019"
+        cite, date = dated["cite"], dated["date"]
     try:
         address, target = pages.go(cite)
         when = to_date(date) if date else address.date
@@ -508,7 +527,7 @@ def history(request: Request) -> Response:
     except InvalidCitationError as exc:
         raise HTTPException(404, str(exc)) from None
     place = pages.place(nav.ecfr, address, None)
-    changes = nav.ecfr.changes(str(address))
+    changes = nav.changes(str(address))
     rows = []
     for change in changes:
         before = change.effective - dt.timedelta(days=1)

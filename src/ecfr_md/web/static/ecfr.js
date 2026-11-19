@@ -700,7 +700,7 @@ const Rail = {
     }
     if (items.length < 2) return;
     const nav = document.createElement("nav");
-    nav.className = "rail";
+    nav.className = "outline-rail";
     nav.setAttribute("aria-label", "Outline");
     nav.innerHTML = `<ol>${items.map((it, n) => `<li><a href="#${escapeHtml(it.target.id)}" class="l${it.level}" data-n="${n}">${escapeHtml(it.label)}</a></li>`).join("")}</ol>`;
     document.body.append(nav);
@@ -797,18 +797,29 @@ const Palette = {
     this.render(groups, query);
     if (!query) return;
     clearTimeout(this.timer);
-    this.timer = setTimeout(() => this.remote(query, generation, groups), 180);
+    this.timer = setTimeout(() => (this.pending = this.remote(query, generation, groups)), 180);
+  },
+  async enter(beside) {
+    // Enter before the citation is looked up: look it up now, then go.
+    if (!this.items.length && this.input.value.trim()) {
+      clearTimeout(this.timer);
+      const generation = ++this.generation;
+      await this.remote(this.input.value.trim(), generation, this.local(this.input.value.trim()), true);
+    } else if (this.pending && !this.items.some((it) => it.first)) {
+      await this.pending;
+    }
+    this.choose(this.items[this.selected], beside);
   },
   local(query) {
-    const q = query.toLowerCase();
+    const { cite, date } = splitDate(query);
+    const q = (cite || (date ? "" : query)).toLowerCase();
     const words = q.split(/\s+/).filter(Boolean);
     const groups = [];
-    if (!q) {
+    if (!query) {
       groups.push({ name: "Recent", items: recent().filter((r) => r.href !== location.pathname).slice(0, 6).map((r) => ({ c: r.cite, t: r.heading, href: r.href })) });
       groups.push({ name: "Actions", items: actions("").slice(0, 6) });
       return groups.filter((g) => g.items.length);
     }
-    const { cite, date } = splitDate(query);
     if (date && page.address) {
       const label = date === "current" ? "the current text" : longDate(date);
       const target = date === "current" ? `/current/${page.rest}` : `/go?${new URLSearchParams({ cite: page.address, date })}`;
@@ -831,12 +842,13 @@ const Palette = {
       }
       found.sort((a, b) => b[0] - a[0]);
     }
-    if (found.length) groups.push({ name: "Headings", items: found.slice(0, 8).map(([, e]) => ({ c: e.c, t: e.h.replace(/^§+\s*[\w.-]+\s*/, ""), href: e.u, words })) });
+    const dated = (href) => (date && date !== "current" ? `/go?${new URLSearchParams({ cite: href, date })}` : href);
+    if (found.length) groups.push({ name: "Headings", items: found.slice(0, 8).map(([, e]) => ({ c: e.c, t: e.h.replace(/^§+\s*[\w.-]+\s*/, ""), x: date && date !== "current" ? `as of ${date}` : "", href: dated(e.u), words })) });
     const acts = actions(q);
     if (acts.length) groups.push({ name: "Actions", items: acts.slice(0, 5) });
     return groups;
   },
-  async remote(query, generation, groups) {
+  async remote(query, generation, groups, quick = false) {
     const { cite, date } = splitDate(query);
     const asked = cite || query;
     const tries = [];
@@ -857,7 +869,7 @@ const Palette = {
     })();
     const words = asked.replace(/[^\w\s"'-]/g, " ").trim();
     const within = page.title ? `${page.title} CFR` : "";
-    const search = words.length > 2 ? json(`/search.json?${new URLSearchParams({ q: words, limit: "6", ...(within ? { within } : {}) })}`).catch(() => null) : Promise.resolve(null);
+    const search = words.length > 2 && !quick ? json(`/search.json?${new URLSearchParams({ q: words, limit: "6", ...(within ? { within } : {}) })}`).catch(() => null) : Promise.resolve(null);
     const place = await go;
     if (generation !== this.generation) return;
     if (place) {
@@ -996,7 +1008,7 @@ if (Palette.dialog) {
       Palette.move(-1);
     } else if (event.key === "Enter") {
       event.preventDefault();
-      Palette.choose(Palette.items[Palette.selected], event.shiftKey);
+      Palette.enter(event.shiftKey);
     }
   });
   Palette.list.addEventListener("click", (event) => {
