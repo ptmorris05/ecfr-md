@@ -34,9 +34,8 @@ from typing import Annotated, Unpack
 
 from cyclopts import App, Group, Parameter, config
 from pydantic import BaseModel
-from rich.console import Console
+from rich.console import Console, RenderableType
 from rich.logging import RichHandler
-from rich.markdown import Markdown
 
 from ecfr_md.citation import Citation
 from ecfr_md.client import ECFR, Admin, Search, Versioner
@@ -48,6 +47,7 @@ from ecfr_md.ui import (
     Terminal,
     changes_table,
     outline_tree,
+    reading,
     redline,
     search_table,
     size,
@@ -100,6 +100,7 @@ def get(
         str | None, Parameter(name="--from", allow_leading_hyphen=True)
     ] = None,
     all_titles: Annotated[bool, Parameter(name="--all")] = False,
+    pager: bool = True,
     ecfr: Client,
     **hierarchy: Unpack[Hierarchy],
 ) -> None:
@@ -131,6 +132,9 @@ def get(
     all_titles: bool
         Every title of the CFR, each saved to the --output directory. Large
         titles are fetched part by part, so this takes a while.
+    pager: bool
+        In a terminal, page through text longer than the screen ($PAGER,
+        or less).
     """
     if from_file is not None:
         if citation or all_titles:
@@ -156,13 +160,15 @@ def get(
     terminal = _terminal(ecfr)
     if target is None:
         with terminal.live():
-            text = ecfr.get(cited, date=date, **hierarchy).to_markdown()
+            node = ecfr.get(cited, date=date, **hierarchy)
+        text = node.to_markdown()
         if console.is_terminal and len(text) <= FORMAT_BELOW:
-            console.print(Markdown(text))  # Formatted for reading.
+            _show(reading(node), pager)  # Formatted for reading.
         else:
             _print_markdown(text)
             if console.is_terminal:
                 terminal.note("Long text is printed as Markdown; use -o to save it.")
+        terminal.note(f"{node.citation} · eCFR text as of {node.date} · {node.url}")
         return
     with terminal.live():
         if tree:
@@ -196,6 +202,19 @@ def get(
             "Size": _total_size(files),
         },
     )
+
+
+def _show(renderable: RenderableType, pager: bool) -> None:
+    """Print to the terminal, through a pager if it's taller than the screen."""
+    lines = console.render_lines(renderable, pad=False)
+    if not pager or len(lines) <= console.height:
+        console.print(renderable)
+        return
+    # Keep colours (-R), quit at once if it fits after all (-F), and leave the
+    # text on screen after quitting (-X), unless the user has set LESS.
+    os.environ.setdefault("LESS", "-RFX")
+    with console.pager(styles=sys.platform != "win32"):
+        console.print(renderable)
 
 
 def _directory(output: str | None, option: str) -> Path:

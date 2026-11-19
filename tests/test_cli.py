@@ -276,3 +276,43 @@ def test_titles_from_python(ecfr):
     assert welfare.to_dict()["url"].endswith("/on/2026-10-07/title-45")
     assert reserved.reserved and reserved.to_dict(include_raw=True)["raw"]
     assert reserved.url.endswith("/current/title-35")
+
+
+def test_reading_in_a_terminal(run, monkeypatch, capsys):
+    monkeypatch.setattr(type(cli.console), "is_terminal", property(lambda self: True))
+    screen = {"height": 40}
+    monkeypatch.setattr(
+        type(cli.console), "height", property(lambda self: screen["height"])
+    )
+    paged = []
+
+    class Pager:
+        def __init__(self, **kwargs):
+            paged.append(kwargs)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(cli.console, "pager", Pager)
+    assert run("get", "45 CFR 164.104(a)(2)(i)") == 0  # Short: no pager.
+    captured = capsys.readouterr()
+    assert "§ 164.104 Paragraph nesting." in captured.out  # The context above.
+    assert (
+        "45 CFR 164.104(a)(2)(i) · eCFR text as of 2026-10-07 · https://"
+        in captured.err
+    )
+    assert paged == []
+    screen["height"] = 5
+    assert run("get", "45", "CFR", "164") == 0
+    assert len(paged) == 1
+    assert run("get", "45", "CFR", "164", "--no-pager") == 0
+    assert len(paged) == 1
+
+
+def test_footnote_marks_become_superscripts():
+    from ecfr_md.ui import _superscripts
+
+    assert _superscripts("APF<sup>3</sup> and n<sup>a</sup>") == "APF³ and nᵃ"

@@ -1,6 +1,7 @@
 """Terminal output for the ``ecfr-md`` command, drawn with rich on stderr."""
 
 import datetime as dt
+import re
 import textwrap
 import threading
 import time
@@ -12,6 +13,8 @@ from urllib.parse import parse_qsl, urlsplit
 from rich import box
 from rich.console import Console, Group, RenderableType
 from rich.live import Live
+from rich.markdown import Markdown
+from rich.padding import Padding
 from rich.panel import Panel
 from rich.progress import (
     BarColumn,
@@ -32,6 +35,7 @@ from rich.text import Text
 from rich.tree import Tree
 
 from ecfr_md.compare import Comparison
+from ecfr_md.document import Node, Paragraph
 from ecfr_md.errors import (
     AmbiguousNodeError,
     APIError,
@@ -522,3 +526,39 @@ def redline(comparison: Comparison) -> Group:
             text.append(words.replace("**", ""), style=styles[op])
         blocks += [Text(labels[difference.kind], style=f"bold {DIM}"), text, Text()]
     return Group(*blocks)
+
+
+SUPERSCRIPT = str.maketrans(
+    "0123456789+-=()abcdefhijklmnoprstuvwxyz", "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾ᵃᵇᶜᵈᵉᶠʰⁱʲᵏˡᵐⁿᵒᵖʳˢᵗᵘᵛʷˣʸᶻ"
+)
+SUP_TAG = re.compile(r"<sup>([^<]*)</sup>")
+CONTEXT_WIDTH = 100  # Characters of each parent paragraph shown above a lookup.
+
+
+def reading(node: Node) -> RenderableType:
+    """A node formatted for reading: paragraphs indented by depth, and for a
+    paragraph, the section and parent paragraphs it continues, dimmed."""
+    depths = {
+        p.blocks[0]: p.depth
+        for p in [node, *node.iter("paragraph")]
+        if isinstance(p, Paragraph) and p.blocks
+    }
+    parts: list[RenderableType] = []
+    if isinstance(node, Paragraph):
+        for above in reversed(node.ancestors):
+            lead = above.own_text if isinstance(above, Paragraph) else above.heading
+            plain = _superscripts(lead).replace("*", "")
+            lead = textwrap.shorten(plain, CONTEXT_WIDTH, placeholder=" …")
+            parts.append(Text(lead, style=DIM))
+        parts.append(Text())
+    depth = 0
+    for block in node.to_markdown().split("\n\n"):
+        depth = depths.get(block, depth)  # Other blocks continue the paragraph.
+        rendered = Markdown(_superscripts(block))
+        parts.append(Padding(rendered, (0, 0, 1, 2 * max(depth - 1, 0))))
+    return Group(*parts)
+
+
+def _superscripts(text: str) -> str:
+    """Footnote marks the terminal can show: "<sup>3</sup>" as "³"."""
+    return SUP_TAG.sub(lambda m: m[1].translate(SUPERSCRIPT), text)
