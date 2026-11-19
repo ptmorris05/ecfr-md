@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}History — {{ page.citation }}{% endblock %}
+{% block view %}history{% endblock %}
+{% block crumb_tail %}<li><a href="/history/{{ page.rest }}" aria-current="page">History</a></li>{% endblock %}
+{% block main %}
+<article class="text history">
+  <p class="meta"><span class="cite">{{ page.citation }}</span></p>
+  <h1>History</h1>
+  {% if not changes %}
+  <p>The eCFR records no changes to {{ page.citation }}.</p>
+  {% else %}
+  <p class="aside">{{ changes|length }} change{{ "s" if changes|length != 1 }} to sections and appendices, newest first. Each links to the text as it then took effect, and to what changed.</p>
+  <ol class="changes">
+    {% for c in changes %}
+    <li class="{{ c.kind }}">
+      <time datetime="{{ c.effective }}">{{ c.effective|longdate }}</time>
+      <a class="what" href="{{ c.href }}"><span class="cite">{{ c.citation }}</span> <span class="h">{{ c.heading }}</span></a>
+      <span class="kind">{{ c.kind }}</span>
+      {% if c.kind != "removed" %}<a class="diff" href="{{ c.compare }}">What changed</a>{% endif %}
+    </li>
+    {% endfor %}
+  </ol>
+  {% endif %}
+</article>
+{% endblock %}

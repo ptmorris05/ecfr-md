@@ -46,8 +46,13 @@ docx = [
 pdf = [
     "typst>=0.15.2",
 ]
+web = [
+    "jinja2>=3.1.6",
+    "starlette>=1.10.0",
+    "uvicorn>=0.54.0",
+]
 all = [
-    "ecfr-md[docx,pdf]",
+    "ecfr-md[docx,pdf,web]",
 ]
 
 [tool.uv.build-backend]
@@ -61,13 +66,17 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "httpx>=0.28.1",
+    "jinja2>=3.1.6",
     "pypdf>=7.1.1",
     "pyright>=1.1.414",
     "pytest>=9.1.1",
     "pytest-cov>=7.1.0",
     "python-docx>=1.2.0",
     "ruff>=0.17.0",
+    "starlette>=1.10.0",
     "typst>=0.15.2",
+    "uvicorn>=0.54.0",
 ]
 
 docs = [

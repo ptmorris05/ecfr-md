@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>{% block title %}Code of Federal Regulations{% endblock %}</title>
+<script src="/static/prefs.js?v={{ version }}"></script>
+<link rel="preload" href="/static/fonts/SourceSerif4-Roman.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/static/ecfr.css?v={{ version }}">
+<link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+{% if alternates %}
+<link rel="alternate" type="text/markdown" href="{{ alternates.md }}">
+<link rel="alternate" type="application/json" href="{{ alternates.json }}">
+{% endif %}
+{% if neighbours %}
+{% for rel, link in neighbours.items() if link %}
+<link rel="{{ 'prev' if rel == 'previous' else rel }}" href="{{ link.href }}">
+{% endfor %}
+{% endif %}
+<script type="speculationrules">
+{"prerender": [{% if prerender %}{"source": "list", "urls": {{ prerender|tojson }}, "eagerness": "eager"}, {% endif %}{"where": {"and": [{"href_matches": "/*"}, {"not": {"href_matches": "/export/*"}}, {"not": {"href_matches": "/settings*"}}, {"not": {"href_matches": "/static/*"}}, {"not": {"selector_matches": "[download], .no-prerender"}}]}, "eagerness": "moderate"}]}
+</script>
+<script type="module" src="/static/ecfr.js?v={{ version }}"></script>
+</head>
+<body data-view="{% block view %}page{% endblock %}"{% if page %} data-address="{{ page.address }}" data-cite="{{ page.citation }}" data-heading="{{ page.heading }}" data-level="{{ page.level }}" data-date="{{ page.text_date or '' }}" data-current="{{ 'true' if page.date is none else 'false' }}" data-href="{{ page.href }}"{% endif %}{% if cite %} data-bluebook="{{ cite.bluebook }}"{% endif %}{% if embed %} data-embed{% endif %}>
+<a class="skip" href="#main">Skip to text</a>
+<header class="bar">
+  <nav class="crumbs" aria-label="Breadcrumb">
+    <ol>
+      <li><a href="/" title="Code of Federal Regulations">CFR</a></li>
+      {% for c in crumbs or [] %}
+      <li><a href="{{ c.href }}" title="{{ c.heading }}"{% if loop.last %} aria-current="page"{% endif %}>{{ c.label }}</a></li>
+      {% endfor %}
+      {% block crumb_tail %}{% endblock %}
+    </ol>
+  </nav>
+  <div class="tools">
+    {% if page and page.text_date %}
+    <button class="when" type="button" popovertarget="timeline" aria-label="Text date: {{ page.text_date|longdate }}. Choose another date" title="Choose another date or compare"><span class="dot{% if page.date is none %} live{% endif %}" aria-hidden="true"></span><time datetime="{{ page.text_date }}">{{ 'Current' if page.date is none else page.text_date }}</time></button>
+    {% endif %}
+    <form class="find" action="/go" method="get" role="search">
+      <label class="sr" for="find">Go to a citation, or search</label>
+      <input id="find" name="cite" type="search" placeholder="Go to…" autocomplete="off" spellcheck="false" aria-keyshortcuts="Meta+K Control+K /">
+      <kbd aria-hidden="true">⌘K</kbd>
+    </form>
+    <button class="more" type="button" popovertarget="menu" aria-label="Menu" title="Menu"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="4" cy="10" r="1.6"/><circle cx="10" cy="10" r="1.6"/><circle cx="16" cy="10" r="1.6"/></svg></button>
+  </div>
+  <div class="load" aria-hidden="true"></div>
+</header>
+
+<main id="main" tabindex="-1">
+{% block main %}{% endblock %}
+</main>
+
+{% block pager %}{% endblock %}
+
+<footer class="foot">
+  <p>{{ disclaimer }}{% if official %} <a href="{{ official }}" class="official no-prerender" rel="noopener">Official page on ecfr.gov</a>{% endif %}</p>
+</footer>
+
+<div id="menu" class="menu" popover>
+  <nav aria-label="Page">
+    {% if page %}
+    <a href="/history/{{ page.rest }}">History</a>
+    {% if export %}
+    <details class="formats">
+      <summary>Export</summary>
+      <ul>
+        {% for f in export %}
+        <li>{% if f.available %}<a href="{{ f.href }}" download class="no-prerender">{{ f.label }}</a>{% if save_dir %}<form method="post" action="{{ f.action }}" class="save"><input type="hidden" name="format" value="{{ f.name }}"><button type="submit" title="Save to {{ save_dir }}">Save</button></form>{% endif %}{% else %}<span class="off" title="Needs the {{ f.extra }} extra">{{ f.label }}</span>{% endif %}</li>
+        {% endfor %}
+      </ul>
+    </details>
+    {% endif %}
+    {% endif %}
+    <a href="/search{% if page %}?within={{ page.citation|urlencode }}{% endif %}">Search</a>
+    <a href="/settings">Settings</a>
+  </nav>
+  <div class="view" role="group" aria-label="View">
+    <div class="seg" role="radiogroup" aria-label="Theme">
+      <button type="button" data-pref="theme" data-value="auto" role="radio">Auto</button>
+      <button type="button" data-pref="theme" data-value="light" role="radio">Light</button>
+      <button type="button" data-pref="theme" data-value="dark" role="radio">Dark</button>
+    </div>
+    <div class="seg" role="group" aria-label="Text size">
+      <button type="button" data-step="size" data-value="-1" aria-label="Smaller text">A−</button>
+      <button type="button" data-step="size" data-value="1" aria-label="Larger text">A+</button>
+      <button type="button" data-toggle="dense" aria-pressed="false">Dense</button>
+    </div>
+    <div class="seg" role="radiogroup" aria-label="Citation style">
+      <button type="button" data-pref="cite" data-value="ofr" role="radio">45 CFR</button>
+      <button type="button" data-pref="cite" data-value="bluebook" role="radio">45 C.F.R. §</button>
+    </div>
+    <div class="seg" role="group" aria-label="Reading aids">
+      <button type="button" data-toggle="rail" aria-pressed="false" title="Outline (o)">Outline</button>
+      <button type="button" data-toggle="focus" aria-pressed="false" title="Focus (f)">Focus</button>
+    </div>
+    <button type="button" class="keys-link" data-keys>Keyboard shortcuts <kbd>?</kbd></button>
+  </div>
+</div>
+
+{% if page and page.text_date %}
+<div id="timeline" class="timeline" popover>
+  <cfr-timeline data-history="/history/{{ page.rest }}.json" data-date="{{ page.text_date }}" data-current="{{ 'true' if page.date is none else 'false' }}">
+    <form action="/go" method="get" class="pick">
+      <input type="hidden" name="cite" value="{{ page.address }}">
+      <label>Text as of <input type="date" name="date" value="{{ page.text_date }}"></label>
+      <button type="submit">Go</button>
+    </form>
+  </cfr-timeline>
+</div>
+{% endif %}
+
+<dialog id="palette" class="palette" aria-label="Go to">
+  <form action="/go" method="get" class="pfield">
+    <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="m13 13 4.5 4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+    <input name="cite" type="text" role="combobox" aria-expanded="true" aria-controls="palette-list" aria-autocomplete="list" placeholder="Citation, heading, words, a date, or an action" autocomplete="off" spellcheck="false">
+    <kbd>esc</kbd>
+  </form>
+  <ul id="palette-list" role="listbox" aria-label="Results"></ul>
+  <p class="hint"><kbd>↑</kbd><kbd>↓</kbd> choose · <kbd>↵</kbd> open · <kbd>⇧↵</kbd> open beside</p>
+</dialog>
+
+<dialog id="keys" class="keys" aria-label="Keyboard shortcuts">
+  <h2>Keyboard</h2>
+  <dl>
+    <dt><kbd>⌘K</kbd> <kbd>/</kbd></dt><dd>Go to a citation, heading, phrase or date</dd>
+    <dt><kbd>j</kbd> <kbd>k</kbd></dt><dd>Next and previous paragraph</dd>
+    <dt><kbd>]</kbd> <kbd>[</kbd></dt><dd>Next and previous section</dd>
+    <dt><kbd>u</kbd></dt><dd>Up a level</dd>
+    <dt><kbd>y</kbd></dt><dd>Copy the paragraph's citation</dd>
+    <dt><kbd>o</kbd></dt><dd>Outline</dd>
+    <dt><kbd>f</kbd></dt><dd>Focus</dd>
+    <dt><kbd>d</kbd></dt><dd>Date and versions</dd>
+    <dt><kbd>\</kbd></dt><dd>Close the side-by-side view</dd>
+    <dt><kbd>?</kbd></dt><dd>This list</dd>
+  </dl>
+  <form method="dialog"><button>Close</button></form>
+</dialog>
+
+<div id="card" class="card" popover="manual" role="dialog" aria-live="polite"></div>
+<div id="toast" class="toast" popover="manual" role="status"></div>
+<span id="end" hidden></span>
+</body>
+</html>

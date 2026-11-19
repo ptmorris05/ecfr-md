@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block view %}home{% endblock %}
+{% block main %}
+<div class="home">
+  <h1>Code of Federal Regulations</h1>
+  <form class="big-find" action="/go" method="get" role="search">
+    <label class="sr" for="home-find">Go to a citation, or search</label>
+    <input id="home-find" name="cite" type="search" placeholder="45 CFR 164.502, “minimum necessary”, hipaa privacy rule…" autocomplete="off" spellcheck="false" data-opens-palette>
+  </form>
+  <ol class="titles">
+    {% for t in titles %}
+    <li{% if t.reserved %} class="reserved"{% endif %}>
+      {% if t.reserved %}
+      <span class="item"><span class="no">{{ t.identifier }}</span><span class="name">Reserved</span></span>
+      {% else %}
+      <a class="item" href="{{ t.href }}"><span class="no">{{ t.identifier }}</span><span class="name">{{ t.heading }}</span><span class="facts"><time datetime="{{ t.date }}" title="Text as of {{ t.date|longdate }}">{{ t.date }}</time>{% if t.size %}<span class="size"> · {{ t.size|size }}</span>{% endif %}{% if t.processing %} · updating{% endif %}</span></a>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ol>
+</div>
+{% endblock %}

@@ -1,0 +1,30 @@
+# Code of Federal Regulations (eCFR), local navigator
+
+> The text of the US Code of Federal Regulations from the eCFR, served by
+> ecfr-md {{ version }} on this computer. Paths mirror www.ecfr.gov: swap the
+> host and a link works on either. Add .md or .json to any page for Markdown
+> or JSON. {{ disclaimer }}
+
+## Reading
+
+- [Titles]({{ base }}/index.md): every title with the date of its latest text
+- [A title's contents]({{ base }}/current/title-45.md): any division, e.g. /current/title-45/subtitle-A/subchapter-C
+- [A part]({{ base }}/current/title-45/part-164.md): its contents, and its text if not too large (?full=1 for the text of any part)
+- [A section]({{ base }}/current/title-45/section-164.502.md): the text, with previous, next and up in the front matter
+- [A past date]({{ base }}/on/2020-01-01/title-45/section-164.502.md): the text as it was on a date
+
+## Finding
+
+- [Resolve a citation]({{ base }}/go.json?cite=45%20CFR%20164.502(a)(1)): any citation, address or eCFR, LII or GovInfo link to its page
+- [Search]({{ base }}/search.json?q=minimum%20necessary&within=45%20CFR%20164): full-text search, with excerpts
+- [Defined terms]({{ base }}/api/terms?address=45/164.502): the definitions that apply to a place
+
+## Changes
+
+- [History]({{ base }}/history/title-45/section-164.502.json): the changes issued to a place, newest first
+- [Compare]({{ base }}/compare/2024-06-25/to/2024-06-24/title-45/section-164.502.json): word by word, between two dates
+
+## Optional
+
+- [OpenAPI]({{ base }}/openapi.json): the JSON endpoints, described
+- [Export]({{ base }}/export/title-45/section-164.502?format=pdf): download in markdown, text, html, json, epub, docx or pdf

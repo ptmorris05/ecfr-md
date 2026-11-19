@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Export — {{ page.citation }}{% endblock %}
+{% block view %}export{% endblock %}
+{% block crumb_tail %}<li><a href="#" aria-current="page">Export</a></li>{% endblock %}
+{% block main %}
+<article class="text export">
+  <p class="meta"><span class="cite">{{ page.citation }}</span> · text as of {{ page.text_date|longdate }}</p>
+  <h1>Export</h1>
+  {% set sections, bytes = page.counts(page.entry) %}
+  {% if bytes %}<p class="aside">{{ bytes|size }} of text{% if sections > 1 %} in {{ "{:,}".format(sections) }} sections{% endif %}.</p>{% endif %}
+  <ul class="formats-list">
+    {% for f in export %}
+    <li>
+      <span class="label">{{ f.label }} <span class="suffix">{{ f.suffix }}</span></span>
+      {% if f.available %}
+      <a class="button no-prerender" href="{{ f.href }}" download>Download</a>
+      {% if save_dir %}<form method="post" action="{{ f.action }}" class="save"><input type="hidden" name="format" value="{{ f.name }}"><button type="submit">Save to {{ save_dir }}</button></form>{% endif %}
+      {% else %}
+      <span class="off">Install the <code>{{ f.extra }}</code> extra</span>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+</article>
+{% endblock %}
