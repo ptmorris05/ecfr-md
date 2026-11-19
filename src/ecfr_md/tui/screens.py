@@ -28,6 +28,7 @@ from ecfr_md.errors import InvalidParameterError
 from ecfr_md.params import SearchFilters, to_date
 from ecfr_md.render.formats import FORMATS, SUFFIXES, Format
 from ecfr_md.results import Change, Match, Outline
+from ecfr_md.tui.text import MUTED
 from ecfr_md.ui import redline
 
 if TYPE_CHECKING:
@@ -43,7 +44,7 @@ FORMAT_NAMES: dict[Format, str] = {
     "docx": "Word",
     "pdf": "PDF",
 }
-KIND_STYLES = {"removed": "$error", "substantive": "$warning", "editorial": "dim"}
+KIND_STYLES = {"removed": "$error", "substantive": "$warning", "editorial": MUTED}
 
 
 class Dialog[T](ModalScreen[T]):
@@ -141,7 +142,7 @@ class GoTo(Dialog[str | None]):
         matches = self.query_one("#matches", OptionList)
         matches.clear_options()
         matches.add_options(
-            Option(Content.assemble((e.citation, "bold"), "  ", (_heading(e), "dim")))
+            Option(Content.assemble((e.citation, "bold"), "  ", (_heading(e), MUTED)))
             for e in self._found
         )
 
@@ -244,7 +245,7 @@ def _match(match: Match) -> Content:
     line = Content.assemble((match.citation, "bold"), "  ", match.heading)
     if match.excerpt:
         excerpt = textwrap.shorten(match.excerpt, EXCERPT, placeholder="…")
-        line += Content.styled(f"\n{excerpt}", "dim")
+        line += Content.styled(f"\n{excerpt}", MUTED)
     return line
 
 
@@ -346,14 +347,14 @@ class History(Dialog[None]):
 def _change(change: Change, single: bool) -> Content:
     line = Content.assemble(
         (str(change.issued), "bold"),
-        ("  effective " + str(change.effective), "dim"),
+        ("  effective " + str(change.effective), MUTED),
         "  ",
         (change.kind, KIND_STYLES[change.kind]),
     )
     if not single:
         line += Content.assemble("  ", (change.citation, "bold"))
     if change.heading:
-        line += Content.styled(f"\n{change.heading}", "dim")
+        line += Content.styled(f"\n{change.heading}", MUTED)
     return line
 
 

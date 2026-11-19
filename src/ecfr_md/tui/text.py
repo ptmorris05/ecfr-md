@@ -38,10 +38,10 @@ from ecfr_md.results import Outline
 from ecfr_md.ui import SUPERSCRIPT, size
 
 INDENT = 2  # Columns per paragraph depth.
-LINK = "ref:"
-SELF = re.compile(
-    r"[Tt]his\s+(?:section|subpart|part)"
-)  # How a reference's link is marked while its text is parsed.
+MUTED = "$foreground 60%"  # Notes, details, excerpts: there, but quiet.
+LINK = "ref:"  # How a reference's link is marked while its text is parsed.
+# References that lead where the reader already is.
+SELF = re.compile(r"[Tt]his\s+(?:section|subpart|part)")
 CONTENTS_LEVELS = frozenset({"cfr", "title", "subtitle", "chapter", "subchapter"})
 NAMES = {
     "title": "Title",
@@ -97,11 +97,11 @@ class Piece:
             case "heading":
                 return body.stylize_before("bold")
             case "note":
-                return body.stylize_before("$text-muted")
+                return body.stylize_before(MUTED)
             case "item":
                 return Content("• ") + body
             case "image":
-                return body.stylize_before("$text-muted italic")
+                return body.stylize_before(f"{MUTED} italic")
         return body
 
     def _run(self, index: int, part: int, selected: int | None) -> Content:
@@ -131,10 +131,11 @@ def _count_links(text: str) -> int:
 def _entry(piece: Piece, selected: int | None) -> Content:
     """An entry in contents: clicking anywhere on it opens it, so it isn't
     drawn as a link."""
-    style = Style(bold=selected == 0 or None, dim=piece.dim or None)
-    label = Content.assemble((plain(piece.parts[0]), style))
+    label = Content.styled(plain(piece.parts[0]), "bold" if selected == 0 else "")
+    if piece.dim:
+        label = label.stylize_before(MUTED)
     if piece.detail:
-        label += Content.styled(f"  {piece.detail}", "$text-muted")
+        label += Content.styled(f"  {piece.detail}", MUTED)
     return label
 
 

@@ -51,6 +51,7 @@ from ecfr_md.tui.screens import (
 from ecfr_md.tui.text import (
     CONTENTS_LEVELS,
     INDENT,
+    MUTED,
     Link,
     Piece,
     contents_pieces,
@@ -560,7 +561,7 @@ class Browser(App[None]):
         else:
             view = self.view
             when = view.node.date if view.node is not None else view.entry.date
-            style = "$warning" if self.date else "$text-muted"
+            style = "$warning" if self.date else MUTED
             status.update(Content.styled(f"as of {when}" if when else "", style))
 
     # Loading places --------------------------------------------------------
