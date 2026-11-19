@@ -10,6 +10,47 @@ Install from GitHub; ecfr-md is not on PyPI.
 
 ### Added
 
+- `ecfr-md browse [CITATION] [--date DATE]`: a full-screen terminal browser
+  (the `tui` extra, Textual). The outline of the whole CFR beside the text,
+  with a breadcrumb and the date of the text. Keys: `g` go to any citation
+  (completed from the outline), `/` search, `[`/`]` previous and next
+  section, `j`/`k` paragraphs, `tab` and `enter` (or a click) to follow
+  cross-references, `u` up, `b`/`f` back and forward, `d` text as of a
+  date, `h` changes with a redline of each, `e` export in every format, `y`
+  copy the paragraph's citation, `o` the outline, `?` keys. The `all`
+  extra includes `tui`.
+- An MCP server for AI agents: `ecfr-md mcp` (stdio, or streamable HTTP
+  with `--http`), and `ecfr_md.mcp.server(ecfr)` for apps that serve it
+  themselves. Needs the new `mcp` extra (FastMCP 4.2), which `all` now
+  includes. Read-only tools with output schemas and Markdown results:
+  `list_titles`, `outline` (token estimates per entry), `read` (the text
+  that fits a token budget, with a cursor to continue, full pinpoint
+  paragraph labels, paragraph ids and what's around it), `search`,
+  `changes`, `history`, `compare` (located redline with the amendments
+  between the dates), `references`, `cited_by`, `resolve_citation`,
+  `verify_quote`, `define` and `settings`; `export` writes only under
+  `--export-dir`, and `configure` exists only with
+  `--allow-config-changes`. Resources `cfr:{address}`, `cfr:titles` and
+  `ecfr-md:settings`, with subscriptions that notify when the eCFR changes
+  the text; citation completions; prompts for summarizing obligations,
+  what changed, comparing provisions and finding a term; progress and
+  cancellation for large fetches.
+- `ecfr_md.define()` / `ECFR.define(term, citation)` and
+  `ecfr-md define TERM CITATION`: the definition of a term that governs a
+  place in the CFR, found in the place's text and the definitions sections
+  that apply to it (`Definition`, `Definitions`).
+- `ecfr_md.verify_quote()` / `ECFR.verify_quote(citation, text)` and
+  `ecfr-md verify CITATION --quote TEXT`: whether a quotation is word for
+  word at a pinpoint, else where it is or the nearest text (`QuoteCheck`).
+- `ecfr_md.passages`: text cut to a token budget at paragraph boundaries
+  with a cursor (`passage`, `Passage`), and the paragraph at any offset
+  (`TextIndex`).
+- `--json` on `get` (the same as `--format json`), `sync` and
+  `cache clear`, so every command can print JSON.
+- An agent skill, `skills/ecfr-md/SKILL.md`, that teaches the command
+  line, and an AI agents guide with setup for Claude Code and other MCP
+  clients.
+- Not-found errors suggest near misses: "did you mean 164.502?".
 - MIT license. Releases are published on GitHub from version tags, with the
   wheel and source distribution attached and build provenance attested.
 - A documentation site with an API reference, built from the README,
@@ -281,6 +322,8 @@ Install from GitHub; ecfr-md is not on PyPI.
 
 ### Fixed
 
+- Redlines in the terminal (`ecfr-md compare`) showed Markdown's `*`
+  emphasis marks and `\` escapes; they show the words as they read.
 - `45 CFR Subpart E` (a subpart in many parts) silently gave Part 5's;
   it now lists the candidates.
 - A subtitle, chapter or subchapter fetched and saved the whole title under

@@ -42,15 +42,16 @@ uv add git+https://github.com/ptmorris05/ecfr-md
 pip install git+https://github.com/ptmorris05/ecfr-md
 ```
 
-Saving Word and PDF files needs an extra: `docx`, `pdf`, or `all` for both. Name it before the `@`:
+Saving Word and PDF files needs an extra: `docx` or `pdf`. The [terminal browser](#terminal-browser) needs `tui`, the [MCP server](#ai-agents) needs `mcp`, and `all` installs every extra. Name it before the `@`:
 
 ```sh
 uv tool install "ecfr-md[all] @ git+https://github.com/ptmorris05/ecfr-md"
+uv tool install "ecfr-md[tui] @ git+https://github.com/ptmorris05/ecfr-md"
 uv add "ecfr-md[pdf] @ git+https://github.com/ptmorris05/ecfr-md"
 pip install "ecfr-md[docx] @ git+https://github.com/ptmorris05/ecfr-md"
 ```
 
-PDFs are typeset by [Typst](https://typst.app/), whose Python wheels need no other software.
+PDFs are typeset by [Typst](https://typst.app/), whose Python wheels need no other software. The MCP server for AI agents needs the `mcp` extra (see [AI agents](#ai-agents)); `all` includes it.
 
 ## Command line
 
@@ -67,6 +68,7 @@ ecfr-md get --from list.txt -o out/              # one citation per line
 ecfr-md get --all --tree -o cfr/                 # the whole CFR, every title
 
 ecfr-md titles                                   # what titles exist
+ecfr-md browse 45 CFR 164.502                    # read and navigate full screen
 ecfr-md search minimum necessary                 # sections that use the phrase
 ecfr-md search minimum necessary --in "45 CFR 164"   # only in Part 164
 ecfr-md search "minimum necessary" --save out/   # and save their text
@@ -87,6 +89,7 @@ ecfr-md cache clear
 | --- | --- |
 | `get CITATION` | Prints the text, or saves it with `-o FILE`. In a terminal, paragraphs are indented, a paragraph shows the section and paragraphs above it, and long text goes through a pager (`--no-pager` to skip it); every lookup ends with its citation, date and eCFR link. Several citations or addresses print one after another, or with `-o DIR` save one file each; with no citation in a terminal, it asks for one ("Citation or address:"), so you can paste. `-o` takes a file, a directory (an existing one, or a name ending in `/`) or `-` for stdout; the file's suffix picks the format (`.md`, `.txt`, `.html`, `.json`, `.epub`, `.docx`, `.pdf`), or `--format` does (see [Formats](#formats)). `--tree -o DIR` writes one file per section. `--from FILE -o DIR` takes one citation per line (`-` for stdin; `# comments`, quotes and lists such as `45 CFR 164.502, 164.506` are fine): every line is checked first, repeats are saved once, and if some can't be found the rest are still saved. `--all -o DIR` saves every title (with `--tree`, a folder per title). `--date` for text as of a date. `--no-front-matter` leaves out the metadata header. `--links` makes cross-references Markdown links (on for Markdown `--tree`, where they link the saved files to each other; `--no-links` to turn that off). |
 | `titles` | Lists the titles and the latest date of each one's text. |
+| `browse [CITATION]` | Opens the [terminal browser](#terminal-browser) at a citation, or at the list of titles. `--date` for text as of a date. Needs the `tui` extra. |
 | `outline CITATION` | Prints the table of contents (no citation: the titles). `--depth N` limits levels and counts what's below. Part sizes are shown. For a section or appendix, ends with the ones before and after it, across parts and titles. |
 | `references CITATION` | Lists the cross-references in the text ("§ 164.501", "paragraph (a) of this section", "42 U.S.C. 1320d", ...) and what each refers to. `--json` adds addresses and links. |
 | `cited-by CITATION` | Lists sections that may cite a section or part, by searching for its number: approximate. `--limit`, `--date`, `--json`. |
@@ -124,6 +127,36 @@ The eCFR answers "too many requests" (429) when one client has 3 or more request
 Exit codes: `0` success, `1` API, network or file error, `2` invalid usage.
 
 `ecfr-md COMMAND --help` lists a command's options.
+
+## Terminal browser
+
+`ecfr-md browse` reads and navigates the CFR full screen: the outline on the left, the text on the right, a breadcrumb and the date of the text above, and the keys below. It needs the `tui` extra:
+
+```sh
+uv tool install "ecfr-md[tui] @ git+https://github.com/ptmorris05/ecfr-md"
+ecfr-md browse 45 CFR 164.502
+ecfr-md browse 45/164.502/a/1 --date 2020-01-01   # at a paragraph, as of a date
+ecfr-md browse                                    # the list of titles
+```
+
+| Key | Does |
+| --- | --- |
+| `g` | Go to a citation, address or eCFR link, in any form `get` takes. Matching entries of the outline are listed as you type; `↓` picks one. A citation without a title (`164.502`) is read in the open title. |
+| `/` | Search the eCFR; tick "Only in" to search just the open part. Enter opens a match. |
+| `[` `]` | Previous and next section, across parts and titles. |
+| `j` `k` | Next and previous paragraph. |
+| `tab` `shift+tab` | Next and previous cross-reference. |
+| `enter` | Follow the cross-reference (or click it). References to the U.S. Code, the Federal Register and public laws open in the web browser. |
+| `u` | Up a level: section to subpart to part, up to the list of titles. |
+| `b` `f` | Back and forward, each place as you left it. |
+| `d` | Text as of a date (`2020-01-01`, `Jan 1 2020`, `last year`; empty for the latest). The date shows in the header, highlighted. |
+| `h` | History: the changes the eCFR issued to what's open. Enter on one shows its redline, words struck out and inserted. |
+| `e` | Export what's open as Markdown, text, HTML, JSON, EPUB, Word or PDF, to a file you choose (by default in the current directory). |
+| `y` | Copy the citation of the paragraph under the cursor, e.g. `45 CFR 164.502(a)(1)` (through the terminal, with OSC 52). |
+| `o` | Show or hide the outline. Below 100 columns it's hidden until asked for, and then fills the screen. |
+| `?` `q` | The keys; quit. `escape` closes a dialog. |
+
+Sections, appendices, subparts and parts show their text (parts over 2 MB show their contents); titles, chapters and subchapters show their contents. Text and outlines come from the same client as the command line and Python, with the same cache and options (`ecfr-md --cache-dir DIR --rate-limit 1 browse ...`). Requests run in the background, the header shows what's being fetched, and errors appear as notifications.
 
 ## Python
 
@@ -480,6 +513,40 @@ The XML lists a section's paragraphs flat. They are nested by marker: (a), (1), 
 - worked examples (`Example 1. (i) Facts…`), which restart numbering and are kept with the paragraph they belong to
 
 Some sections don't follow the numbering rules, such as definitions that number items under each term, and the vehicle safety standards in 49 CFR Part 571, which number paragraphs S1, S4.1 and so on (these aren't split into paragraphs). `Section.paragraph_issues` lists repeats and gaps. `Section.to_markdown()` renders the source as-is either way.
+
+### Defined terms and quotations
+
+`define` finds the definition of a term that governs a place: the place's own text, then the definitions sections of each division it's in, nearest first, keeping those that apply there. `verify_quote` checks a quotation word for word (formatting, quote marks and dashes aside) at a pinpoint, and otherwise says where it is or what the nearest text is.
+
+```python
+found = ecfr_md.define("covered entities", "45 CFR 164.502")
+found[0].cite()  # '45 CFR 160.103 (definition of "Covered entity")'
+found[0].applies_to  # '45 CFR Subtitle A Subchapter C'
+
+check = ecfr_md.verify_quote(
+    "45 CFR 164.502(b)", "the minimum necessary to accomplish the intended purpose"
+)
+check.verified, check.citation
+```
+
+```sh
+ecfr-md define "covered entity" 45 CFR 164.502
+ecfr-md verify "45 CFR 164.502(b)" --quote "minimum necessary"   # exit 1 unless verified
+```
+
+`ecfr_md.passages` cuts text to a token budget at paragraph boundaries, with a cursor to continue (`passage(node, 2000)`), and maps any offset in a node's text to its paragraph (`TextIndex`).
+
+## AI agents
+
+`ecfr-md mcp` is an [MCP](https://modelcontextprotocol.io) server that gives agents the CFR the way an expert reads it: outlines with token estimates to plan, text sized to a budget with a cursor, full pinpoint citations, the governing definition of a term, quote checking, redlines between dates, and change notifications. Add it to Claude Code with:
+
+```sh
+claude mcp add ecfr -- uvx --from "ecfr-md[mcp] @ git+https://github.com/ptmorris05/ecfr-md" ecfr-md mcp
+```
+
+Other clients take the same command in their JSON config (`"command": "uvx"`, `"args": ["--from", "ecfr-md[mcp] @ git+https://github.com/ptmorris05/ecfr-md", "ecfr-md", "mcp"]`). `--http` serves streamable HTTP instead of stdio. The tools are read-only; `export` writes only under `--export-dir` (default: the current directory; `--no-export` removes it), and agents can change settings only with `--allow-config-changes`. Python apps can serve it themselves: `ecfr_md.mcp.server(ecfr)` returns the FastMCP server.
+
+Agents with a shell can use the command line instead: [`skills/ecfr-md/SKILL.md`](https://github.com/ptmorris05/ecfr-md/blob/main/skills/ecfr-md/SKILL.md) is a skill that teaches it, and every command takes `--json`. The [AI agents guide](https://ptmorris05.github.io/ecfr-md/agents/) lists the tools, resources and prompts, and the measured cost of common tasks.
 
 ## API
 

@@ -560,9 +560,18 @@ def redline(comparison: Comparison) -> Group:
     for difference in comparison.differences:
         text = Text()
         for op, words in difference.words:
-            text.append(words.replace("**", ""), style=styles[op])
+            text.append(_unmarked(words), style=styles[op])
         blocks += [Text(labels[difference.kind], style=f"bold {DIM}"), text, Text()]
     return Group(*blocks)
+
+
+EMPHASIS = re.compile(r"(?<!\\)\*+")  # Markdown's * and **, not an escaped \*.
+ESCAPED = re.compile(r"\\([\\`*_{}\[\]()#+\-.!<>|])")
+
+
+def _unmarked(words: str) -> str:
+    """Words of Markdown as they read: no emphasis marks or escapes."""
+    return ESCAPED.sub(r"\1", EMPHASIS.sub("", words))
 
 
 SUPERSCRIPT = str.maketrans(

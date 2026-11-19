@@ -46,8 +46,14 @@ docx = [
 pdf = [
     "typst>=0.15.2",
 ]
+tui = [
+    "textual>=8.2.8",
+]
 all = [
-    "ecfr-md[docx,pdf]",
+    "ecfr-md[docx,mcp,pdf,tui]",
+]
+mcp = [
+    "fastmcp>=4.2.2",
 ]
 
 [tool.uv.build-backend]
@@ -61,12 +67,14 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "fastmcp>=4.2.2",
     "pypdf>=7.1.1",
     "pyright>=1.1.414",
     "pytest>=9.1.1",
     "pytest-cov>=7.1.0",
     "python-docx>=1.2.0",
     "ruff>=0.17.0",
+    "textual>=8.2.8",
     "typst>=0.15.2",
 ]
 
