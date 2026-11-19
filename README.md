@@ -546,7 +546,7 @@ claude mcp add ecfr -- uvx --from "ecfr-md[mcp] @ git+https://github.com/ptmorri
 
 Other clients take the same command in their JSON config (`"command": "uvx"`, `"args": ["--from", "ecfr-md[mcp] @ git+https://github.com/ptmorris05/ecfr-md", "ecfr-md", "mcp"]`). `--http` serves streamable HTTP instead of stdio. The tools are read-only; `export` writes only under `--export-dir` (default: the current directory; `--no-export` removes it), and agents can change settings only with `--allow-config-changes`. Python apps can serve it themselves: `ecfr_md.mcp.server(ecfr)` returns the FastMCP server.
 
-Agents with a shell can use the command line instead: [`skills/ecfr-md/SKILL.md`](skills/ecfr-md/SKILL.md) is a skill that teaches it, and every command takes `--json`. The [AI agents guide](https://ptmorris05.github.io/ecfr-md/agents/) lists the tools, resources and prompts, and the measured cost of common tasks.
+Agents with a shell can use the command line instead: [`skills/ecfr-md/SKILL.md`](https://github.com/ptmorris05/ecfr-md/blob/main/skills/ecfr-md/SKILL.md) is a skill that teaches it, and every command takes `--json`. The [AI agents guide](https://ptmorris05.github.io/ecfr-md/agents/) lists the tools, resources and prompts, and the measured cost of common tasks.
 
 ## API
 
