@@ -82,7 +82,9 @@ class Hierarchy(TypedDict, total=False):
     chapter: str
         Chapter, roman numerals or digits, e.g. 'I'.
     subchapter: str
-        Subchapter, e.g. 'C'. Full text ignores this unless chapter is also given.
+        Subchapter, e.g. 'C'. The API's full text ignores subtitle, chapter
+        and subchapter and returns the whole title; ecfr-md get and save cut
+        them out of it.
     part: str
         Part, e.g. '164'.
     subpart: str

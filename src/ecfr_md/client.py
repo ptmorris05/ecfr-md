@@ -433,6 +433,9 @@ class ECFR:
             Point-in-time date: a ``date``, ``datetime`` or text such as
             ``"2020-01-01"``, ``"Jan 1 2020"`` or ``"last year"``. Defaults to
             the most recent available.
+        **hierarchy: Hierarchy
+            Levels that refine the citation: subtitle, chapter, subchapter,
+            part, subpart, section or appendix, e.g. ``part="164"``.
         """
         cited = Citation.parse(citation).with_hierarchy(hierarchy)
         pinned = self._snapshot(cited.title, _day(date))
@@ -488,6 +491,9 @@ class ECFR:
             A title number or citation, as for :meth:`get`.
         date: DateLike | None
             Point-in-time date. Defaults to the most recent available.
+        **hierarchy: Hierarchy
+            Levels that refine the citation: subtitle, chapter, subchapter,
+            part, subpart, section or appendix, e.g. ``part="164"``.
         """
         cited = Citation.parse(citation).with_hierarchy(hierarchy)
         date = self._when(cited.title, date)
@@ -523,6 +529,9 @@ class ECFR:
             The earlier date, e.g. the day before a change took effect.
         until: DateLike | None
             The later date. Defaults to the most recent available.
+        **hierarchy: Hierarchy
+            Levels that refine the citation: subtitle, chapter, subchapter,
+            part, subpart, section or appendix, e.g. ``part="164"``.
         """
         cited = Citation.parse(citation).with_hierarchy(hierarchy)
         before = self.get(citation, date=since, **hierarchy)
@@ -565,6 +574,9 @@ class ECFR:
             Only changes issued on or after this date.
         until: DateLike | None
             Only changes issued on or before this date.
+        **hierarchy: Hierarchy
+            Levels that refine the citation: subtitle, chapter, subchapter,
+            part, subpart, section or appendix, e.g. ``part="164"``.
         """
         cited = Citation.parse(citation).with_hierarchy(hierarchy)
         versions: list[models.ContentVersion] = []
@@ -612,6 +624,9 @@ class ECFR:
             the eCFR reads as phrases.
         all_versions: bool
             Include past versions of sections, not only current text.
+        **filters: SearchFilters
+            ``within`` (a citation such as ``"45 CFR Part 164"``),
+            ``agency_slugs``, ``date`` and the ``last_modified_*`` dates.
         """
         if not query.strip():
             raise InvalidParameterError(
@@ -820,6 +835,9 @@ class ECFR:
             retrieval time and a note that the eCFR is not an official edition.
         date: DateLike | None
             Point-in-time date. Defaults to the most recent available.
+        **hierarchy: Hierarchy
+            Levels that refine the citation: subtitle, chapter, subchapter,
+            part, subpart, section or appendix, e.g. ``part="164"``.
         """
         cited = Citation.parse(citation).with_hierarchy(hierarchy)
         if str(path).endswith(("/", "\\")):  # Path() would drop this: a directory.
@@ -1433,6 +1451,9 @@ class Search:
             Result ordering.
         paginate_by: PaginateBy | None
             ``date`` keeps all results from one date on the same page.
+        **filters: SearchFilters
+            ``within`` (a citation such as ``"45 CFR Part 164"``),
+            ``agency_slugs``, ``date`` and the ``last_modified_*`` dates.
         """
         params = {
             "query": query,
@@ -1454,6 +1475,9 @@ class Search:
         ----------
         query: str | None
             Search term; matches headings and full text.
+        **filters: SearchFilters
+            ``within`` (a citation such as ``"45 CFR Part 164"``),
+            ``agency_slugs``, ``date`` and the ``last_modified_*`` dates.
         """
         return self._get(models.SearchCount, "count", {"query": query, **filters})
 
@@ -1467,6 +1491,9 @@ class Search:
         ----------
         query: str | None
             Search term; matches headings and full text.
+        **filters: SearchFilters
+            ``within`` (a citation such as ``"45 CFR Part 164"``),
+            ``agency_slugs``, ``date`` and the ``last_modified_*`` dates.
         """
         return self._get(models.SearchSummary, "summary", {"query": query, **filters})
 
@@ -1480,6 +1507,9 @@ class Search:
         ----------
         query: str | None
             Search term; matches headings and full text.
+        **filters: SearchFilters
+            ``within`` (a citation such as ``"45 CFR Part 164"``),
+            ``agency_slugs``, ``date`` and the ``last_modified_*`` dates.
         """
         params = {"query": query, **filters}
         return self._get(models.DailyCounts, "counts/daily", params)
@@ -1494,6 +1524,9 @@ class Search:
         ----------
         query: str | None
             Search term; matches headings and full text.
+        **filters: SearchFilters
+            ``within`` (a citation such as ``"45 CFR Part 164"``),
+            ``agency_slugs``, ``date`` and the ``last_modified_*`` dates.
         """
         params = {"query": query, **filters}
         return self._get(models.TitleCounts, "counts/titles", params)
@@ -1508,6 +1541,9 @@ class Search:
         ----------
         query: str | None
             Search term; matches headings and full text.
+        **filters: SearchFilters
+            ``within`` (a citation such as ``"45 CFR Part 164"``),
+            ``agency_slugs``, ``date`` and the ``last_modified_*`` dates.
         """
         params = {"query": query, **filters}
         return self._get(models.HierarchyCounts, "counts/hierarchy", params)
@@ -1522,6 +1558,9 @@ class Search:
         ----------
         query: str | None
             Partial search term.
+        **filters: SearchFilters
+            ``within`` (a citation such as ``"45 CFR Part 164"``),
+            ``agency_slugs``, ``date`` and the ``last_modified_*`` dates.
         """
         params = {"query": query, **filters}
         return self._get(models.Suggestions, "suggestions", params)
@@ -1575,6 +1614,9 @@ class Versioner:
             CFR title number.
         date: DateLike | None
             Point-in-time date. Defaults to the most recent available.
+        **hierarchy: Hierarchy
+            Levels that refine the citation: subtitle, chapter, subchapter,
+            part, subpart, section or appendix, e.g. ``part="164"``.
         """
         date = _day(date) or self.latest_date(title)
         path = f"{VERSIONER}/ancestry/{date}/title-{title}.json"
@@ -1620,6 +1662,9 @@ class Versioner:
             Only content added on or after this issue date.
         page: Page | None
             Page number; up to 1,000 results per page.
+        **hierarchy: Hierarchy
+            Levels that refine the citation: subtitle, chapter, subchapter,
+            part, subpart, section or appendix, e.g. ``part="164"``.
         """
         params = {
             "issue_date[on]": issue_date_on,
@@ -1647,6 +1692,9 @@ class Versioner:
             CFR title number.
         date: DateLike | None
             Point-in-time date. Defaults to the most recent available.
+        **hierarchy: Hierarchy
+            Levels that refine the citation: subtitle, chapter, subchapter,
+            part, subpart, section or appendix, e.g. ``part="164"``.
         """
         date = _day(date) or self.latest_date(title)
         path = f"{VERSIONER}/full/{date}/title-{title}.xml"
