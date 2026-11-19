@@ -48,6 +48,7 @@ from ecfr_md.errors import (
     ECFRWarning,
     InvalidCitationError,
     InvalidParameterError,
+    MissingDependencyError,
     NodeNotFoundError,
     NotFoundError,
     RateLimitError,
@@ -57,6 +58,7 @@ from ecfr_md.errors import (
 )
 from ecfr_md.params import Hierarchy, PaginateBy, SearchFilters, SearchOrder
 from ecfr_md.progress import Progress
+from ecfr_md.render import Format
 from ecfr_md.results import Change, Match, Matches, Outline, TitleInfo
 from ecfr_md.shortcuts import (
     changes,
@@ -89,6 +91,7 @@ __all__ = [
     "ECFRError",
     "ECFRTimeoutError",
     "ECFRWarning",
+    "Format",
     "Hierarchy",
     "InvalidCitationError",
     "InvalidParameterError",
@@ -96,6 +99,7 @@ __all__ = [
     "LevelName",
     "Match",
     "Matches",
+    "MissingDependencyError",
     "Node",
     "NodeNotFoundError",
     "NotFoundError",

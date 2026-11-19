@@ -21,6 +21,7 @@ dependencies = [
     "cyclopts>=5.2.0",
     "dateparser>=1.4.3",
     "httpx2[http2]>=2.13.1",
+    "markdown-it-py>=4.3.0",
     "pydantic>=2.14.0",
     "rich>=15.0.0",
     "tenacity>=9.2.1",
@@ -36,6 +37,17 @@ Changelog = "https://github.com/ptmorris05/ecfr-md/blob/main/CHANGELOG.md"
 [project.scripts]
 ecfr-md = "ecfr_md.cli:main"
 
+[project.optional-dependencies]
+docx = [
+    "python-docx>=1.2.0",
+]
+pdf = [
+    "typst>=0.15.2",
+]
+all = [
+    "ecfr-md[docx,pdf]",
+]
+
 [tool.uv.build-backend]
 # Also ship the changelog, the license once added, and the tests, which
 # distribution packagers run against the source distribution.
@@ -47,10 +59,13 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "pypdf>=7.1.1",
     "pyright>=1.1.414",
     "pytest>=9.1.1",
     "pytest-cov>=7.1.0",
+    "python-docx>=1.2.0",
     "ruff>=0.17.0",
+    "typst>=0.15.2",
 ]
 
 [tool.ruff.lint]

@@ -52,6 +52,7 @@ from ecfr_md.output import (
     write_text,
 )
 from ecfr_md.params import Hierarchy, as_hierarchy
+from ecfr_md.render.formats import Format, format_for
 
 
 class Level(StrEnum):
@@ -245,26 +246,47 @@ class Node(ABC):
         *,
         tree: Literal[False] = False,
         front_matter: bool = True,
+        format: Format | None = None,
     ) -> Path: ...
 
     @overload
     def save(
-        self, path: str | Path, *, tree: Literal[True], front_matter: bool = True
+        self,
+        path: str | Path,
+        *,
+        tree: Literal[True],
+        front_matter: bool = True,
+        format: Format | None = None,
     ) -> list[Path]: ...
 
     def save(
-        self, path: str | Path, *, tree: bool = False, front_matter: bool = True
+        self,
+        path: str | Path,
+        *,
+        tree: bool = False,
+        front_matter: bool = True,
+        format: Format | None = None,
     ) -> Path | list[Path]:
-        """Write Markdown to ``path``.
+        """Write this node to ``path``: Markdown, or another ``format``.
 
         Returns the file written, or with ``tree=True`` the list of files.
         By default this writes one file; an existing directory receives a file
         named after the address, e.g. ``45_164.502.md``. With
         ``tree=True``, ``path`` is a directory that gets one folder per
         hierarchy level and one file per section or appendix. Each
-        file starts with YAML front matter (see :attr:`provenance`) unless
-        ``front_matter`` is false. Files are replaced atomically.
+        Markdown file starts with YAML front matter (see :attr:`provenance`)
+        unless ``front_matter`` is false. Files are replaced atomically.
+
+        ``format`` is ``"markdown"``, ``"text"``, ``"html"``, ``"json"``,
+        ``"epub"``, ``"docx"`` or ``"pdf"``; by default the file's suffix
+        decides (``hipaa.pdf``), and Markdown is the default for directories
+        and names without one. See :meth:`export`.
         """
+        kind = format_for(path, format, tree=tree)
+        if kind != "markdown":
+            from ecfr_md.render.export import export
+
+            return export(self, path, kind, tree=tree, front_matter=front_matter)
         target = Path(path)
         if target.is_dir() or str(path).endswith(("/", "\\")):
             target = target / file_name(self._address(), self.source)
@@ -272,6 +294,48 @@ class Node(ABC):
         text = with_front_matter(self.provenance, body) if front_matter else body
         written = write_text(target, text)
         return [written] if tree else written
+
+    @overload
+    def export(
+        self,
+        path: str | Path,
+        format: Format | None = None,
+        *,
+        tree: Literal[False] = False,
+        front_matter: bool = True,
+    ) -> Path: ...
+
+    @overload
+    def export(
+        self,
+        path: str | Path,
+        format: Format | None = None,
+        *,
+        tree: Literal[True],
+        front_matter: bool = True,
+    ) -> list[Path]: ...
+
+    def export(
+        self,
+        path: str | Path,
+        format: Format | None = None,
+        *,
+        tree: bool = False,
+        front_matter: bool = True,
+    ) -> Path | list[Path]:
+        """Save this node as Markdown, text, HTML, JSON, EPUB, Word or PDF.
+
+        The format is ``format``, or else the file's suffix: ``.md``,
+        ``.txt``, ``.html``, ``.json``, ``.epub``, ``.docx`` or ``.pdf``.
+        Word and PDF need the ``docx`` and ``pdf`` extras. With ``tree``,
+        ``path`` is a directory: text and HTML get a file per section or
+        appendix and an index page per level, like Markdown; JSON, EPUB,
+        Word and PDF get a file per part.
+
+        >>> part.export("hipaa.pdf")
+        >>> part.export("site/", format="html", tree=True)
+        """
+        return self.save(path, tree=tree, front_matter=front_matter, format=format)
 
     @property
     def text(self) -> str:
@@ -599,18 +663,31 @@ class Division(Node):
         *,
         tree: Literal[False] = False,
         front_matter: bool = True,
+        format: Format | None = None,
     ) -> Path: ...
 
     @overload
     def save(
-        self, path: str | Path, *, tree: Literal[True], front_matter: bool = True
+        self,
+        path: str | Path,
+        *,
+        tree: Literal[True],
+        front_matter: bool = True,
+        format: Format | None = None,
     ) -> list[Path]: ...
 
     def save(
-        self, path: str | Path, *, tree: bool = False, front_matter: bool = True
+        self,
+        path: str | Path,
+        *,
+        tree: bool = False,
+        front_matter: bool = True,
+        format: Format | None = None,
     ) -> Path | list[Path]:
-        if not tree:
-            return super().save(path, front_matter=front_matter)
+        if not tree or format_for(path, format, tree=True) != "markdown":
+            return super().save(
+                path, tree=tree, front_matter=front_matter, format=format
+            )
         base = self.parent.hierarchy if self.parent else self.source.hierarchy
         return save_events(
             markdown.element_events(self.element),
@@ -728,6 +805,8 @@ class Paragraph(Node):
         self.depth = depth
         self.blocks: list[str] = []
         self._children: list[Paragraph] = []
+        # The XML element whose text starts this paragraph, for exports.
+        self._element: ET.Element | None = None
 
     @property
     def children(self) -> tuple[Node, ...]:
@@ -1014,6 +1093,7 @@ def _paragraphs(section: Section) -> list[Paragraph]:
                     open_.pop()
                 parent = open_[-1] if open_ else section
                 paragraph = Paragraph(marker, depth, parent)
+                paragraph._element = element
                 (open_[-1]._children if open_ else roots).append(paragraph)
                 open_.append(paragraph)
             assert match is not None  # _leading found markers, so it matched.
