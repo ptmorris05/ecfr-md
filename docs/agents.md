@@ -92,7 +92,7 @@ content matching its output schema, for programs.
 | `list_titles` | The 50 titles and the latest date of each |
 | `outline(citation, depth, date)` | Table of contents with estimated tokens per entry; as many levels as fit unless `depth` is given |
 | `read(citation, date, budget_tokens, cursor)` | The text that fits the budget, ending at a paragraph, with a cursor to continue; never cut silently. Paragraph labels are full pinpoints ("(a)(1)(ii)"). Gives the citation, address, date, eCFR link, paragraph ids, parent, previous, next, children and cross-references |
-| `search(query, within, limit, date, phrase)` | Full-text search with excerpts |
+| `search(query, within, limit, date, phrase)` | Full-text search with excerpts: the exact phrase first, then all the words in any form; the eCFR's operators (`"phrase"`, `-not`, `a \| b`, `( )`, `prefix*`, `"phrase"~N`) |
 | `changes(citation, since, until)` | Each change issued, newest first |
 | `history(citation)` | The versions over time, grouped by date |
 | `compare(citation, from_date, to_date)` | Word-level redline, located by pinpoint, with the amendments between the dates |

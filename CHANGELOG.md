@@ -244,6 +244,19 @@ Install from GitHub; ecfr-md is not on PyPI.
 
 ### Changed
 
+- **Search finds words in any form.** Plain words now find the exact
+  phrase first and then sections with all the words, stemmed, so
+  "ethnic slur" finds "ethnic slurs" (it found nothing before, because
+  words were always searched as an exact phrase, which the eCFR doesn't
+  stem). `phrase=True` / `--phrase` keeps only the exact phrase;
+  `phrase=False` / `--no-phrase` only the words. A quoted phrase that
+  matches nothing is searched again as words, with a note. In the SDK,
+  CLI, web navigator, terminal browser and MCP server alike.
+- **Search operators**: `"exact phrase"`, `-exclude`, `a | b`, `( )`,
+  `prefix*` and `"phrase"~N` go to the eCFR as written, and `AND`, `OR`,
+  `NOT` in capitals are read as operators; unbalanced quotes and
+  parentheses are explained (`ecfr_md.query`). `Matches` has `query`,
+  `exact` and `note`; results mark the query's words in any form.
 - `ECFR()` without settings reads the config file and `ECFR_MD_*`
   variables (`Settings.load()`); `Settings()` is still the defaults.
   `Settings` rejects unknown names.

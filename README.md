@@ -69,7 +69,8 @@ ecfr-md get --all --tree -o cfr/                 # the whole CFR, every title
 
 ecfr-md titles                                   # what titles exist
 ecfr-md browse 45 CFR 164.502                    # read and navigate full screen
-ecfr-md search minimum necessary                 # sections that use the phrase
+ecfr-md search minimum necessary                 # the phrase first, then all the words
+ecfr-md search 'ethnic (slur | epithet) -sexual'  # the eCFR's operators work too
 ecfr-md search minimum necessary --in "45 CFR 164"   # only in Part 164
 ecfr-md search "minimum necessary" --save out/   # and save their text
 ecfr-md outline 45 CFR Part 164 --depth 1        # table of contents, no text
@@ -96,13 +97,13 @@ ecfr-md cache clear
 | `cited-by CITATION` | Lists sections that may cite a section or part, by searching for its number: approximate. `--limit`, `--date`, `--json`. |
 | `changes CITATION` | Lists changes to sections: when issued, when effective, and whether substantive, editorial or a removal. `--since` and `--until` take dates. Ends with the `compare` command for the latest change. |
 | `compare CITATION --since DATE` | Shows what changed in the text between `--since` and `--until` (default: latest): changed, added and removed paragraphs, with words struck out and inserted. Piped, it prints Markdown with `<del>` and `<ins>`. |
-| `search WORDS` | Lists current sections that contain the words as a phrase (quotes optional; `--no-phrase`: anywhere in the section). `--in CITATION` searches only a title or part of one. `--limit N` (default 20), `--all-versions`, `--save DIR`, `--json`, plus the API's filters (`--agency SLUG`, `--date`, `--last-modified-after`, …); an unknown agency is named, with suggestions. |
+| `search WORDS` | Lists current sections that match: plain words find the exact phrase first, then sections with all the words in any form (`--phrase` for only the phrase, `--no-phrase` for only the words). Operators work too; see [Search syntax](#search-syntax). `--in CITATION` searches only a title or part of one. `--limit N` (default 20), `--all-versions`, `--save DIR`, `--json`, plus the API's filters (`--agency SLUG`, `--date`, `--last-modified-after`, …); an unknown agency is named, with suggestions. |
 | `sync PATH` | Updates a file, tree or directory saved by `get`, `search --save` or `--from`, searching folders to any depth. Rewrites only files whose text changed, deletes files for sections that no longer exist, and leaves other files alone. Keeps snapshots saved with a past `--date` (`--include-dated` updates them) and files you edited (`--force` overwrites them). `--dry-run` shows what would change. See [Keeping files up to date](#keeping-files-up-to-date). |
 | `cache info`, `cache clear` | Shows (`--json` too) or deletes the local cache. |
 | `config show`, `config path`, `config set KEY VALUE`, `config unset KEY`, `config edit` | Shows every setting and where its value came from (`--json` too), and how text sources are chosen; shows where the config file is; sets or removes a setting in it (`headers.NAME` for a header), checking the value first; opens it in `$VISUAL` or `$EDITOR`. See [Configuration](#configuration). |
 | `api admin …`, `api search …`, `api versioner …` | One command per API endpoint, printing its JSON. See [API](#api). |
 
-`titles`, `outline`, `changes`, `compare`, `search`, `references` and `cited-by` take `--json` for JSON output (`search --json` is `{"complete", "total_versions", "results"}`). A citation can be one quoted string or separate words, and anything in [Citations and addresses](#citations-and-addresses) works, eCFR links and saved files' names included; keywords such as `--part 164` work too. Without `-o`, `get` prints formatted text in a terminal and plain Markdown when piped. When stderr isn't a terminal (a pipe, a log, CI), messages and summaries are plain whole lines you can grep.
+`titles`, `outline`, `changes`, `compare`, `search`, `references` and `cited-by` take `--json` for JSON output (`search --json` is `{"complete", "total_versions", "query", "exact", "note", "results"}`). A citation can be one quoted string or separate words, and anything in [Citations and addresses](#citations-and-addresses) works, eCFR links and saved files' names included; keywords such as `--part 164` work too. Without `-o`, `get` prints formatted text in a terminal and plain Markdown when piped. When stderr isn't a terminal (a pipe, a log, CI), messages and summaries are plain whole lines you can grep.
 
 A citation that names a subpart or appendix without its part, like `45 CFR Subpart E`, is checked against the title's table of contents: if several parts have one, the error lists them rather than guessing. A citation that doesn't exist says what does ("No subpart Z in 45 CFR Part 164. It has subparts A, B, C, D, E"). A date after the latest the eCFR has gives the latest text, with a warning, and files are labeled with the text's real date.
 
@@ -513,7 +514,24 @@ Definitions sections are those headed "Definitions" (and similar) in the place's
 
 `changes()` returns `Change` objects, newest first: `citation`, `level`, `heading`, `url`, `issued` (when the eCFR published it), `effective` and `kind` (`"substantive"`, `"editorial"` or `"removed"`).
 
-`search()` returns `Match` objects, best first: `citation` (pass it to `get`), `level`, `identifier`, `heading`, `url`, `excerpt`, `starts_on` and `ends_on`. The list's `.total` is how many the eCFR found. Words are matched as a phrase unless `phrase=False` or the query has its own quotes; `limit`, `all_versions` and the API's filters (`agency_slugs`, `date`, `last_modified_after`, …) are keywords.
+`search()` returns `Match` objects, best first: `citation` (pass it to `get`), `level`, `identifier`, `heading`, `url`, `excerpt`, `starts_on` and `ends_on`. The list's `.total` is how many the eCFR found, `.exact` how many of the first matches have the exact phrase, and `.note` says when the search was widened. `phrase=True` finds only the exact phrase and `phrase=False` only all the words; `limit`, `all_versions` and the API's filters (`agency_slugs`, `date`, `last_modified_after`, …) are keywords.
+
+#### Search syntax
+
+Every interface searches the same way. Plain words find the exact phrase first, then sections with all the words in any form, so `ethnic slur` finds "ethnic slurs" too. A query can also use the eCFR's operators:
+
+| Query | Finds |
+| --- | --- |
+| `minimum necessary` | The exact phrase first, then sections with both words, in any form |
+| `"minimum necessary"` | Only the exact phrase, as written (if nothing matches, its words are searched instead, with a note) |
+| `privacy -marketing` | Without a word (`-"a phrase"` works too) |
+| `slur \| epithet` | Either word |
+| `ethnic (slur \| epithet)` | Grouped: "ethnic" and either word |
+| `harass*` | Words that start with "harass" |
+| `"protected information"~3` | The phrase's words within 3 words of each other |
+| `privacy AND NOT marketing`, `slur OR epithet` | `AND`, `OR` and `NOT` in capitals, read as the operators above |
+
+Unbalanced quotes or parentheses are reported, not sent.
 
 Each keeps the API's response in `.raw`.
 

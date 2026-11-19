@@ -23,6 +23,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Checkbox, Input, OptionList, Select, Static
 from textual.widgets.option_list import Option
 
+from ecfr_md import query as queries
 from ecfr_md.compare import Comparison
 from ecfr_md.errors import InvalidParameterError
 from ecfr_md.params import SearchFilters, to_date
@@ -192,7 +193,11 @@ class Search(Dialog[str | None]):
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Static("Search", classes="title")
-            yield Input(self._query, placeholder="Words or a phrase", compact=True)
+            yield Input(
+                self._query,
+                placeholder='Words, "a phrase", -not, a | b, prefix*',
+                compact=True,
+            )
             if self._within is not None:
                 yield Checkbox(
                     f"Only in {self._within.citation}", id="within", compact=True
@@ -221,13 +226,15 @@ class Search(Dialog[str | None]):
         self._matches = list(matches)
         total = getattr(matches, "total", len(matches))
         status = self.query_one("#status", Static)
+        note = getattr(matches, "note", "")
         if not matches:
-            status.update("No matches")
+            status.update(f"No matches. Search syntax: {queries.SYNTAX}")
         else:
             shown = len(matches)
             status.update(
                 f"{shown} {'match' if shown == 1 else 'matches'}"
-                + (f" of {total:,} versions" if total > shown else "")
+                + (f" of {total:,} versions" if total and total > shown else "")
+                + (f". {note}" if note else "")
             )
         results = self.query_one("#results", OptionList)
         results.clear_options()

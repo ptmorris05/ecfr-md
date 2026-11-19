@@ -253,7 +253,7 @@ async def test_search_and_cited_by(client, api):
     assert text.startswith("May cite 45 CFR 164.502: 1 sections\n45 CFR 164.404")
     api.json("/api/search/v1/results", {"results": [], "meta": {"total_pages": 1}})
     text, _ = await call(client, "search", query="nothing")
-    assert text == "Search 'nothing': nothing found."
+    assert text.startswith("Search 'nothing': nothing found. Search syntax:")
 
 
 async def test_changes_and_history(client):

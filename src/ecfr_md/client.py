@@ -51,6 +51,7 @@ from tenacity import (
 
 from ecfr_md import definitions as defined
 from ecfr_md import models, sources
+from ecfr_md import query as queries
 from ecfr_md.address import (
     APPENDIX_KEY,
     Address,
@@ -858,60 +859,106 @@ class ECFR:
         /,
         *,
         limit: Annotated[int, Field(ge=1)] = 20,
-        phrase: bool = True,
+        phrase: bool | None = None,
         all_versions: bool = False,
         **filters: Unpack[SearchFilters],
     ) -> Matches:
         """Sections and appendices that match a search, best first.
 
         Each match has a ``citation`` to pass to :meth:`get`, a ``heading``
-        and an ``excerpt``; ``matches.total`` is how many the eCFR found.
+        and an ``excerpt``; ``matches.total`` is how many the eCFR found,
+        and ``matches.note`` says when the search was widened.
+
+        Plain words find the exact phrase first, then sections with all the
+        words in any form ("ethnic slur" also finds "ethnic slurs"). The
+        eCFR's operators work too: ``"exact phrase"``, ``-exclude``,
+        ``a | b``, ``( )``, ``prefix*`` and ``"phrase"~3``, and ``AND``,
+        ``OR``, ``NOT`` in capitals (see :mod:`ecfr_md.query`). A quoted
+        phrase that matches nothing is searched again as words.
 
         Parameters
         ----------
         query: str
-            Words to search for in headings and text.
+            Words or a query to search headings and text for.
         limit: int
             Maximum number of matches to return.
-        phrase: bool
-            Match the words as a phrase, in order. With ``False``, the words
-            can appear anywhere. Ignored if the query contains quotes, which
-            the eCFR reads as phrases.
+        phrase: bool | None
+            For plain words: ``True`` finds only the exact phrase, ``False``
+            only all the words; by default, the phrase first, then the words.
+            Ignored for queries with operators.
         all_versions: bool
             Include past versions of sections, not only current text.
         **filters: SearchFilters
             ``within`` (a citation such as ``"45 CFR Part 164"``),
             ``agency_slugs``, ``date`` and the ``last_modified_*`` dates.
         """
-        if not query.strip():
-            raise InvalidParameterError(
-                'Give words to search for, e.g. "minimum necessary"'
+        text = queries.normalize(query)
+        words = queries.relaxed(text)
+        if queries.is_advanced(text) or phrase is False or " " not in text:
+            plan = [text]
+        elif phrase:
+            plan = [queries.phrase(text)]
+        else:
+            plan = [queries.phrase(text), text]
+        found = Matches(query=plan[0])
+        for sent in plan:
+            if len(found) >= limit and sent != plan[0]:
+                break
+            more = self._search(sent, limit, found, all_versions, filters)
+            found.query, found.total, found.complete = sent, more.total, more.complete
+            if sent == plan[0] and len(plan) > 1:
+                found.exact = len(found)
+        if not found and words != plan[-1]:
+            # A phrase with no matches: its words, stemmed, may have some.
+            more = self._search(words, limit, found, all_versions, filters)
+            found.query, found.total, found.complete = words, more.total, more.complete
+            if found:
+                found.note = (
+                    f"Nothing matched {text}; showing matches for {words} "
+                    "(all the words, in any form)"
+                )
+        elif found.exact == 0 and len(plan) > 1 and found:
+            found.note = (
+                f'No exact matches for "{text}"; these have all the words, in any form'
             )
-        if phrase and '"' not in query and len(query.split()) > 1:
-            query = f'"{query}"'
+        if not found and (slugs := filters.get("agency_slugs")):
+            self._check_agencies(slugs)
+        return found
+
+    def _search(
+        self,
+        query: str,
+        limit: int,
+        found: Matches,
+        all_versions: bool,
+        filters: SearchFilters,
+    ) -> Matches:
+        """Add a query's matches to ``found``, up to ``limit``; return the
+        query's own total and whether all its matches were read."""
         per_page = min(MAX_PER_PAGE, limit * 3)  # Duplicates are dropped below.
-        matches: list[Match] = []
-        seen: set[str] = set()
-        page = 1
-        while True:
-            found = self.api.search.results(
+        seen = {m.citation for m in found}
+        page = pages = 1
+        total = None
+        while len(found) < limit:
+            result = self.api.search.results(
                 query, per_page=per_page, page=page, **filters
             )
-            for result in found.results:
-                match = Match.from_result(result, self.settings.site_url)
-                current = result.ends_on is None or all_versions
-                if current and not result.removed and match.citation not in seen:
+            total = result.meta.total_count
+            for item in result.results:
+                match = Match.from_result(item, self.settings.site_url)
+                current = item.ends_on is None or all_versions
+                if current and not item.removed and match.citation not in seen:
                     seen.add(match.citation)
-                    matches.append(match)
-            pages = found.meta.total_pages or 1
+                    found.append(match)
+            pages = result.meta.total_pages or 1
             # The API can't page beyond 10,000 results.
-            if len(matches) >= limit or page >= pages or page * per_page >= 10_000:
+            if page >= pages or page * per_page >= 10_000:
                 break
             page += 1
-        if not matches and (slugs := filters.get("agency_slugs")):
-            self._check_agencies(slugs)
-        complete = page >= pages and len(matches) <= limit
-        return Matches(matches[:limit], found.meta.total_count, complete=complete)
+        if len(found) > limit:
+            del found[limit:]
+            return Matches(total=total, complete=False)
+        return Matches(total=total, complete=page >= pages)
 
     @validated
     def define(

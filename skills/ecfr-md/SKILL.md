@@ -28,6 +28,8 @@ addresses such as `45/164.502/a/1` and `45/part-164/subpart-E`.
    - `ecfr-md outline 45 CFR Part 164 --depth 1 --json` is a table of
      contents (`size` is the text's size in bytes; about 4 bytes a token).
    - `ecfr-md search "minimum necessary" --in "45 CFR Part 164" --limit 5 --json`
+     (the exact phrase first, then all the words in any form; operators:
+     `'"exact phrase"'`, `-exclude`, `'a | b'`, `( )`, `prefix*`, `'"phrase"~3'`)
      finds text.
 2. **Read only what you need.** `ecfr-md get "45 CFR 164.502(b)"` prints
    one paragraph; a section or subpart prints whole. For big divisions,

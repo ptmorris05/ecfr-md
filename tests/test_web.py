@@ -10,7 +10,7 @@ from pathlib import Path
 import httpx2
 import pytest
 from starlette.testclient import TestClient
-from web_data import EARLIER, LATEST, RESULTS, VERSIONS, install
+from web_data import EARLIER, LATEST, RESULTS, VERSIONS, install, result
 
 import ecfr_md
 from ecfr_md import ECFR, Settings, cli
@@ -250,7 +250,7 @@ def test_search(client, api):
     assert 'href="/current/title-45/section-164.102#:~:text=must%20comply"' in (
         page.text
     )
-    assert api.requests[-1].url.params["query"] == '"must comply"'
+    assert api.requests[-1].url.params["query"] == "must comply"  # After the phrase.
     data = client.get("/search.json?q=comply&limit=nope").json()
     assert data["total"] == 1 and data["results"][0]["citation"] == "45 CFR 164.102"
     assert client.get("/search.json?q=comply&limit=5").json()["error"] is None
@@ -258,7 +258,7 @@ def test_search(client, api):
     assert markdown.startswith("# Search: comply in 45")
     assert "## [45 CFR 164.102](/current/title-45/section-164.102.md)" in markdown
     assert "Search with ?q=words" in client.get("/search.md").text
-    assert "Words or" in client.get("/search").text
+    assert "Search syntax" in client.get("/search").text
     error = client.get("/search.json?q=x&within=nonsense").json()["error"]
     assert error
     assert error in client.get("/search.md?q=x&within=nonsense").text
@@ -268,6 +268,23 @@ def test_search(client, api):
     api.json(RESULTS, {"results": [], "meta": {}})
     assert "Nothing found" in client.get("/search?q=zebra").text
     assert "\n\n## " not in client.get("/search.md?q=zebra").text
+
+
+def test_search_says_when_it_widened(client, api):
+    def answer(request):
+        exact = request.url.params["query"].startswith('"')
+        found = [] if exact else [result("164.102", "they must comply now.")]
+        return httpx2.Response(200, json={"results": found, "meta": {}})
+
+    api.routes[RESULTS] = answer
+    note = 'No exact matches for "ethnic slurs"'
+    assert "No exact matches for" in client.get("/search?q=ethnic slurs").text
+    assert client.get("/search.json?q=ethnic slurs").json()["note"].startswith(note)
+    assert note in client.get("/search.md?q=ethnic slurs").text
+    # Stems are marked: "comply" marks "complying"; excluded words aren't.
+    page = client.get("/search?q=complying -must")  # Advanced: sent as is.
+    assert "<mark>comply</mark>" in page.text and "<mark>must</mark>" not in page.text
+    assert "#:~:text" not in page.text  # No phrase to point to.
 
 
 def test_history_and_compare(client, api):

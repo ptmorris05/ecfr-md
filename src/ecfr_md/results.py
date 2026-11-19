@@ -791,7 +791,10 @@ class Matches(list[Match]):
 
     ``total`` is how many matching versions the eCFR counted: a section that
     matches in several versions counts several times. ``complete`` is true
-    when every match is in the list.
+    when every match is in the list. ``query`` is what was last sent to the
+    eCFR; ``exact`` how many of the first matches have the exact phrase,
+    when plain words were searched as a phrase and then as words; ``note``
+    says when the search was widened to find anything.
     """
 
     def __init__(
@@ -800,16 +803,25 @@ class Matches(list[Match]):
         total: int | None = None,
         *,
         complete: bool = False,
+        query: str = "",
+        exact: int | None = None,
+        note: str = "",
     ):
         super().__init__(matches)
         self.total = total
         self.complete = complete
+        self.query = query
+        self.exact = exact
+        self.note = note
 
     def to_dict(self) -> dict[str, Any]:
         """JSON-ready: the matches, and whether more exist."""
         return {
             "complete": self.complete,
             "total_versions": self.total,
+            "query": self.query,
+            "exact": self.exact,
+            "note": self.note,
             "results": [m.to_dict() for m in self],
         }
 

@@ -577,7 +577,9 @@ async def test_search_without_matches_or_without_the_eCFR(browser, site):
         assert not app.screen.query(Checkbox)  # Nothing to search within.
         await typed(app, pilot, "nothing")
         await keys(app, pilot, "enter")
-        assert str(app.screen.query_one("#status", Static).render()) == "No matches"
+        assert str(app.screen.query_one("#status", Static).render()).startswith(
+            "No matches. Search syntax:"
+        )
         site.json(SEARCH, {"error": "down"}, status=400)
         await keys(app, pilot, "enter")
         assert str(app.screen.query_one("#status", Static).render()) == ""
